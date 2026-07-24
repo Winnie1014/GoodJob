@@ -17,10 +17,10 @@
 | ID | 决策 | 结果 | 权威来源 |
 | --- | --- | --- | --- |
 | D-001 | 产品形态 | 采用 Codex Skill 对话 + 本地确定性扫描器 + SQLite 证据库，而非纯提示词或独立桌面程序 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
-| D-002 | 源码访问 | Codex 直接读取用户明确指定且本机可读的工作区；`.git` 指针只授权扫描契约限定的根外受限 Git 元数据；GoodJob 不新增当前 Codex 会话之外的源码上传或分析服务 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
+| D-002 | 源码访问与授权 | 当前 Codex task 易失持有原始 SessionCapability，SQLite 只存 digest；受保护请求须证明同 task 能力。根外 Git 另走两阶段精确回执；GoodJob 不新增会话外上传/遥测 | [ADR-0006](adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md) |
 | D-003 | 持久化 | SQLite 保存结构化状态，Markdown/HTML 作为人类阅读产物 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
 | D-004 | Skill 与个人数据 | 版本化 Skill 只带流程、脚本、参考和前端资源；个人数据放在独立用户目录 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
-| D-005 | 开发与安装 | 开发源码位于 GoodJob；文档验收和实现完成后推送私有 GitHub，再安装到用户级 Skill 目录 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
+| D-005 | 开发与安装 | GoodJob 已建立私有 GitHub 文档基线；只有实现和发布验收通过后才安装到用户级 Skill 目录，当前仓库状态不等于可安装 Skill | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
 | D-006 | 调用方式 | 通过显式 Skill 对话发起；用户提供工作区、主岗位和可选 JD | [产品需求](../10-product/product-requirements.md) |
 | D-007 | 岗位模式 | 每次以一个主岗位为中心；JD 可细化岗位，未来可做多岗位对比 | [ADR-0004](adrs/ADR-0004-dynamic-role-lens.md) |
 | D-008 | 职级 | 优先从 JD 推断职级，用户可显式覆盖 | [ADR-0004](adrs/ADR-0004-dynamic-role-lens.md) |
@@ -31,7 +31,7 @@
 | D-013 | 嵌套仓库 | 先发现独立 Git 根，再应用各自忽略规则；外层 ignore 不得吞掉内层仓库 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
 | D-014 | 忽略与敏感项 | 尊重各仓库 ignore，并硬排依赖、构建、缓存、环境变量和密钥文件；精确安全例外不能重新纳入实际秘密 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
 | D-015 | 扫描节奏 | 首次全量索引，之后由用户显式触发增量 refresh；不运行后台监听 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
-| D-016 | 事实优先级 | 当前可读工作树是实现事实主来源；文档计划不得自动升级为已实现 | [证据模型](../20-architecture/evidence-model.md) |
+| D-016 | 事实与快照优先级 | 当前可读工作树是实现事实主来源，文档计划不得升级为已实现；准备阶段三次哈希校验，漂移时显式 refresh，不混用源码版本 | [ADR-0007](adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md) |
 | D-017 | Git 历史 | 初始读取最近 180 天；只有具体结论需要时才向更早历史追溯 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
 | D-018 | 语言深读 | 首版深读 TS/TSX、Python、Rust、Dart 和 SQL；其他语言仍生成可靠基础档案 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
 | D-019 | Codex 阅读策略 | 扫描器索引全量模块；Codex 先读岗位相关证据包，再按问题钻入本地原文件 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md) |
@@ -47,11 +47,14 @@
 | D-029 | 人工上下文 | 准备材料发现业务、指标或角色缺口时，发起项目级批量访谈；不逐条确认 Claim | [产物设计](../20-architecture/artifacts-and-learning.md) |
 | D-030 | 产物版本 | 每次运行保留不可变中文主快照，并维护只指向成功主快照的 latest；人工回答和英文派生导出不覆盖源快照 | [产物设计](../20-architecture/artifacts-and-learning.md) |
 | D-031 | 证据呈现 | 关键结论在 Markdown 与 HTML 中直接关联模块、文件、状态和证据摘要 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md) |
-| D-032 | 学习闭环 | 支持模拟面试并保存复盘、掌握状态、薄弱点和下次复习日期 | [产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-032 | 学习闭环 | 复盘绑定稳定 ReviewTarget；指纹由结构化复习语义而非 Revision/Gap ID 生成，纯文案变化延续、实质语义变化重评 | [ADR-0007](adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md) |
 | D-033 | 面试隐私 | 不保存完整面试对话，只保存结构化复盘；不创建主动提醒 | [产物设计](../20-architecture/artifacts-and-learning.md) |
 | D-034 | 配置位置 | 工作区注册、默认岗位、忽略例外和项目角色信息统一保存到个人中心配置 | [系统设计](../20-architecture/system-design.md) |
 | D-035 | 当前治理阶段 | 先完成并验收权威文档；Owner 核对后另行拆实现任务；当前不部署 Implementer/channel | 本决策账本 |
-| D-036 | 不可信输入 | 工作区、Git、JD、用户上下文和模型文本只作为数据；不得驱动命令/授权，进入 HTML 前必须安全编码并受 CSP 约束 | [系统设计](../20-architecture/system-design.md)、[扫描设计](../20-architecture/scanning-and-analysis.md)、[产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-036 | 不可信输入 | 工作区、`.git`/Git 配置、JD、用户上下文和模型文本只作为数据；不得驱动命令、生成授权或扩大路径，进入 HTML 前必须安全编码并受 CSP 约束 | [系统设计](../20-architecture/system-design.md)、[扫描设计](../20-architecture/scanning-and-analysis.md)、[产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-037 | 个人数据保留 | 首版不自动删除、归档或淘汰 SQLite、快照、导出和工作稿；每次运行显示分类用量，清理作为未来显式能力 | [证据模型](../20-architecture/evidence-model.md) |
+| D-038 | 运行恢复与单写者 | 所有写操作使用 OS 非阻塞排他锁；运行与 ExportAttempt 中断由恢复账本终止并只清理预登记归属路径，不超时偷锁或续跑模型内存 | [系统设计](../20-architecture/system-design.md) |
+| D-039 | 英文派生事实保真 | 英文材料按冻结 source item 一一派生并机检事实锚点；每次导出先建 ExportAttempt，只有成功 attempt 可发布 DerivedExport | [证据模型](../20-architecture/evidence-model.md)、[产物设计](../20-architecture/artifacts-and-learning.md) |
 
 ## 明确的非首版能力
 
@@ -64,6 +67,7 @@
 | F-005 | 公开 GitHub 发布 | 首次只建私有仓库，稳定后另作决策 |
 | F-006 | 需要本地服务的交互式 Dashboard | 不实现；首版为离线静态看板 |
 | F-007 | 独立桌面可执行程序 | 不实现；先验证 Skill 工作流 |
+| F-008 | 自动清理或压缩个人数据 | 不实现；首版只显示用量，未来需设计显式预览、引用保护与可恢复策略 |
 
 ## Owner 核对
 

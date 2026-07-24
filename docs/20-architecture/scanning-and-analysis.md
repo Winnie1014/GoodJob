@@ -2,14 +2,15 @@
 
 > 状态：待 Owner 核对  
 > 权威范围：定义授权工作区的发现、索引、增量刷新、Git 历史读取、语言适配和 Codex 按证据深读的行为；不定义 SQLite 实体字段或最终报告章节  
-> 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0005](../30-decisions/adrs/ADR-0005-local-first-discovery-and-degradation.md)  
+> 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0005](../30-decisions/adrs/ADR-0005-local-first-discovery-and-degradation.md)、[ADR-0006](../30-decisions/adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md)、[ADR-0007](../30-decisions/adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md)  
 > 下游：[产物与学习闭环](artifacts-and-learning.md)、[验收基线](../40-delivery/acceptance-baseline.md)
 
 ## 1. 目标与边界
 
-扫描的目标不是让 Codex 无边界地阅读全部源码，而是把 Owner 明确授权的工作区转换成可增量维护、可定位、可按岗位重排的证据目录。扫描器只做确定性观察：发现项目和模块、提取结构化证据、记录覆盖范围及问题。岗位价值、个人经历和面试叙事由 `RoleLens` 与准备流程在此基础上形成。
+扫描的目标不是让 Codex 无边界地阅读全部源码，而是把 Owner 在当前显式会话中确认可分析的工作区转换成可增量维护、可定位、可按岗位重排的证据目录。扫描器只做确定性观察：发现项目和模块、提取结构化证据、记录覆盖范围及问题。岗位价值、个人经历和面试叙事由 `RoleLens` 与准备流程在此基础上形成。
 
-- 首版只扫描 Owner 明确提供、在本机可读的工作区根；不递归扫描未授权位置，不触发网络抓取或 Git fetch。工作区内 `.git` 指针可授权扫描器读取 3.2 定义的根外受限 Git 元数据，但不授权读取根外源码、配置或模块（`FR-02`、`NFR-01`）。
+- `workspace_path` 的本机可读性不足以授权源码分析。`scan`、`refresh` 或向 Codex 返回源码衍生 EvidenceBundle 前，必须用当前 Codex task 的易失 SessionCapability 通过 `AuthorizationReceipt(source_analysis)` digest/scope/notice 校验；receipt ID 或 SQLite 记录本身不授权任何读取。
+- 首版只扫描 Owner 明确提供、在本机可读的工作区根；不递归扫描未授权位置，不触发网络抓取或 Git fetch。工作区内 `.git` 指针只是 3.2 的不可信候选，不能自行授权任何根外读取（`FR-02`、`NFR-01`）。
 - 扫描产物写入证据模型中的 `ScanRun`、`ProjectSnapshot`、`SourceRevision`、`Evidence` 与 `ScanIssue`；字段、身份和状态以[证据模型](evidence-model.md)为唯一事实源。
 - 扫描器不保存源码正文、完整函数、完整 diff 或大段文档。原文件仍是实现事实源，数据库只保存指针、哈希、短摘要和结构化状态（`NFR-02`）。
 - 文件内容、manifest、Git 文本和路径名一律是不可信数据。适配器只能解析字节/文本并调用参数化的只读 Git 子进程，不得 import 或执行项目模块，不得运行构建脚本、包管理器或 shell 拼接，也不得把仓库中的指令当作 Skill 指令（`NFR-08`）。
@@ -21,11 +22,11 @@
 
 | 操作 | 必需输入 | 成功输出 | 不能建立时的行为 |
 | --- | --- | --- | --- |
-| `scan` | 规范化前的 `workspace_path`、当前 `config_revision` | 一个终态 `ScanRun`、`Workspace` 身份、每个发现项目的 `ScanRunProject`、覆盖摘要与 `ScanIssue` | 路径不存在、不可读、不是目录或越出 Owner 授权边界时，运行终态为 `failed`；不得创建或替换任何可用项目快照 |
-| `refresh` | 已登记的 `workspace_id`、当前 `config_revision` | 一个新的终态 `ScanRun`；未变内容复用既有 revision，变化内容新增 revision | 工作区登记不存在或根不可重新访问时，运行终态为 `failed`；历史快照和既有 `latest` 产物保持不变 |
-| 岗位证据查询 | 已终态的 `scan_run_id`、`role_lens_id`、可选项目/模块/证据类型过滤 | 有界 `EvidenceBundle`，带项目排序、时效状态、覆盖与深读建议 | 不存在可用 `ProjectSnapshot` 时返回明确的无可用证据结果，不以空包伪装为完整分析 |
+| `scan` | `workspace_path`、`config_revision`、`SessionAuthorizationEnvelope` | 一个终态 `ScanRun`、Workspace/Project 身份、覆盖摘要与 ScanIssue | capability/receipt/path 任一无效时零项目读取、零业务写入，不产生可用快照 |
+| `refresh` | `workspace_id`、`config_revision`、`change_detection_mode=fast\|verify_content`、`SessionAuthorizationEnvelope` | 一个新的终态 `ScanRun`；未变内容复用既有 revision，变化内容新增 revision | 工作区不可访问或会话绑定无效时不产生新快照；历史快照和 `latest` 保持不变 |
+| 岗位证据查询 | `scan_run_id`、`role_lens_id`、`SessionAuthorizationEnvelope`、可选项目/模块/类型过滤 | 有界 `EvidenceBundle`，带项目排序、时效、覆盖与深读建议 | 会话绑定无效时不返回项目衍生数据；无可用 ProjectSnapshot 时返回明确空结果 |
 
-`scan` 是首次登记或强制全量索引，`refresh` 是 Owner 显式触发的增量操作（`FR-03`、`FR-04`）。首版没有文件监听、定时扫描或后台服务。空工作区可以完成一次零项目扫描，但空目录本身不得被登记为项目。
+`scan` 是首次登记或强制全量索引，`refresh` 是 Owner 显式触发的增量操作（`FR-03`、`FR-04`）。首版没有文件监听、定时扫描或后台服务。空工作区可以完成一次零项目扫描，但空目录本身不得被登记为项目。`fast` 的“无变化”表示未检测到变化；`verify_content` 才表示本次对全部合资格文件重新核验了内容身份。
 
 ### 2.2 事务、快照与降级
 
@@ -36,13 +37,13 @@
 - 项目本次失败且没有基线，记为 `failed_no_baseline`，不创建空快照。
 - Owner 配置明确排除的项目记为 `excluded`，并记录命中的规则来源。
 
-至少一个项目存在可用快照时，扫描可终态为 `completed` 或 `partial`；有任一 `carried_forward`、`failed_no_baseline` 或未解决覆盖问题时必须为 `partial`。无可用项目快照或工作区无法建立时为 `failed`。失败项目不得删除、回写或污染上一份成功快照（`FR-15`、`NFR-04`、`NFR-05`）。
+至少一个项目存在可用快照时，扫描可终态为 `completed` 或 `partial`；有任一 `carried_forward`、`failed_no_baseline` 或未解决覆盖问题时必须为 `partial`。无可用项目快照或工作区无法建立时为 `failed`。进程异常结束且未完成发布的运行在下一写会话中标为 `interrupted`；它不能成为 PreparationRun 基线，即使其中已有按项目提交的中间快照。失败或中断项目不得删除、回写或污染上一份成功快照（`FR-15`、`NFR-04`、`NFR-05`）。
 
 ## 3. 项目发现与隔离
 
 ### 3.1 探索顺序
 
-1. 将工作区根解析为规范化实路径；普通目录符号链接只在目标仍位于该授权根内时跟随。指向根外的普通链接不被读取，并产生可定位的 `ScanIssue`；工作区内 `.git` 指针对受限 Git 元数据的授权例外按 3.2 执行。
+1. 将工作区根解析为规范化实路径；普通目录符号链接只在目标仍位于该授权根内时跟随。遍历器以规范化实路径和平台可用的文件身份维护祖先集与已访问集：命中祖先集时停止递归并记录 `symlink_cycle`，命中已访问目标时不重复发现项目、模块或 Evidence，只记录 alias 覆盖信息。指向根外的普通链接不被读取，并产生可定位的 `ScanIssue`；工作区内 `.git` 指针对受限 Git 元数据的例外按 3.2 执行。
 2. 在普通 ignore 生效前发现 `.git` 目录与 `.git` 指针文件。硬安全排除仍优先，避免进入依赖、构建和密钥区域。
 3. 对每个候选 Git 根读取本地 Git 元数据；先确定独立仓库，再按各自仓库规则扫描。父仓库的 `.gitignore` 不得吞掉内层 Git 仓库。
 4. 用规范化 `git common-dir` 归并同一 Git 项目的主工作树和 linked worktree；每个实际工作树保留单独的根、分支、HEAD 与 dirty observation。
@@ -54,7 +55,9 @@ Git 元数据损坏时，该候选项目产生 `broken_repository` 类 `ScanIssu
 
 - Git 项目的身份是 `git common-dir` 的规范化实路径。同一 common-dir 只生成一个 `Project`，即使工作区中存在多个 linked worktree（`FR-03`）。
 - `WorktreeObservation` 记录每个工作树在本次 `ScanRun` 的 branch、HEAD 和 dirty state。项目归并只去重 Project 身份；相同内容可按 `content_equivalence_key` 复用解析并折叠展示，但必须保留各自来源。不同分支的当前状态绝不混写为同一份实现事实。
-- 若 linked worktree 的 common-dir 位于授权根外，工作区内 `.git` 指针只授权只读获取：指针/commondir、HEAD/ref、index 状态，以及第 5.2 节允许窗口内的 commit hash、时间、作者、标题和变更路径名。不得请求或持久化 blob 内容、diff 正文，不得遍历该 common-dir 的其他工作树或读取根外工作树源码、配置和模块；覆盖报告必须标明使用了此受限元数据例外。
+- 若 linked worktree 的 `git_dir` 或 common-dir 位于授权根外，工作区内 `.git` 文件只能提供一个有限长度、严格语法解析的候选 `gitdir:`，绝不授予读取权限。扫描器先显示经词法规范化但尚未信任的候选和根外原因；Owner 授予绑定同一 SessionCapability、仅对该候选有效的 `AuthorizationReceipt(external_git_relation_probe)` 后，扫描器才可用直接文件读取做 `lstat/realpath` 并读取 `gitdir/commondir` 关系文件。该阶段不得启动 Git 子进程、读取 HEAD/ref/index/config/object 或持久化 Project 身份。
+- 关系探测解析出规范化 `git_dir/common_dir` 并初步验证回指后，扫描器必须把两个精确路径、拟读取字段和边界再次展示给 Owner，取得当前会话的 `AuthorizationReceipt(external_git_metadata)`。随后只能以固定参数、非交互、无网络且清空继承 `GIT_*` 环境的 Git 调用完成双向验证：根内工作树、已确认 git-dir/common-dir 与 Git 解析出的 top-level/git-dir/common-dir 必须一致；`git_dir/gitdir` 必须回指根内 `.git`，`commondir` 必须等于已确认路径。解析后路径变化、符号链接逃逸、格式错误或回指不匹配均形成 `untrusted_git_pointer` 或 `external_git_relation_mismatch` ScanIssue。
+- 验证成功后，首版只读取绑定关系、HEAD/ref 与 index/dirty 状态。不得读取根外 Git 历史、对象库、作者、标题、路径范围、blob、diff、其他 worktree、源码、配置或模块；需要此类历史时形成可见知识缺口，Owner 可显式扩大工作区后重新运行。覆盖报告必须列出工作树、已确认 git-dir/common-dir、回执时间和实际读取字段。
 - 内层 Git 根是独立项目。它的子树从父项目源码遍历中排除，避免同一文件同时归属父、子两个项目。
 
 ### 3.3 非 Git 项目与模块
@@ -95,7 +98,9 @@ Owner 可在个人 `config.toml` 中登记少量、精确到相对文件路径�
 
 ### 5.1 初始索引与 refresh
 
-首次 `scan` 对全部合资格文件建立内容身份。`refresh` 先比较项目发现结果、Git HEAD/dirty 状态、文件路径集合、文件元数据和分析器/配置版本；候选变化文件重新计算 `content_sha256` 与 `analysis_fingerprint`。相同内容、适配器版本和配置版本的 Evidence 复用既有不可变 revision；任一项变化均追加新 revision，绝不原地修改历史。
+首次 `scan` 对全部合资格文件建立内容身份。`refresh(mode=fast)` 先比较项目发现结果、Git HEAD/dirty 状态、文件路径集合、文件元数据和分析器/配置版本；候选变化文件以及所有已报告 `modified`/`untracked` 文件重新计算 `content_sha256` 与 `analysis_fingerprint`。`fast` 的路径、大小和 `mtime_ns` 只是性能筛选条件，不能被表述为全量内容验证。
+
+`refresh(mode=verify_content)` 对全部合资格文件重算 `content_sha256`；相同哈希、适配器版本和配置版本的 Evidence 仍复用既有不可变 revision，不因此重新深读。两种模式都在 ScanRun 和覆盖摘要中持久化；当 Owner 需要排除保留 mtime/大小的内容变更时必须选择 `verify_content`。
 
 删除路径在新快照中标为 `missing`。同项目内移动文件优先使用本地 Git rename 信息；无法获得 rename 信息时，仅在内容哈希相同的情况下写入 `supersedes_artifact_id` 作为移动线索，仍保留旧路径的历史引用。没有变化时不得重新解析全部源码（`FR-04`、`NFR-04`）。
 
@@ -103,9 +108,9 @@ Owner 可在个人 `config.toml` 中登记少量、精确到相对文件路径�
 
 ### 5.2 近期 Git 历史
 
-初始 Git 历史窗口固定为扫描开始时刻向前 180 天。查询范围是每个发现工作树的 HEAD 与本地默认分支可达提交的并集，按 commit hash 去重；不 fetch 远端分支、不 checkout、不修改工作树。索引内容限于 commit 定位、时间、作者元数据、标题和已变更路径范围，不保存完整 diff 正文。
+初始 Git 历史窗口固定为扫描开始时刻向前 180 天。查询范围始终包含每个发现工作树的 HEAD；本地默认分支只在无需 fetch 即可唯一解析时加入并集：优先本地存在的唯一 `refs/remotes/*/HEAD` 目标，否则依次尝试本地 `refs/heads/main`、`refs/heads/master`。无 remote、default ref 缺失/歧义或 detached HEAD 时使用 `HEAD-only`，在 WorktreeObservation 与覆盖摘要中标记原因；不猜测、不 fetch、不 checkout、不修改工作树。索引内容限于根内 Git 数据库的 commit 定位、时间、作者元数据、标题和已变更路径范围，不保存完整 diff 正文。
 
-当某个具体 Claim 需要解释当前代码的演进而近期窗口无法回答时，Codex 可以通过 `EvidenceQuery` 针对该 Claim 的证据路径、模块或 commit 发起一次有理由的更早历史查询。查询先返回受限 commit 元数据和路径 candidate；对选中的单个 candidate，若 Git 数据库位于授权根内，Codex 可在当前会话有界读取相关 path 的 diff/blob，`EvidenceDraft` 只保存 commit/object/diff hash、locator、理由和短摘要，不保存正文。若 common-dir 位于授权根外，则保持 3.2 的元数据边界并形成可见知识缺口，Owner 可在后续运行显式选择更宽的工作区。采用的 EvidenceDraft 在 record_analysis 中校验并落为 preparation-scope Evidence，不回写 ProjectSnapshot，不做隐式全历史重索引，也不把历史作者自动转换为个人贡献（`FR-06`、`NFR-02`）。
+当某个具体 Claim 需要解释当前代码的演进而近期窗口无法回答时，Codex 可以通过 `EvidenceQuery` 针对该 Claim 的证据路径、模块或 commit 发起一次有理由的更早历史查询。查询先返回受限 commit 元数据和路径 candidate；对选中的单个 candidate，若 Git 数据库位于授权根内，Codex 可在当前会话有界读取相关 path 的 diff/blob，`EvidenceDraft` 只保存 commit/object/diff hash、locator、理由和短摘要，不保存正文。若 git-dir 或 common-dir 位于授权根外，则不查询历史，直接形成可见知识缺口；Owner 只有显式扩大工作区后才能重新运行该历史分析。采用的 EvidenceDraft 在 record_analysis 中校验并落为 preparation-scope Evidence，不回写 ProjectSnapshot，不做隐式全历史重索引，也不把历史作者自动转换为个人贡献（`FR-06`、`NFR-02`）。
 
 ## 6. 语言适配与基础档案
 
@@ -129,30 +134,32 @@ Owner 可在个人 `config.toml` 中登记少量、精确到相对文件路径�
 
 Codex 按以下顺序工作：
 
-1. 读取岗位相关 EvidenceBundle，选择能回答岗位维度的高优先级项目和模块；
-2. 打开被选中 Evidence 指向的本地原文件，并核对内容哈希与当前时效；
-3. 只在证据不足、相互矛盾、需要解释实现方式或出现岗位关键追问时，沿 import、调用、配置或测试链路扩展阅读；
-4. 将形成的 Claim 关联已核验的 Evidence；不能核验的内容作为知识缺口或不确定性，而不是补写为事实。
+1. `prepare_start` 对候选 SourceRevision 做预检，确认其仍匹配冻结 ProjectSnapshot；不符时返回 `refresh_required`，不隐式扫描；
+2. 读取岗位相关 EvidenceBundle，选择能回答岗位维度的高优先级项目和模块；
+3. 打开被选中 Evidence 指向的本地原文件前再次核对内容哈希与当前时效；
+4. 只在证据不足、相互矛盾、需要解释实现方式或出现岗位关键追问时，沿 import、调用、配置或测试链路扩展阅读；
+5. `record_analysis` 对每个 EvidenceDraft 最后一次校验哈希和 locator。任一所用文件在读取后变化时整批标记 `refresh_required`，不写入 Evidence、Claim 或 Assessment；不能核验的内容作为知识缺口或不确定性，而不是补写为事实。
 
 因此，扫描器索引全量模块，Codex 深读有界证据链。系统不得把全仓源码复制进 EvidenceBundle、数据库或最终报告（`FR-05`、`FR-06`、`FR-11`、`NFR-02`）。
 
 ## 8. 覆盖报告与可判定验收规则
 
-每个终态扫描必须在 `EvidenceBundle` 和下游产物中呈现：发现项目数、fresh/carried-forward/failed-no-baseline/excluded 数量、工作树数、模块数、纳入/排除文件类别、深读与基础分析语言、每项 `ScanIssue` 的路径范围、原因、影响和补救动作。`coverage_status=complete` 只表示当次配置下合资格输入均被处理，不等于理解全部业务语义。
+每个终态扫描必须在 `EvidenceBundle` 和下游产物中呈现：发现项目数、fresh/carried-forward/failed-no-baseline/excluded 数量、工作树数、模块数、纳入/排除文件类别、`fast`/`verify_content` 检测模式、history basis、深读与基础分析语言、外部 Git 授权例外、每项 `ScanIssue` 的路径范围、原因、影响和补救动作。`coverage_status=complete` 只表示当次配置下合资格输入均被处理，不等于理解全部业务语义。
 
 | ID | 可判定输入 | 必须输出 | 失败或降级行为 | 需求映射 |
 | --- | --- | --- | --- | --- |
 | `SCAN-01` | 一个可读工作区根或一个无效/不可读根 | 前者产生 `Workspace` 与终态 `ScanRun`；后者不产生可用快照 | 无效根为 `failed`，历史数据不被覆盖 | `FR-02`、`FR-03`、`NFR-01` |
-| `SCAN-02` | Git 根、`.git` 指针、嵌套 Git 与 manifest 非 Git 项目混合 | 稳定 Project/Worktree/Module 发现结果；空目录不是项目 | 损坏 Git 根记 `ScanIssue`，不降格、不阻断其他项目 | `FR-03`、`NFR-05` |
+| `SCAN-02` | Git 根、根内 symlink loop/alias、`.git` 指针、嵌套 Git 与 manifest 非 Git 项目混合 | 稳定 Project/Worktree/Module 发现结果；空目录不是项目；循环停止且 alias 不重复解析 | 损坏 Git 根或循环记 `ScanIssue`，不降格、不阻断其他项目 | `FR-03`、`NFR-01`、`NFR-05` |
 | `SCAN-03` | 同一 common-dir 的多个 linked worktree，既有相同文件也有分支差异 | 一个 Project、多份 worktree observation；相同内容复用分析但保留来源；差异事实按 worktree 分开 | 不能读取某个工作树时问题可见；不得把不同分支拼成一个当前项目状态 | `FR-03`、`FR-11`、`FR-15` |
 | `SCAN-04` | 父项目 ignore 内层 Git；依赖、构建、缓存、`.env` 与密钥文件 | 内层仓库被独立发现；敏感和硬排项不读、不存、不输出 | 普通 ignore 不覆盖内层 Git；硬排项只报告类别，不泄露内容 | `FR-03`、`FR-15`、`NFR-01` |
 | `SCAN-05` | 已提交、modified 与 untracked 的合资格文件、测试定义/结果元数据，以及只含计划的文档 | Evidence 记录正确 commit state/facet；测试定义与通过结果分开；计划不显示为实现 | 无实现不得生成 implemented；无匹配通过结果不得生成 test_verified | `FR-11`、`NFR-02` |
-| `SCAN-06` | 首扫后无变化、修改、删除、移动和分析器/配置变更 | 无变化复用 revision；变化追加 revision；旧定位出现 stale/missing | 项目事务失败保留旧快照为 `carried_forward`，不冒充 fresh | `FR-04`、`FR-15`、`NFR-04`、`NFR-05` |
-| `SCAN-07` | 当前实现与超过/未超过 180 天的 Git 历史 | 默认只索引近期本地提交；按 Claim 可进行有记录的定向追溯 | 无法读取历史产生 `ScanIssue`，不阻断当前工作树索引 | `FR-06`、`NFR-02` |
+| `SCAN-06` | 首扫后无变化、修改、删除、移动、分析器/配置变更，以及 size/mtime 被保留的内容变化 | fast 运行明确“未检测变化”；verify_content 发现所有内容变化；旧定位出现 stale/missing | 项目事务失败保留旧快照为 `carried_forward`，不冒充 fresh | `FR-04`、`FR-15`、`NFR-04`、`NFR-05` |
+| `SCAN-07` | 当前实现与超过/未超过 180 天的 Git 历史；正常默认分支、无默认分支和 detached HEAD | 默认只索引近期本地根内提交；history basis 可解释；按 Claim 可进行有记录的定向追溯 | default 不可解析时使用 HEAD-only；无法读取历史产生 ScanIssue，不阻断当前工作树索引 | `FR-06`、`NFR-02` |
 | `SCAN-08` | TS/TSX、Python、Rust、Dart、SQL 和未知语言并存 | 首批语言提供深读证据；未知语言提供明确标注的基础档案 | 语言不支持记覆盖缺口，不阻断其他语言/项目 | `FR-03`、`FR-15`、`NFR-07` |
 | `SCAN-09` | 大型多项目工作区与一个岗位 RoleLens | 先返回有界 EvidenceBundle，再按证据打开本地原文件 | 证据失效或不足时要求 refresh 或形成知识缺口，不通读全仓或编造结论 | `FR-05`、`FR-06`、`FR-11`、`NFR-02` |
 | `SCAN-10` | 无权限目录、损坏仓库和超限/解析失败文件 | 其余可用项目的快照、结构化 ScanIssue 与覆盖影响 | 有可用快照时为 `partial`；没有可用快照时为 `failed` | `FR-15`、`NFR-05` |
 | `SCAN-11` | 文件名、manifest、文档或 Git 标题含 shell 元字符、提示注入或 HTML/脚本文本 | 内容仅作为证据数据与安全短摘要，项目代码和指令均不执行 | 解析失败形成 ScanIssue；不得改变授权、运行命令、访问网络或扩大写入范围 | `NFR-01`、`NFR-08` |
+| `SCAN-12` | 合法根外 linked worktree、分别拒绝 relation-probe/metadata 回执、伪造 `.git` 指针、回指不匹配和确认后路径替换 | 合法场景经两阶段精确回执后只读取绑定/HEAD/ref/index 元数据并记录字段；无效场景不越过对应阶段 | 未授权、路径逃逸、关系不匹配或外部历史请求均形成 ScanIssue/知识缺口；probe 阶段不得读取业务 Git 元数据，任何阶段不得持久化未授权目标派生数据 | `FR-03`、`FR-15`、`NFR-01`、`NFR-08` |
 
 ## 9. 非首版边界
 

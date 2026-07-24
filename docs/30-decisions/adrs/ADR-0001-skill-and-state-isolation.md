@@ -14,10 +14,10 @@ GoodJob 需要被 Codex 在不同工作区显式调用，同时持续积累扫�
 
 1. GoodJob 采用一个跨工作区个人 Skill，而不是纯提示词或独立桌面程序。
 2. 开发期源码位于 GoodJob 仓库；可发现入口位于仓库的 .agents/skills/goodjob-career-review。
-3. 发布后从私有 GitHub 安装到用户级 Skill 目录。
+3. GoodJob 的权威文档与后续源码保存在私有 GitHub；只有实现与发布验收通过后，才从可安装私有版本部署到用户级 Skill 目录。当前文档仓库不等于已发布 Skill。
 4. Skill 包仅包含 SKILL.md、agents/openai.yaml、确定性脚本、参考框架与前端静态资源。
 5. 工作区注册、SQLite、访谈回答、复习状态和输出快照统一放在 ~/.codex/goodjob-career-review；允许通过显式 data-dir 覆盖。
-6. 个人数据目录永不进入 Skill 包或 GitHub。
+6. 个人数据目录永不进入 Skill 包或 GitHub；首版不自动删除其中的历史，只报告分类存储用量。
 
 ## 影响
 
