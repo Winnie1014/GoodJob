@@ -1,0 +1,4 @@
+interface:
+  display_name: "GoodJob Career Review"
+  short_description: "为本机工作区生成可追溯的职业准备材料、证据索引与复习快照"
+  default_prompt: "Use $goodjob-career-review to prepare a local workspace for a target role."
