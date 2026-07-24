@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeGuard, cast
 
-from goodjob.auth import generate_capability
+from goodjob.auth import ReceiptKind, generate_capability
 from goodjob.errors import GoodJobError, InvalidInputError
 
 NOTICE_VERSION = "goodjob-source-analysis-v1"
@@ -44,13 +44,23 @@ def _required_text(message: JsonObject, key: str) -> str:
     value = message.get(key)
     if not isinstance(value, str) or not value.strip():
         raise InvalidInputError(f"session broker field {key!r} must be a non-empty string")
-    return value
+    return _require_utf8(value, key)
 
 
 def _optional_text(message: JsonObject, key: str, default: str) -> str:
     value = message.get(key, default)
     if not isinstance(value, str) or not value.strip():
         raise InvalidInputError(f"session broker field {key!r} must be a non-empty string")
+    return _require_utf8(value, key)
+
+
+def _require_utf8(value: str, field_name: str) -> str:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise InvalidInputError(
+            f"session broker field {field_name!r} must contain valid UTF-8 text"
+        ) from exc
     return value
 
 
@@ -111,14 +121,50 @@ class CoreResponse:
     def require_receipt(self) -> CoreResponse:
         if self.status != "ok":
             return self
-        receipt = self.payload.get("receipt")
-        if not isinstance(receipt, dict) or not _is_json_value(receipt):
-            return _protocol_error("GoodJob core returned an invalid authorization receipt")
-        receipt_payload = cast(JsonObject, receipt)
-        receipt_id = receipt_payload.get("authorization_receipt_id")
-        if not isinstance(receipt_id, str) or not receipt_id:
+        try:
+            ReceiptEnvelope.from_response(self)
+        except InvalidInputError:
             return _protocol_error("GoodJob core returned an invalid authorization receipt")
         return self
+
+
+@dataclass(frozen=True)
+class ReceiptEnvelope:
+    """The complete stable receipt response required by the session protocol."""
+
+    authorization_receipt_id: str
+    receipt_kind: ReceiptKind
+    scope_descriptor: str
+    notice_version: str
+    confirmed_at: str
+
+    @classmethod
+    def from_response(cls, response: CoreResponse) -> ReceiptEnvelope:
+        receipt = response.payload.get("receipt")
+        if not isinstance(receipt, dict) or not _is_json_value(receipt):
+            raise InvalidInputError("authorization receipt is missing")
+        payload = cast(JsonObject, receipt)
+        required = {
+            field: _required_text(payload, field)
+            for field in (
+                "authorization_receipt_id",
+                "receipt_kind",
+                "scope_descriptor",
+                "notice_version",
+                "confirmed_at",
+            )
+        }
+        try:
+            kind = ReceiptKind(required["receipt_kind"])
+        except ValueError as exc:
+            raise InvalidInputError("authorization receipt kind is invalid") from exc
+        return cls(
+            authorization_receipt_id=required["authorization_receipt_id"],
+            receipt_kind=kind,
+            scope_descriptor=required["scope_descriptor"],
+            notice_version=required["notice_version"],
+            confirmed_at=required["confirmed_at"],
+        )
 
 
 def _protocol_error(message: str) -> CoreResponse:
@@ -213,6 +259,12 @@ def main() -> None:
             response = broker.dispatch(_json_object(line))
         except GoodJobError as exc:
             response = {"status": "error", "code": exc.code, "message": str(exc)}
+        except (UnicodeError, OSError):
+            response = {
+                "status": "error",
+                "code": "invalid_input",
+                "message": "session broker input could not be processed safely",
+            }
         print(json.dumps(response, ensure_ascii=False, sort_keys=True), flush=True)
 
 

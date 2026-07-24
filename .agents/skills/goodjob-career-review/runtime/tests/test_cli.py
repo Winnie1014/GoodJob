@@ -50,6 +50,17 @@ def test_session_broker_reuses_one_fd_capability_until_stdin_closes(tmp_path: Pa
     assert rejected_notice["status"] == "error"
     assert rejected_notice["code"] == "invalid_input"
 
+    rejected_surrogate = _send_json(
+        broker,
+        {
+            "op": "authorize_source_analysis",
+            "workspace": "\ud800",
+            "confirmed": True,
+        },
+    )
+    assert rejected_surrogate["status"] == "error"
+    assert rejected_surrogate["code"] == "invalid_input"
+
     authorized = _send_json(
         broker,
         {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},

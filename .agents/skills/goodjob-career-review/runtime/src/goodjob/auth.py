@@ -32,9 +32,11 @@ def receipt_kind_values() -> tuple[str, ...]:
 def canonical_json(value: object) -> str:
     """Serialize a scope as a stable, non-secret value object."""
     try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError) as exc:
         raise InvalidInputError("scope_json must contain only JSON values") from exc
+    _utf8_bytes(serialized, "scope_json")
+    return serialized
 
 
 def decode_scope(raw_scope: str) -> object:
@@ -76,6 +78,13 @@ def session_binding_digest(capability: bytes) -> bytes:
     return hashlib.sha256(SESSION_BINDING_PREFIX + capability).digest()
 
 
+def _utf8_bytes(value: str, field_name: str) -> bytes:
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise InvalidInputError(f"{field_name} must contain valid UTF-8 text") from exc
+
+
 @dataclass(frozen=True)
 class AuthorizationRequest:
     """Non-secret protected-operation inputs that must agree with a receipt."""
@@ -92,6 +101,7 @@ class AuthorizationRequest:
             raise InvalidInputError("unsupported authorization receipt kind") from exc
         if not notice_version.strip():
             raise InvalidInputError("notice_version must not be empty")
+        _utf8_bytes(notice_version, "notice_version")
         return cls(
             receipt_kind=kind,
             scope_descriptor=canonical_json(scope),
@@ -168,6 +178,7 @@ class AuthorizationRepository:
         request: AuthorizationRequest,
     ) -> AuthorizationReceipt:
         """Reject unless task binding, scope, kind, and notice exactly match."""
+        _utf8_bytes(authorization_receipt_id, "authorization_receipt_id")
         expected_digest = session_binding_digest(capability)
         with self._database.read_connection() as connection:
             row = connection.execute(
@@ -185,13 +196,16 @@ class AuthorizationRepository:
         digest_matches = hmac.compare_digest(stored_digest, expected_digest)
         values_match = (
             hmac.compare_digest(
-                str(row["receipt_kind"]).encode(), request.receipt_kind.value.encode()
+                _utf8_bytes(str(row["receipt_kind"]), "stored receipt kind"),
+                _utf8_bytes(request.receipt_kind.value, "receipt_kind"),
             )
             and hmac.compare_digest(
-                str(row["scope_descriptor"]).encode(), request.scope_descriptor.encode()
+                _utf8_bytes(str(row["scope_descriptor"]), "stored scope descriptor"),
+                _utf8_bytes(request.scope_descriptor, "scope_descriptor"),
             )
             and hmac.compare_digest(
-                str(row["notice_version"]).encode(), request.notice_version.encode()
+                _utf8_bytes(str(row["notice_version"]), "stored notice version"),
+                _utf8_bytes(request.notice_version, "notice_version"),
             )
         )
         if not digest_matches or not values_match:
