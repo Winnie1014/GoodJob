@@ -1,0 +1,70 @@
+# GoodJob 决策账本
+
+> 状态：待 Owner 核对  
+> 权威范围：记录截至 2026-07-24 已作出的产品、架构与交付决策；硬决策的完整理由以对应 ADR 为准  
+> 上游：[产品目标](../00-product/vision-and-goals.md)、[产品需求](../10-product/product-requirements.md)  
+> 下游：[系统设计](../20-architecture/system-design.md)、[验收基线](../40-delivery/acceptance-baseline.md)
+
+## 使用规则
+
+- 本表是“已决定什么”的索引，不复制 ADR 的完整论证。
+- 状态只有“已接受”“未来扩展”“已否决”。修改已接受决策必须新增 ADR 或替代原 ADR。
+- 设计文档和后续任务卡只引用决策编号，不另写不同口径。
+- “未来扩展”不进入首版 DoD，不得在实现中顺手加入。
+
+## 已接受决策
+
+| ID | 决策 | 结果 | 权威来源 |
+| --- | --- | --- | --- |
+| D-001 | 产品形态 | 采用 Codex Skill 对话 + 本地确定性扫描器 + SQLite 证据库，而非纯提示词或独立桌面程序 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
+| D-002 | 源码访问 | Codex 直接读取用户明确指定且本机可读的工作区；`.git` 指针只授权扫描契约限定的根外受限 Git 元数据；GoodJob 不新增当前 Codex 会话之外的源码上传或分析服务 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
+| D-003 | 持久化 | SQLite 保存结构化状态，Markdown/HTML 作为人类阅读产物 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
+| D-004 | Skill 与个人数据 | 版本化 Skill 只带流程、脚本、参考和前端资源；个人数据放在独立用户目录 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
+| D-005 | 开发与安装 | 开发源码位于 GoodJob；文档验收和实现完成后推送私有 GitHub，再安装到用户级 Skill 目录 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
+| D-006 | 调用方式 | 通过显式 Skill 对话发起；用户提供工作区、主岗位和可选 JD | [产品需求](../10-product/product-requirements.md) |
+| D-007 | 岗位模式 | 每次以一个主岗位为中心；JD 可细化岗位，未来可做多岗位对比 | [ADR-0004](adrs/ADR-0004-dynamic-role-lens.md) |
+| D-008 | 职级 | 优先从 JD 推断职级，用户可显式覆盖 | [ADR-0004](adrs/ADR-0004-dynamic-role-lens.md) |
+| D-009 | 无 JD 降级 | 模型根据岗位名生成带假设的候选 RoleLens，不阻塞准备流程 | [ADR-0004](adrs/ADR-0004-dynamic-role-lens.md) |
+| D-010 | 岗位模板 | 模板仅提供分析框架，不能成为固定枚举；模型必须能推导测试、底软等未知岗位 | [ADR-0004](adrs/ADR-0004-dynamic-role-lens.md) |
+| D-011 | 项目发现 | 指定工作区后自动发现 Git、嵌套 Git、工作树及可识别的非 Git 项目 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
+| D-012 | 工作树身份 | 同一 Git common-dir 的多个工作树合并为一个项目；相同内容复用分析但保留来源，分支差异保持 worktree scope | [扫描设计](../20-architecture/scanning-and-analysis.md) |
+| D-013 | 嵌套仓库 | 先发现独立 Git 根，再应用各自忽略规则；外层 ignore 不得吞掉内层仓库 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
+| D-014 | 忽略与敏感项 | 尊重各仓库 ignore，并硬排依赖、构建、缓存、环境变量和密钥文件；精确安全例外不能重新纳入实际秘密 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
+| D-015 | 扫描节奏 | 首次全量索引，之后由用户显式触发增量 refresh；不运行后台监听 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
+| D-016 | 事实优先级 | 当前可读工作树是实现事实主来源；文档计划不得自动升级为已实现 | [证据模型](../20-architecture/evidence-model.md) |
+| D-017 | Git 历史 | 初始读取最近 180 天；只有具体结论需要时才向更早历史追溯 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
+| D-018 | 语言深读 | 首版深读 TS/TSX、Python、Rust、Dart 和 SQL；其他语言仍生成可靠基础档案 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
+| D-019 | Codex 阅读策略 | 扫描器索引全量模块；Codex 先读岗位相关证据包，再按问题钻入本地原文件 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md) |
+| D-020 | 证据保存 | 只保存位置、行范围、哈希、状态和短摘要，不保存源码全文 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md) |
+| D-021 | 失败策略 | 权限、损坏仓库或不支持语言不使全局失败；保留部分结果并显式列缺口 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
+| D-022 | 技术栈 | Python 负责扫描、SQLite 和产物编排；TypeScript 前端负责离线静态看板 | [ADR-0002](adrs/ADR-0002-python-and-offline-typescript-dashboard.md) |
+| D-023 | HTML 运行形态 | 看板离线打开，不依赖常驻本地服务；报告数据随产物嵌入 | [ADR-0002](adrs/ADR-0002-python-and-offline-typescript-dashboard.md) |
+| D-024 | 产物组合 | 每次生成完整岗位准备包：岗位总览、项目/模块章节、简历、面试与知识缺口 | [产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-025 | 跨项目组织 | 先给岗位能力地图和项目排序，再保留每个项目与模块的可追溯章节 | [产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-026 | 简历产物 | 主快照保存不可变简历 Markdown 源稿，可显式导出不被后续运行覆盖的工作稿；每条 bullet 可追溯项目和证据 | [产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-027 | 语言 | 中文主快照；英文简历和英文问答作为独立不可变派生物按需导出，不更新 latest | [产品需求](../10-product/product-requirements.md) |
+| D-028 | 叙事口径 | 全量代码可转为“能讲解/可复习”的能力与候选学习；“我当时学到”需 learning 上下文，“我实现/负责/主导”需角色信息，“我取得结果”还需结果证据 | [产品需求](../10-product/product-requirements.md) |
+| D-029 | 人工上下文 | 准备材料发现业务、指标或角色缺口时，发起项目级批量访谈；不逐条确认 Claim | [产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-030 | 产物版本 | 每次运行保留不可变中文主快照，并维护只指向成功主快照的 latest；人工回答和英文派生导出不覆盖源快照 | [产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-031 | 证据呈现 | 关键结论在 Markdown 与 HTML 中直接关联模块、文件、状态和证据摘要 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md) |
+| D-032 | 学习闭环 | 支持模拟面试并保存复盘、掌握状态、薄弱点和下次复习日期 | [产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-033 | 面试隐私 | 不保存完整面试对话，只保存结构化复盘；不创建主动提醒 | [产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-034 | 配置位置 | 工作区注册、默认岗位、忽略例外和项目角色信息统一保存到个人中心配置 | [系统设计](../20-architecture/system-design.md) |
+| D-035 | 当前治理阶段 | 先完成并验收权威文档；Owner 核对后另行拆实现任务；当前不部署 Implementer/channel | 本决策账本 |
+| D-036 | 不可信输入 | 工作区、Git、JD、用户上下文和模型文本只作为数据；不得驱动命令/授权，进入 HTML 前必须安全编码并受 CSP 约束 | [系统设计](../20-architecture/system-design.md)、[扫描设计](../20-architecture/scanning-and-analysis.md)、[产物设计](../20-architecture/artifacts-and-learning.md) |
+
+## 明确的非首版能力
+
+| ID | 能力 | 首版处理 |
+| --- | --- | --- |
+| F-001 | 多岗位并排比较 | 数据模型保留扩展空间，但首版每次只处理一个主岗位 |
+| F-002 | Go、Java、C#、Swift 等语言的深层调用分析 | 首版仅做通用发现与基础档案，真实需求出现后新增适配器 |
+| F-003 | 后台文件监听 | 不实现；使用显式 refresh |
+| F-004 | 主动复习提醒或 Codex 自动任务 | 不实现；只记录日期 |
+| F-005 | 公开 GitHub 发布 | 首次只建私有仓库，稳定后另作决策 |
+| F-006 | 需要本地服务的交互式 Dashboard | 不实现；首版为离线静态看板 |
+| F-007 | 独立桌面可执行程序 | 不实现；先验证 Skill 工作流 |
+
+## Owner 核对
+
+本账本不包含待实现任务清单。Owner 核对的对象是：决策是否完整、是否与产品目标一致、是否存在需要改判的已接受项。核对通过后，才能依据权威文档建立实现任务清单。
