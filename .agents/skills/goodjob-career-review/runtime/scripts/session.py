@@ -8,27 +8,47 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TypeGuard, cast
 
 from goodjob.auth import generate_capability
 from goodjob.errors import GoodJobError, InvalidInputError
 
 NOTICE_VERSION = "goodjob-source-analysis-v1"
+type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
 
 
-def _json_object(raw: str) -> dict[str, Any]:
+def _is_json_value(value: object) -> TypeGuard[JsonValue]:
+    if value is None or isinstance(value, bool | int | float | str):
+        return True
+    if isinstance(value, list):
+        return all(_is_json_value(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+    return False
+
+
+def _json_object(raw: str) -> JsonObject:
     try:
-        payload = json.loads(raw)
+        payload: object = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise InvalidInputError("session broker input must be valid JSON") from exc
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or not _is_json_value(payload):
         raise InvalidInputError("session broker input must be a JSON object")
-    return cast(dict[str, Any], payload)
+    return cast(JsonObject, payload)
 
 
-def _required_text(message: dict[str, Any], key: str) -> str:
+def _required_text(message: JsonObject, key: str) -> str:
     value = message.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidInputError(f"session broker field {key!r} must be a non-empty string")
+    return value
+
+
+def _optional_text(message: JsonObject, key: str, default: str) -> str:
+    value = message.get(key, default)
     if not isinstance(value, str) or not value.strip():
         raise InvalidInputError(f"session broker field {key!r} must be a non-empty string")
     return value
@@ -46,16 +66,63 @@ def _scope(workspace: str) -> str:
     )
 
 
-def _child_response(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
-    raw_output = result.stdout if result.returncode == 0 else result.stderr
-    try:
-        return _json_object(raw_output)
-    except InvalidInputError:
-        return {
-            "status": "error",
-            "code": "core_protocol_error",
-            "message": "GoodJob core returned an invalid JSON response",
-        }
+@dataclass(frozen=True)
+class CoreResponse:
+    """The validated JSON envelope returned by a short-lived core child."""
+
+    payload: JsonObject
+
+    @property
+    def status(self) -> str:
+        return _required_text(self.payload, "status")
+
+    @classmethod
+    def from_process(cls, result: subprocess.CompletedProcess[str]) -> CoreResponse:
+        raw_output = result.stdout if result.returncode == 0 else result.stderr
+        try:
+            payload = _json_object(raw_output)
+            status = _required_text(payload, "status")
+        except InvalidInputError:
+            return cls(
+                {
+                    "status": "error",
+                    "code": "core_protocol_error",
+                    "message": "GoodJob core returned an invalid JSON response",
+                }
+            )
+        if result.returncode == 0 and status != "ok":
+            return cls(
+                {
+                    "status": "error",
+                    "code": "core_protocol_error",
+                    "message": "GoodJob core returned an unexpected successful response",
+                }
+            )
+        if result.returncode != 0 and status != "error":
+            return cls(
+                {
+                    "status": "error",
+                    "code": "core_protocol_error",
+                    "message": "GoodJob core returned an unexpected error response",
+                }
+            )
+        return cls(payload)
+
+    def require_receipt(self) -> CoreResponse:
+        if self.status != "ok":
+            return self
+        receipt = self.payload.get("receipt")
+        if not isinstance(receipt, dict) or not _is_json_value(receipt):
+            return _protocol_error("GoodJob core returned an invalid authorization receipt")
+        receipt_payload = cast(JsonObject, receipt)
+        receipt_id = receipt_payload.get("authorization_receipt_id")
+        if not isinstance(receipt_id, str) or not receipt_id:
+            return _protocol_error("GoodJob core returned an invalid authorization receipt")
+        return self
+
+
+def _protocol_error(message: str) -> CoreResponse:
+    return CoreResponse({"status": "error", "code": "core_protocol_error", "message": message})
 
 
 class SessionBroker:
@@ -65,19 +132,19 @@ class SessionBroker:
         self._capability = generate_capability()
         self._data_dir = data_dir
 
-    def dispatch(self, message: dict[str, Any]) -> dict[str, Any]:
+    def dispatch(self, message: JsonObject) -> JsonObject:
         operation = _required_text(message, "op")
         if operation == "authorize_source_analysis":
-            return self._authorize_source_analysis(message)
+            return self._authorize_source_analysis(message).payload
         if operation == "verify_source_analysis":
-            return self._verify_source_analysis(message)
+            return self._verify_source_analysis(message).payload
         raise InvalidInputError(f"unsupported session broker operation: {operation}")
 
-    def _authorize_source_analysis(self, message: dict[str, Any]) -> dict[str, Any]:
+    def _authorize_source_analysis(self, message: JsonObject) -> CoreResponse:
         if message.get("confirmed") is not True:
             raise InvalidInputError("owner confirmation is required before source authorization")
         workspace = _required_text(message, "workspace")
-        notice_version = str(message.get("notice_version", NOTICE_VERSION))
+        notice_version = _optional_text(message, "notice_version", NOTICE_VERSION)
         return self._run_protected_child(
             [
                 "authorize",
@@ -89,12 +156,12 @@ class SessionBroker:
                 notice_version,
                 "--confirmed",
             ]
-        )
+        ).require_receipt()
 
-    def _verify_source_analysis(self, message: dict[str, Any]) -> dict[str, Any]:
+    def _verify_source_analysis(self, message: JsonObject) -> CoreResponse:
         workspace = _required_text(message, "workspace")
         receipt_id = _required_text(message, "authorization_receipt_id")
-        notice_version = str(message.get("notice_version", NOTICE_VERSION))
+        notice_version = _optional_text(message, "notice_version", NOTICE_VERSION)
         return self._run_protected_child(
             [
                 "verify-authorization",
@@ -107,9 +174,9 @@ class SessionBroker:
                 "--notice-version",
                 notice_version,
             ]
-        )
+        ).require_receipt()
 
-    def _run_protected_child(self, arguments: list[str]) -> dict[str, Any]:
+    def _run_protected_child(self, arguments: list[str]) -> CoreResponse:
         read_fd, write_fd = os.pipe()
         command = [sys.executable, "-m", "goodjob"]
         if self._data_dir:
@@ -130,7 +197,7 @@ class SessionBroker:
         finally:
             os.close(write_fd)
         stdout, stderr = process.communicate()
-        return _child_response(
+        return CoreResponse.from_process(
             subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         )
 
@@ -141,6 +208,7 @@ def main() -> None:
     args = parser.parse_args()
     broker = SessionBroker(args.data_dir)
     for line in sys.stdin:
+        response: JsonObject
         try:
             response = broker.dispatch(_json_object(line))
         except GoodJobError as exc:

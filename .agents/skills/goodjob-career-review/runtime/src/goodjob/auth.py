@@ -184,9 +184,15 @@ class AuthorizationRepository:
         stored_digest = bytes(row["session_binding_digest"])
         digest_matches = hmac.compare_digest(stored_digest, expected_digest)
         values_match = (
-            hmac.compare_digest(str(row["receipt_kind"]), request.receipt_kind.value)
-            and hmac.compare_digest(str(row["scope_descriptor"]), request.scope_descriptor)
-            and hmac.compare_digest(str(row["notice_version"]), request.notice_version)
+            hmac.compare_digest(
+                str(row["receipt_kind"]).encode(), request.receipt_kind.value.encode()
+            )
+            and hmac.compare_digest(
+                str(row["scope_descriptor"]).encode(), request.scope_descriptor.encode()
+            )
+            and hmac.compare_digest(
+                str(row["notice_version"]).encode(), request.notice_version.encode()
+            )
         )
         if not digest_matches or not values_match:
             raise CapabilityError("authorization receipt is not valid for this session")

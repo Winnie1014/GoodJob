@@ -20,7 +20,7 @@ def _send_json(process: subprocess.Popen[str], payload: dict[str, object]) -> di
 
 
 def test_session_broker_reuses_one_fd_capability_until_stdin_closes(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
+    workspace = tmp_path / "工作区"
     workspace.mkdir()
     data_dir = tmp_path / "data"
     broker = subprocess.Popen(
@@ -37,6 +37,18 @@ def test_session_broker_reuses_one_fd_capability_until_stdin_closes(tmp_path: Pa
         text=True,
         env={**os.environ, "PYTHONPATH": str(RUNTIME_DIR / "src")},
     )
+
+    rejected_notice = _send_json(
+        broker,
+        {
+            "op": "authorize_source_analysis",
+            "workspace": str(workspace),
+            "confirmed": True,
+            "notice_version": {},
+        },
+    )
+    assert rejected_notice["status"] == "error"
+    assert rejected_notice["code"] == "invalid_input"
 
     authorized = _send_json(
         broker,
