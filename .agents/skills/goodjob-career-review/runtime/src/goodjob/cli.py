@@ -9,7 +9,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from goodjob.auth import AuthorizationRepository, decode_scope, read_capability_from_fd
+from goodjob.auth import (
+    AuthorizationRepository,
+    AuthorizationRequest,
+    decode_scope,
+    read_capability_from_fd,
+    receipt_kind_values,
+)
 from goodjob.db import Database
 from goodjob.errors import GoodJobError, InvalidInputError
 from goodjob.paths import DataPaths
@@ -25,6 +31,31 @@ def _data_usage(path: Path) -> int:
     if path.is_file():
         return path.stat().st_size
     return sum(entry.stat().st_size for entry in path.rglob("*") if entry.is_file())
+
+
+def _add_authorization_arguments(
+    parser: argparse.ArgumentParser, *, needs_receipt_id: bool, needs_confirmation: bool
+) -> None:
+    if needs_receipt_id:
+        parser.add_argument("--authorization-receipt-id", required=True)
+    parser.add_argument("--receipt-kind", choices=receipt_kind_values(), required=True)
+    parser.add_argument("--scope-json", required=True)
+    parser.add_argument("--notice-version", required=True)
+    parser.add_argument("--capability-fd", type=int, required=True)
+    if needs_confirmation:
+        parser.add_argument(
+            "--confirmed",
+            action="store_true",
+            help="record that the Skill already showed and received required owner confirmation",
+        )
+
+
+def _authorization_request(args: argparse.Namespace) -> AuthorizationRequest:
+    return AuthorizationRequest.from_values(
+        receipt_kind=args.receipt_kind,
+        scope=decode_scope(args.scope_json),
+        notice_version=args.notice_version,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,32 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
     authorize = subparsers.add_parser(
         "authorize", help="record a session-bound authorization receipt"
     )
-    authorize.add_argument(
-        "--receipt-kind",
-        choices=("source_analysis", "external_git_relation_probe", "external_git_metadata"),
-        required=True,
-    )
-    authorize.add_argument("--scope-json", required=True)
-    authorize.add_argument("--notice-version", required=True)
-    authorize.add_argument("--capability-fd", type=int, required=True)
-    authorize.add_argument(
-        "--confirmed",
-        action="store_true",
-        help="record that the Skill already showed and received required owner confirmation",
-    )
+    _add_authorization_arguments(authorize, needs_receipt_id=False, needs_confirmation=True)
 
     verify = subparsers.add_parser(
         "verify-authorization", help="verify a protected request's current session binding"
     )
-    verify.add_argument("--authorization-receipt-id", required=True)
-    verify.add_argument(
-        "--receipt-kind",
-        choices=("source_analysis", "external_git_relation_probe", "external_git_metadata"),
-        required=True,
-    )
-    verify.add_argument("--scope-json", required=True)
-    verify.add_argument("--notice-version", required=True)
-    verify.add_argument("--capability-fd", type=int, required=True)
+    _add_authorization_arguments(verify, needs_receipt_id=True, needs_confirmation=False)
     return parser
 
 
@@ -102,10 +113,8 @@ def _handle_authorize(args: argparse.Namespace, paths: DataPaths) -> dict[str, A
         )
     capability = read_capability_from_fd(args.capability_fd)
     receipt = AuthorizationRepository(Database(paths)).issue(
-        receipt_kind=args.receipt_kind,
         capability=capability,
-        scope=decode_scope(args.scope_json),
-        notice_version=args.notice_version,
+        request=_authorization_request(args),
     )
     return {"status": "ok", "receipt": receipt.as_json()}
 
@@ -115,9 +124,7 @@ def _handle_verify(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]
     receipt = AuthorizationRepository(Database(paths)).require_valid(
         authorization_receipt_id=args.authorization_receipt_id,
         capability=capability,
-        receipt_kind=args.receipt_kind,
-        scope=decode_scope(args.scope_json),
-        notice_version=args.notice_version,
+        request=_authorization_request(args),
     )
     return {"status": "ok", "receipt": receipt.as_json()}
 

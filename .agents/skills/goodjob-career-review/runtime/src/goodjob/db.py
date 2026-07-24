@@ -63,8 +63,8 @@ class Database:
 
     def migrate(self) -> int:
         """Apply all known migrations, rejecting a database from a newer runtime."""
-        self.paths.ensure_layout()
         with ExclusiveWriterLock(self.paths.writer_lock_file):
+            self.paths.ensure_layout()
             connection = self._connect()
             try:
                 connection.execute("BEGIN IMMEDIATE")

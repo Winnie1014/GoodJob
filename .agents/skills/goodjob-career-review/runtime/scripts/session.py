@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a volatile capability and pass it to core children over inherited FDs."""
+"""A task-scoped, stdin-bound broker for protected GoodJob core commands."""
 
 from __future__ import annotations
 
@@ -12,8 +12,26 @@ from pathlib import Path
 from typing import Any, cast
 
 from goodjob.auth import generate_capability
+from goodjob.errors import GoodJobError, InvalidInputError
 
 NOTICE_VERSION = "goodjob-source-analysis-v1"
+
+
+def _json_object(raw: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InvalidInputError("session broker input must be valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise InvalidInputError("session broker input must be a JSON object")
+    return cast(dict[str, Any], payload)
+
+
+def _required_text(message: dict[str, Any], key: str) -> str:
+    value = message.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidInputError(f"session broker field {key!r} must be a non-empty string")
+    return value
 
 
 def _scope(workspace: str) -> str:
@@ -28,96 +46,106 @@ def _scope(workspace: str) -> str:
     )
 
 
-def _run_with_capability(command: list[str], capability: bytes) -> subprocess.CompletedProcess[str]:
-    read_fd, write_fd = os.pipe()
+def _child_response(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    raw_output = result.stdout if result.returncode == 0 else result.stderr
     try:
-        process = subprocess.Popen(
-            [*command, "--capability-fd", str(read_fd)],
-            close_fds=True,
-            pass_fds=(read_fd,),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        return _json_object(raw_output)
+    except InvalidInputError:
+        return {
+            "status": "error",
+            "code": "core_protocol_error",
+            "message": "GoodJob core returned an invalid JSON response",
+        }
+
+
+class SessionBroker:
+    """Hold one raw capability only until the parent task closes standard input."""
+
+    def __init__(self, data_dir: str | None) -> None:
+        self._capability = generate_capability()
+        self._data_dir = data_dir
+
+    def dispatch(self, message: dict[str, Any]) -> dict[str, Any]:
+        operation = _required_text(message, "op")
+        if operation == "authorize_source_analysis":
+            return self._authorize_source_analysis(message)
+        if operation == "verify_source_analysis":
+            return self._verify_source_analysis(message)
+        raise InvalidInputError(f"unsupported session broker operation: {operation}")
+
+    def _authorize_source_analysis(self, message: dict[str, Any]) -> dict[str, Any]:
+        if message.get("confirmed") is not True:
+            raise InvalidInputError("owner confirmation is required before source authorization")
+        workspace = _required_text(message, "workspace")
+        notice_version = str(message.get("notice_version", NOTICE_VERSION))
+        return self._run_protected_child(
+            [
+                "authorize",
+                "--receipt-kind",
+                "source_analysis",
+                "--scope-json",
+                _scope(workspace),
+                "--notice-version",
+                notice_version,
+                "--confirmed",
+            ]
         )
-    finally:
-        os.close(read_fd)
-    try:
-        os.write(write_fd, capability)
-    finally:
-        os.close(write_fd)
-    stdout, stderr = process.communicate()
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
+    def _verify_source_analysis(self, message: dict[str, Any]) -> dict[str, Any]:
+        workspace = _required_text(message, "workspace")
+        receipt_id = _required_text(message, "authorization_receipt_id")
+        notice_version = str(message.get("notice_version", NOTICE_VERSION))
+        return self._run_protected_child(
+            [
+                "verify-authorization",
+                "--authorization-receipt-id",
+                receipt_id,
+                "--receipt-kind",
+                "source_analysis",
+                "--scope-json",
+                _scope(workspace),
+                "--notice-version",
+                notice_version,
+            ]
+        )
 
-def _command_base(data_dir: str | None) -> list[str]:
-    command = [sys.executable, "-m", "goodjob"]
-    if data_dir:
-        command.extend(["--data-dir", data_dir])
-    return command
-
-
-def _parse_json_output(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr)
-        raise SystemExit(result.returncode)
-    payload = json.loads(result.stdout)
-    if not isinstance(payload, dict):
-        raise SystemExit("GoodJob child returned a non-object JSON response")
-    return cast(dict[str, Any], payload)
+    def _run_protected_child(self, arguments: list[str]) -> dict[str, Any]:
+        read_fd, write_fd = os.pipe()
+        command = [sys.executable, "-m", "goodjob"]
+        if self._data_dir:
+            command.extend(["--data-dir", self._data_dir])
+        try:
+            process = subprocess.Popen(
+                [*command, *arguments, "--capability-fd", str(read_fd)],
+                close_fds=True,
+                pass_fds=(read_fd,),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        finally:
+            os.close(read_fd)
+        try:
+            os.write(write_fd, self._capability)
+        finally:
+            os.close(write_fd)
+        stdout, stderr = process.communicate()
+        return _child_response(
+            subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir")
-    parser.add_argument("--workspace", required=True)
-    parser.add_argument("--notice-version", default=NOTICE_VERSION)
-    parser.add_argument(
-        "--verify",
-        action="store_true",
-        help="verify the new receipt in a second child before ending the session",
-    )
     args = parser.parse_args()
-
-    capability = generate_capability()
-    scope = _scope(args.workspace)
-    issued = _parse_json_output(
-        _run_with_capability(
-            [
-                *_command_base(args.data_dir),
-                "authorize",
-                "--receipt-kind",
-                "source_analysis",
-                "--scope-json",
-                scope,
-                "--notice-version",
-                args.notice_version,
-                "--confirmed",
-            ],
-            capability,
-        )
-    )
-    result: dict[str, Any] = {"status": "ok", "receipt": issued["receipt"]}
-    if args.verify:
-        receipt_id = str(issued["receipt"]["authorization_receipt_id"])
-        verified = _parse_json_output(
-            _run_with_capability(
-                [
-                    *_command_base(args.data_dir),
-                    "verify-authorization",
-                    "--authorization-receipt-id",
-                    receipt_id,
-                    "--receipt-kind",
-                    "source_analysis",
-                    "--scope-json",
-                    scope,
-                    "--notice-version",
-                    args.notice_version,
-                ],
-                capability,
-            )
-        )
-        result["verified"] = verified["status"] == "ok"
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    broker = SessionBroker(args.data_dir)
+    for line in sys.stdin:
+        try:
+            response = broker.dispatch(_json_object(line))
+        except GoodJobError as exc:
+            response = {"status": "error", "code": exc.code, "message": str(exc)}
+        print(json.dumps(response, ensure_ascii=False, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

@@ -35,3 +35,15 @@ def test_writer_lock_never_steals_an_active_lock(data_paths: DataPaths) -> None:
         ExclusiveWriterLock(data_paths.writer_lock_file),
     ):
         pass
+
+
+def test_writer_busy_performs_no_personal_data_initialization(data_paths: DataPaths) -> None:
+    with (
+        ExclusiveWriterLock(data_paths.writer_lock_file),
+        pytest.raises(WriterBusyError),
+    ):
+        Database(data_paths).migrate()
+
+    assert not data_paths.config_file.exists()
+    assert not data_paths.artifacts_dir.exists()
+    assert not data_paths.database_file.exists()

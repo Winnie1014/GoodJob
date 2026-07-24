@@ -9,19 +9,27 @@ import os
 import secrets
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from enum import StrEnum
+from typing import Self
 
 from goodjob.db import Database
 from goodjob.errors import CapabilityError, InvalidInputError
 
 CAPABILITY_BYTES = 32
 SESSION_BINDING_PREFIX = b"goodjob-session-binding-v1"
-RECEIPT_KINDS = frozenset(
-    {"source_analysis", "external_git_relation_probe", "external_git_metadata"}
-)
 
 
-def canonical_json(value: Any) -> str:
+class ReceiptKind(StrEnum):
+    SOURCE_ANALYSIS = "source_analysis"
+    EXTERNAL_GIT_RELATION_PROBE = "external_git_relation_probe"
+    EXTERNAL_GIT_METADATA = "external_git_metadata"
+
+
+def receipt_kind_values() -> tuple[str, ...]:
+    return tuple(kind.value for kind in ReceiptKind)
+
+
+def canonical_json(value: object) -> str:
     """Serialize a scope as a stable, non-secret value object."""
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -29,7 +37,7 @@ def canonical_json(value: Any) -> str:
         raise InvalidInputError("scope_json must contain only JSON values") from exc
 
 
-def decode_scope(raw_scope: str) -> Any:
+def decode_scope(raw_scope: str) -> object:
     try:
         return json.loads(raw_scope)
     except json.JSONDecodeError as exc:
@@ -69,9 +77,32 @@ def session_binding_digest(capability: bytes) -> bytes:
 
 
 @dataclass(frozen=True)
+class AuthorizationRequest:
+    """Non-secret protected-operation inputs that must agree with a receipt."""
+
+    receipt_kind: ReceiptKind
+    scope_descriptor: str
+    notice_version: str
+
+    @classmethod
+    def from_values(cls, *, receipt_kind: str, scope: object, notice_version: str) -> Self:
+        try:
+            kind = ReceiptKind(receipt_kind)
+        except ValueError as exc:
+            raise InvalidInputError("unsupported authorization receipt kind") from exc
+        if not notice_version.strip():
+            raise InvalidInputError("notice_version must not be empty")
+        return cls(
+            receipt_kind=kind,
+            scope_descriptor=canonical_json(scope),
+            notice_version=notice_version,
+        )
+
+
+@dataclass(frozen=True)
 class AuthorizationReceipt:
     authorization_receipt_id: str
-    receipt_kind: str
+    receipt_kind: ReceiptKind
     scope_descriptor: str
     notice_version: str
     confirmed_at: str
@@ -79,7 +110,7 @@ class AuthorizationReceipt:
     def as_json(self) -> dict[str, str]:
         return {
             "authorization_receipt_id": self.authorization_receipt_id,
-            "receipt_kind": self.receipt_kind,
+            "receipt_kind": self.receipt_kind.value,
             "scope_descriptor": self.scope_descriptor,
             "notice_version": self.notice_version,
             "confirmed_at": self.confirmed_at,
@@ -95,16 +126,9 @@ class AuthorizationRepository:
     def issue(
         self,
         *,
-        receipt_kind: str,
         capability: bytes,
-        scope: Any,
-        notice_version: str,
+        request: AuthorizationRequest,
     ) -> AuthorizationReceipt:
-        if receipt_kind not in RECEIPT_KINDS:
-            raise InvalidInputError("unsupported authorization receipt kind")
-        if not notice_version.strip():
-            raise InvalidInputError("notice_version must not be empty")
-        descriptor = canonical_json(scope)
         receipt_id = str(uuid.uuid4())
         digest = session_binding_digest(capability)
         with self._database.write_transaction() as connection:
@@ -116,7 +140,13 @@ class AuthorizationRepository:
                 ) VALUES (?, ?, ?, 'codex_task_runtime', ?, ?,
                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 """,
-                (receipt_id, receipt_kind, digest, descriptor, notice_version),
+                (
+                    receipt_id,
+                    request.receipt_kind.value,
+                    digest,
+                    request.scope_descriptor,
+                    request.notice_version,
+                ),
             )
             row = connection.execute(
                 """
@@ -128,26 +158,17 @@ class AuthorizationRepository:
                 (receipt_id,),
             ).fetchone()
         assert row is not None
-        return AuthorizationReceipt(
-            authorization_receipt_id=str(row["authorization_receipt_id"]),
-            receipt_kind=str(row["receipt_kind"]),
-            scope_descriptor=str(row["scope_descriptor"]),
-            notice_version=str(row["notice_version"]),
-            confirmed_at=str(row["confirmed_at"]),
-        )
+        return _receipt_from_row(row)
 
     def require_valid(
         self,
         *,
         authorization_receipt_id: str,
         capability: bytes,
-        receipt_kind: str,
-        scope: Any,
-        notice_version: str,
+        request: AuthorizationRequest,
     ) -> AuthorizationReceipt:
         """Reject unless task binding, scope, kind, and notice exactly match."""
         expected_digest = session_binding_digest(capability)
-        expected_scope = canonical_json(scope)
         with self._database.read_connection() as connection:
             row = connection.execute(
                 """
@@ -163,16 +184,24 @@ class AuthorizationRepository:
         stored_digest = bytes(row["session_binding_digest"])
         digest_matches = hmac.compare_digest(stored_digest, expected_digest)
         values_match = (
-            str(row["receipt_kind"]) == receipt_kind
-            and str(row["scope_descriptor"]) == expected_scope
-            and str(row["notice_version"]) == notice_version
+            hmac.compare_digest(str(row["receipt_kind"]), request.receipt_kind.value)
+            and hmac.compare_digest(str(row["scope_descriptor"]), request.scope_descriptor)
+            and hmac.compare_digest(str(row["notice_version"]), request.notice_version)
         )
         if not digest_matches or not values_match:
             raise CapabilityError("authorization receipt is not valid for this session")
-        return AuthorizationReceipt(
-            authorization_receipt_id=str(row["authorization_receipt_id"]),
-            receipt_kind=str(row["receipt_kind"]),
-            scope_descriptor=str(row["scope_descriptor"]),
-            notice_version=str(row["notice_version"]),
-            confirmed_at=str(row["confirmed_at"]),
-        )
+        return _receipt_from_row(row)
+
+
+def _receipt_from_row(row: object) -> AuthorizationReceipt:
+    """Create the typed public receipt only after SQLite has enforced its schema."""
+    from sqlite3 import Row
+
+    assert isinstance(row, Row)
+    return AuthorizationReceipt(
+        authorization_receipt_id=str(row["authorization_receipt_id"]),
+        receipt_kind=ReceiptKind(str(row["receipt_kind"])),
+        scope_descriptor=str(row["scope_descriptor"]),
+        notice_version=str(row["notice_version"]),
+        confirmed_at=str(row["confirmed_at"]),
+    )
