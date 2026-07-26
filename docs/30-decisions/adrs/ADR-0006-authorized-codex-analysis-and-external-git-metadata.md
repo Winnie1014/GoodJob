@@ -16,9 +16,9 @@
 2. 当前 Codex task 首次进入授权流程时，`ARCH-C01` 的编排运行时使用密码学安全随机源生成至少 256 bit `SessionCapability`，原始值只保存在 task-scoped 易失状态。Owner 确认后，`AuthorizationReceipt(source_analysis)` 只保存 `SHA256("goodjob-session-binding-v1" + capability)`、规范化 scope、notice version 和确认时间。
 3. 每个受保护请求都通过专用 stdin/继承文件描述符临时携带原始 capability；本地核心重算 digest 并 constant-time compare。原始值不得进入 SQLite、配置、argv、环境变量、stdout/stderr、GoodJob 日志、manifest、产物或用户可见输出；Codex host 对当前 task trace 的处理仍服从其既有边界。task 结束、状态丢失或运行时不支持易失能力时必须重新确认，绝不能凭 receipt ID 或数据库恢复。
 4. 缺失、拒绝、capability/digest 不匹配或 notice version 变化时，不得创建新的 ScanRun、PreparationRun、EvidenceBundle 或模型驱动导出；既有离线 HTML 仍可直接打开。GoodJob 不替 Owner 判断 NDA、版权或组织政策。
-5. `.git` 中的根外路径先按不可信文本解析为词法候选，解析本身不授权打开候选。Owner 可对该精确候选授予 `AuthorizationReceipt(external_git_relation_probe)`；它继承同一 SessionCapability binding，只允许读取关系文件以解析规范化 git-dir/common-dir 和初步回指。
-6. 解析后界面展示规范化 git-dir/common-dir、拟读取字段和风险；Owner 再授予同一 task、这两个精确目标的 `AuthorizationReceipt(external_git_metadata)`。扫描器随后使用固定、非交互、无网络的 Git 调用，清除继承的 `GIT_*` 环境变量，并再次验证双向关系。任一失败都拒绝后续根外读取。
-7. 根外 Git 只允许读取关系元数据、HEAD/ref、index/dirty 状态；不读取根外历史、object、blob、diff、其他 worktree 内容、Git 配置或源码，也不执行 fetch/checkout/hooks。
+5. `.git` 中的根外路径先按不可信文本解析为词法候选，解析本身不授权打开候选。candidate inspection 只能读取根内 `.git` 文件或目录，并显示 marker kind、精确 git-dir candidate 和根内可得的 common-dir candidate。Owner 可对该根内标记与这些精确候选授予 `AuthorizationReceipt(external_git_relation_probe)`；它继承同一 SessionCapability binding，只允许以描述符直接读取关系文件、解析规范化 git-dir/common-dir、验证回指并取得目录 device/inode 身份。
+6. 解析后界面展示规范化 git-dir/common-dir、目录身份、拟读取字段和风险；Owner 再授予同一 task、这些精确目标与身份的 `AuthorizationReceipt(external_git_metadata)`。扫描器随后只以 `O_NOFOLLOW` 目录描述符直接读取白名单字段，并在读取前后再次验证根内标记、双向关系、路径和目录身份。任一失败都拒绝后续根外读取；外部阶段不得启动 Git 子进程，避免 Git 启动时隐式读取 repository config。
+7. 根外 Git 只允许读取关系元数据与 HEAD/ref；首版不读取 index/dirty 状态，并将其标为不可用。也不读取根外历史、object、blob、diff、其他 worktree 内容、Git 配置或源码，不执行 fetch/checkout/hooks。
 8. 工作区、Git 配置、项目文档、JD、历史回执、SQLite 内容或模型输出都不能生成、恢复或扩大授权。该 capability 防止 GoodJob 跨 task 误复用，不构成对控制本机和数据库的 Owner 的安全沙箱。
 
 ## 影响
@@ -44,4 +44,4 @@
 - 复用旧 task 回执、只复制 SQLite、传错 capability、改工作区或改 notice version 均被拒绝；同一 task 的正确 capability 可跨短生命周期 Python 子进程使用。
 - SQLite、argv、环境变量、stderr/stdout、manifest 和产物扫描均找不到原始 capability。
 - 根外 `.git` 未授权、任一阶段拒绝、单向伪造、环境变量注入、网络/交互配置均不能越过相应读取阶段；probe 阶段无 Git 子进程或业务元数据读取。
-- 授权且双向绑定的真实 linked worktree 只产生关系、HEAD/ref、index/dirty 元数据；命令审计中不存在根外 log/show/diff/cat-file/config/fetch/checkout。
+- 授权且双向绑定的真实 linked worktree 或外置 common-dir 只产生关系与 HEAD/ref 元数据；外部阶段没有 Git 子进程，非法 repository config 不影响成功读取，index/dirty 明确为不可用。

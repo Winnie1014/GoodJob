@@ -184,7 +184,7 @@ GoodJob 的访问边界分为三层，缺一不可：
 
 1. `workspace_path` 只授权 Python 在本机读取指定根内的合资格内容；显式 JD 只作为岗位输入读取，不扩展扫描范围。
 2. 每个显式会话的 `AuthorizationReceipt(source_analysis)` 才授权 GoodJob 让当前 Codex 会话分析该工作区。回执只记录 scope、notice、确认时间与当前 task capability 的 digest；原始 capability 由 Codex task 易失编排状态持有，每次受保护请求经专用 stdin/继承 FD 传给本地核心并 constant-time compare，不落库、不记日志、不能从旧 receipt 恢复。能力缺失或运行时不支持时必须重新确认。按证据打开的原文件会进入该会话的模型处理链路；GoodJob 不扩大当前产品/账户/工作区的数据处理与保留边界。
-3. 工作区内 `.git` 指针只是根外 Git 目录的**不可信候选**。Owner 先对该精确候选授予一次 `external_git_relation_probe`，只允许解析规范化 git-dir/common-dir 与互指关系；系统展示解析后的两个精确路径和拟读取字段后，还须取得 `AuthorizationReceipt(external_git_metadata)` 并通过双向绑定校验，才能读取扫描设计限定的最小关系元数据。根外源码、配置、模块、blob、diff 和 Git 历史都不得被扫描或读取。
+3. 工作区内 `.git` 标记只是根外 Git 目录的**不可信候选**。系统先只读取根内标记并展示 marker kind 与精确候选；Owner 对这些候选授予 `external_git_relation_probe` 后，系统才可解析规范化 git-dir/common-dir、互指关系和目录身份。系统展示解析结果和拟读取字段后，还须取得同时绑定精确路径与身份的 `AuthorizationReceipt(external_git_metadata)`，才能以描述符直接读取关系与 HEAD/ref。外部阶段不得启动 Git；根外 index/dirty、源码、配置、模块、blob、diff 和 Git 历史都不得被扫描或读取。
 
 GoodJob 不得写入、格式化、构建、测试、提交或以其他方式改变被扫描项目，也不得引入当前 Codex 会话之外的外部分析服务、源码上传通道、遥测或扫描网络依赖。
 

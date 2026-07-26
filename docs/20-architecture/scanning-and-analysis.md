@@ -54,10 +54,10 @@ Git 元数据损坏时，该候选项目产生 `broken_repository` 类 `ScanIssu
 ### 3.2 Git 项目、嵌套仓库与工作树
 
 - Git 项目的身份是 `git common-dir` 的规范化实路径。同一 common-dir 只生成一个 `Project`，即使工作区中存在多个 linked worktree（`FR-03`）。
-- `WorktreeObservation` 记录每个工作树在本次 `ScanRun` 的 branch、HEAD 和 dirty state。项目归并只去重 Project 身份；相同内容可按 `content_equivalence_key` 复用解析并折叠展示，但必须保留各自来源。不同分支的当前状态绝不混写为同一份实现事实。
-- 若 linked worktree 的 `git_dir` 或 common-dir 位于授权根外，工作区内 `.git` 文件只能提供一个有限长度、严格语法解析的候选 `gitdir:`，绝不授予读取权限。扫描器先显示经词法规范化但尚未信任的候选和根外原因；Owner 授予绑定同一 SessionCapability、仅对该候选有效的 `AuthorizationReceipt(external_git_relation_probe)` 后，扫描器才可用直接文件读取做 `lstat/realpath` 并读取 `gitdir/commondir` 关系文件。该阶段不得启动 Git 子进程、读取 HEAD/ref/index/config/object 或持久化 Project 身份。
-- 关系探测解析出规范化 `git_dir/common_dir` 并初步验证回指后，扫描器必须把两个精确路径、拟读取字段和边界再次展示给 Owner，取得当前会话的 `AuthorizationReceipt(external_git_metadata)`。随后只能以固定参数、非交互、无网络且清空继承 `GIT_*` 环境的 Git 调用完成双向验证：根内工作树、已确认 git-dir/common-dir 与 Git 解析出的 top-level/git-dir/common-dir 必须一致；`git_dir/gitdir` 必须回指根内 `.git`，`commondir` 必须等于已确认路径。解析后路径变化、符号链接逃逸、格式错误或回指不匹配均形成 `untrusted_git_pointer` 或 `external_git_relation_mismatch` ScanIssue。
-- 验证成功后，首版只读取绑定关系、HEAD/ref 与 index/dirty 状态。不得读取根外 Git 历史、对象库、作者、标题、路径范围、blob、diff、其他 worktree、源码、配置或模块；需要此类历史时形成可见知识缺口，Owner 可显式扩大工作区后重新运行。覆盖报告必须列出工作树、已确认 git-dir/common-dir、回执时间和实际读取字段。
+- `WorktreeObservation` 记录每个工作树在本次 `ScanRun` 的 branch、HEAD 和 dirty state。项目归并只去重 Project 身份；相同内容可按 `content_equivalence_key` 复用解析并折叠展示，但必须保留各自来源。不同分支的当前状态绝不混写为同一份实现事实。外部元数据模式无法证明 dirty state 时必须记录 `not_applicable`，对应源码 Evidence 的 `commit_state` 也只能是 `not_applicable`，不得猜成 `committed`。
+- 若 `.git` 文件的 `git_dir`/common-dir 或 `.git` 目录的 common-dir 位于授权根外，扫描器先执行仅限根内标记的 candidate inspection：有限长度解析 `.git` 标记，显示 `marker_kind`、词法规范化的 `git_dir_candidate` 和可在根内得出的 `common_dir_candidate`，此时绝不打开根外候选。Owner 授予绑定同一 SessionCapability、该根内标记和这些精确候选的 `AuthorizationReceipt(external_git_relation_probe)` 后，扫描器才可用 descriptor-bound 直接文件读取打开候选目录、读取 `gitdir/commondir` 关系文件并验证回指。该阶段不得启动 Git 子进程、读取 HEAD/ref/index/config/object 或持久化 Project 身份。
+- 关系探测解析出规范化 `git_dir/common_dir`，并返回两个目录的 device/inode 身份。扫描器必须把精确路径、身份、拟读取字段和边界再次展示给 Owner，取得当前会话同时绑定路径与身份的 `AuthorizationReceipt(external_git_metadata)`。随后仍只能通过 `O_NOFOLLOW` 目录描述符直接读取白名单字段，并在读取前后复核根内标记、双向关系、路径与目录身份；任何候选替换、路径变化、符号链接、格式错误或回指不匹配都形成 `untrusted_git_pointer` 或 `external_git_relation_mismatch` ScanIssue。外部阶段绝不启动 Git，因此也不会隐式读取 repository config。
+- 验证成功后，首版只读取绑定关系与 HEAD/ref；不读取 index/dirty 状态，并把相关覆盖明确标为不可用。不得读取根外 Git 历史、对象库、作者、标题、路径范围、blob、diff、其他 worktree、源码、配置或模块；需要此类信息时形成可见知识缺口，Owner 可显式扩大工作区后重新运行。覆盖报告必须列出工作树、已确认 git-dir/common-dir、回执时间和实际读取字段。
 - 内层 Git 根是独立项目。它的子树从父项目源码遍历中排除，避免同一文件同时归属父、子两个项目。
 
 ### 3.3 非 Git 项目与模块

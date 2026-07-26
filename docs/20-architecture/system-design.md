@@ -62,7 +62,7 @@ Skill 运行期间不得修改安装目录。升级、重装或删除 Skill 不�
 
 ### 2.3 进程与网络边界
 
-- Owner 提供的 `workspace_path` 仅定义本机文件范围。`ARCH-C01` 必须先取得当次 `AuthorizationReceipt(source_analysis)`，再让 Codex 或 Python 处理源码、源码衍生证据或既有项目材料；回执拒绝/缺失时不建立新运行。扫描器只可把 `.git` 指针当作不可信候选：精确的 `external_git_relation_probe` 回执只允许解析关系，解析后再展示 git-dir/common-dir 并取得精确 `external_git_metadata` 回执；双向绑定通过后才可读取最小业务 Git 元数据，不得借此扫描根外项目内容或历史。
+- Owner 提供的 `workspace_path` 仅定义本机文件范围。`ARCH-C01` 必须先取得当次 `AuthorizationReceipt(source_analysis)`，再让 Codex 或 Python 处理源码、源码衍生证据或既有项目材料；回执拒绝/缺失时不建立新运行。扫描器只可把 `.git` 标记当作不可信候选：先只检查根内标记，再以绑定 marker kind 与精确候选的 `external_git_relation_probe` 回执解析关系和目录身份；解析后展示 git-dir/common-dir、身份与字段并取得精确 `external_git_metadata` 回执。双向绑定通过后也只能用描述符直接读取关系与 HEAD/ref，不得启动外部 Git 或扫描根外项目内容、配置、index/dirty 或历史。
 - Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。
 - SQLite 是唯一结构化持久层。前端不得直接打开或修改 SQLite。
 - 离线 HTML 不请求远端 API、CDN、字体或分析服务，也不通过 `file://` 再读取外部 JSON；报告数据随 HTML 产物内嵌。
@@ -135,8 +135,8 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 ### 5.1 首次扫描
 
 1. `ARCH-C01` 规范化并展示工作区与处理类别，取得本显式 Skill 会话的 `AuthorizationReceipt(source_analysis)`；若指定 JD 无法读取/解码，先等待 Owner 修正或明确 `continue_without_jd`，此时不创建 JobInput、RoleLens 或运行。
-2. `ARCH-C02` 只在回执有效后发现项目与模块；普通 symlink 不跟随，`.git` 根外候选必须依次取得关系探测与解析后元数据的精确回执并通过双向绑定，随后创建 `ScanRun`，逐项目建立短事务。
-3. 每个成功项目写入 `SourceArtifact`、`Evidence`、覆盖摘要和工作树状态；失败写 `ScanIssue`，其余项目继续。根外 Git 仅记录关系、HEAD/ref 与 index/dirty 元数据，不读取历史或对象内容。
+2. `ARCH-C02` 只在回执有效后发现项目与模块；普通 symlink 不跟随，`.git` 根外候选必须先完成根内 candidate inspection，再依次取得候选绑定的关系探测回执和路径/身份绑定的元数据回执，随后创建 `ScanRun`，逐项目建立短事务。
+3. 每个成功项目写入 `SourceArtifact`、`Evidence`、覆盖摘要和工作树状态；失败写 `ScanIssue`，其余项目继续。根外 Git 仅直接读取并记录关系与 HEAD/ref；index/dirty 和源码 commit state 记为不可用，不读取配置、历史或对象内容。
 4. 扫描完成后发布一个只读扫描快照。若至少一个项目成功且失败均有记录，运行状态为 `partial`；整体不可建立才为 `failed`；进程异常退出的运行在下一个写会话恢复为 `interrupted`。
 
 ### 5.2 岗位准备
@@ -182,7 +182,7 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 | `ARCH-INV-12` | 多 worktree 相同内容只复用解析/折叠展示，不合并 provenance；分支差异必须保留 worktree scope 或显式冲突，不能拼成一个不存在的项目状态。 |
 | `ARCH-INV-13` | record_analysis 成功后，渲染重试只能复用冻结分析集；失败只追加 RenderAttempt，不重新生成 Claim、不发布半成品、不更新 latest。 |
 | `ARCH-INV-14` | 路径可读、配置、项目文本或 SQLite receipt 均不能替代当前 Codex task 的原始 SessionCapability；只有 capability digest、scope、notice 全部匹配的回执有效，能力丢失必须重新确认。 |
-| `ARCH-INV-15` | `.git` 指针不能授权根外访问；relation-probe 只允许解析精确关系，解析后的 git-dir/common-dir 另需 metadata 回执与双向绑定；最终也只能读取关系、HEAD/ref、index/dirty，不能读取根外历史、对象、配置或源码。 |
+| `ARCH-INV-15` | `.git` 标记不能授权根外访问；根内 candidate inspection 后，relation-probe 回执必须绑定 marker kind 与精确候选，metadata 回执必须绑定解析后的 git-dir/common-dir 及目录身份；外部阶段不启动 Git，最终也只能直接读取关系、HEAD/ref，不能读取 index/dirty、根外历史、对象、配置或源码。 |
 | `ARCH-INV-16` | preflight、before_read 或 commit 任一 SourceRevision 校验失配都必须原子转为 `refresh_required`；不得隐式 refresh、半提交或移动 `latest`。 |
 | `ARCH-INV-17` | 复习连续性依赖稳定 ReviewTarget 与 canonical ReviewSubjectProjection；不得直接 hash Revision/Gap ID 或题面。纯文案修订保持连续，实质语义变化或无法证明等价时必须重评。 |
 | `ARCH-INV-18` | 英文派生导出的源项/目标项集合及结构化事实锚点必须相等；失败不发布 DerivedExport，但此校验不宣称证明全部自然语言语义。 |

@@ -58,7 +58,7 @@
 | --- | --- | --- | --- |
 | IMP-01 | Skill 入口与 JD | 用户显式调用 Skill，分别提供无 JD、有效文本/文件 JD、不可读/目录/不可解码 JD | 参数缺失时只追问缺失项；无 JD 可继续并显示假设；坏 JD 在更正或明确 `continue_without_jd` 前不创建 JobInput、RoleLens、ScanRun/PreparationRun |
 | IMP-02 | 项目发现 | Git 根、.git 指针、嵌套 Git、manifest 非 Git 项目混合存在；另测一个可读空工作区 | 每个真实项目均有稳定 identity；空目录不成为项目，并返回空覆盖、下一步提示和 failed ScanRun，不生成准备快照 |
-| IMP-03 | 工作树归并 | 同一 common-dir 有多个 linked worktree，其中一个 common-dir 位于授权根外；工作树间既有相同内容也有分支差异 | 精确授权并通过双向绑定后只生成一个项目；相同内容不重复解析但可展开全部来源；差异形成 worktree-scope/冲突 Claim；根外只出现关系、HEAD/ref、index/dirty 元数据 |
+| IMP-03 | 工作树归并 | 同一 common-dir 有多个 linked worktree，其中一个 common-dir 位于授权根外；另含根内 `.git` 目录指向根外 common-dir；工作树间既有相同内容也有分支差异 | 根内候选检查、候选绑定关系授权、路径/身份绑定元数据授权和双向校验全部通过后只生成一个项目；相同内容不重复解析但可展开全部来源；差异形成 worktree-scope/冲突 Claim；根外只出现关系、HEAD/ref，index/dirty 与源码 commit state 明示不可用，非法外部 config 不影响扫描 |
 | IMP-04 | 嵌套 ignore | 父仓库 ignore 内层 Git 仓库 | 内层仓库仍独立扫描，并应用自己的 ignore |
 | IMP-05 | 路径与敏感排除 | 存在指向根外源码的普通 symlink、symlink 环、多个别名指向同一目录、显式根外 JD、.env、密钥、依赖、构建和缓存目录 | 普通 symlink 不跟随；环不会递归/挂死；别名按规范实路径去重；JD 只作输入；秘密/生成物不读取、不存储、不输出；覆盖说明排除类别 |
 | IMP-06 | 当前状态 | 同时存在已提交、已修改和未跟踪代码/文档 | 全部非忽略内容可成为证据，并正确标记来源状态 |
@@ -89,7 +89,7 @@
 ### CodeRoute
 
 - /Users/damien/Projects/CodeRoute、CodeRoute-t30、CodeRoute-t55 必须归并为一个项目。
-- 若任一工作树的 git-dir/common-dir 位于本次授权根外，必须先对候选取得 relation-probe 回执，再展示解析后的精确路径并取得 metadata 回执；任一拒绝仍扫描根内源码并显示缺口，最终也只读取关系、HEAD/ref、index/dirty，不读取根外历史或对象。
+- 若任一工作树的 git-dir/common-dir 位于本次授权根外，必须先只检查根内 `.git` 标记，再对显示的 marker kind 与候选取得 relation-probe 回执，随后展示解析后的精确路径、目录身份和字段并取得 metadata 回执；任一替换或拒绝仍扫描其余根内源码并显示缺口。外部阶段不启动 Git，最终只直接读取关系、HEAD/ref，不读取 index/dirty、config、根外历史或对象。
 - 输出必须保留三个工作树各自的分支、HEAD 和 dirty 状态；相同内容复用分析并折叠展示但可展开全部来源，分支差异不得合成一个虚假的当前实现。
 - 必须识别 pnpm workspace、Tauri/Rust、React/TypeScript、内容工具和课程内容的不同模块角色。
 - 文档中的计划服务端不能在缺少实现证据时写成已交付能力。

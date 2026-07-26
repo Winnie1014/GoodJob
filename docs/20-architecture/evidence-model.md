@@ -51,7 +51,7 @@
 | `EVID-E02` | `Project` | `project_id`、`identity_kind`、`identity_key`、`display_name`、`first_seen_at` | `identity_kind=git_common_dir\|non_git_root`；身份键在本机唯一 |
 | `EVID-E03` | `WorkspaceProject` | `workspace_id`、`project_id`、`relative_location`、`first_seen_run_id` | 多对多；说明项目如何被某工作区发现 |
 | `EVID-E04` | `Worktree` | `worktree_id`、`project_id`、`canonical_root`、`git_dir` | Git 与非 Git 项目均至少有一个工作树视图 |
-| `EVID-E05` | `WorktreeObservation` | `worktree_id`、`scan_run_id`、`branch`、`head_commit`、`dirty_state`、`observed_at` | 属于扫描尝试；不覆盖历史分支/HEAD 状态 |
+| `EVID-E05` | `WorktreeObservation` | `worktree_id`、`scan_run_id`、`branch`、`head_commit`、`dirty_state`、`history_basis`、可选 `external_git_dir/external_common_dir/external_metadata_receipt_id/external_metadata_confirmed_at/external_metadata_read_fields`、`observed_at` | 属于扫描尝试；不覆盖历史分支/HEAD 状态；外部元数据模式的 dirty state 是 `not_applicable`，read fields 只能记录实际读取项 |
 | `EVID-E06` | `Module` | `module_id`、`project_id`、`module_key`、`name`、`kind` | `module_key` 是项目内稳定键；同文件可以归属多个逻辑模块，但须标主归属 |
 | `EVID-E07` | `ModuleObservation` | `module_id`、`project_snapshot_id`、`relative_root`、可选 `manifest_evidence_id`、`adapter_id` | 保存本次快照中的模块边界；边界变化不改写历史 |
 | `EVID-E08` | `SourceArtifact` | `artifact_id`、`project_id`、`worktree_id`、`relative_path`、`artifact_kind` | 不保存正文；Project + Worktree + relative_path 唯一 |
@@ -363,7 +363,7 @@ running -> succeeded | failed | interrupted
 | `EVID-INV-16` | record_analysis 成功后的分析集不可改写；渲染失败只追加 RenderAttempt 并可重试同一 canonical ReportBundle hash，不得重新解释 Claim 或更新 latest。 |
 | `EVID-INV-17` | 每个 fresh/carried-forward 且有 ProjectSnapshot 的合资格项目必须恰有一个 ProjectAssessment；总分/连续排名由冻结 RoleLens 定点权重和覆盖规则重算，任何合资格项目不得因低分或缺口被静默删除。 |
 | `EVID-INV-18` | 工作区可读、配置、项目文本、SQLite 记录或历史回执均不能生成/恢复 SessionCapability；只有当前 Codex task 易失状态中的原始 capability、匹配 digest/scope/notice 的回执才有效，丢失时必须重新确认。 |
-| `EVID-INV-19` | `.git` 指针只是根外路径候选；首次精确回执只允许探测关系文件，解析出规范化 git-dir/common-dir 后还必须取得第二个精确 metadata 回执并通过双向绑定；最终也只保存关系、HEAD/ref、index/dirty 元数据，绝不读取根外历史、对象、blob、diff、配置或源码。 |
+| `EVID-INV-19` | `.git` 标记只是根外路径候选；根内 candidate inspection 后，首次精确回执绑定 marker kind 与候选且只允许探测关系文件，解析出规范化 git-dir/common-dir 与目录身份后还必须取得第二个精确 metadata 回执；外部阶段不启动 Git，最终只保存关系、HEAD/ref，index/dirty 与源码 commit state 标为不可用，绝不读取根外历史、对象、blob、diff、配置或源码。 |
 | `EVID-INV-20` | ReviewTarget 必须锚定稳定 Claim ID 或版本化 topic key；fingerprint 不能直接使用 Revision/Gap ID 或题面。verified 投影按结构化语义判断；unverified 投影必须加入 statement+事实锚点 fallback hash 并保守重评。 |
 | `EVID-INV-21` | 每个被使用的 SourceRevision 必须通过 preflight、before_read、commit 三阶段校验；任一 mismatch 都以 `refresh_required` 原子终止准备，不允许隐式 refresh 或半提交。 |
 | `EVID-INV-22` | RoleLens 权重总和必须恰为 10000；ProjectAssessment 只能覆盖合资格项目，采用指定整数公式和稳定连续排名，failed/excluded 只进入 Coverage。 |

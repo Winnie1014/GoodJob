@@ -61,6 +61,17 @@ def test_session_broker_reuses_one_fd_capability_until_stdin_closes(tmp_path: Pa
     assert rejected_surrogate["status"] == "error"
     assert rejected_surrogate["code"] == "invalid_input"
 
+    rejected_nul = _send_json(
+        broker,
+        {
+            "op": "authorize_source_analysis",
+            "workspace": "\x00",
+            "confirmed": True,
+        },
+    )
+    assert rejected_nul["status"] == "error"
+    assert rejected_nul["code"] == "invalid_input"
+
     authorized = _send_json(
         broker,
         {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
@@ -79,6 +90,43 @@ def test_session_broker_reuses_one_fd_capability_until_stdin_closes(tmp_path: Pa
     assert verified["status"] == "ok"
     assert "session_capability" not in json.dumps(authorized)
     assert "session_capability" not in json.dumps(verified)
+
+    rejected_relation = _send_json(
+        broker,
+        {
+            "op": "authorize_external_git_relation_probe",
+            "workspace": str(workspace),
+            "git_pointer": str(workspace / ".git"),
+            "confirmed": True,
+        },
+    )
+    assert rejected_relation["status"] == "error"
+    assert rejected_relation["code"] == "invalid_input"
+
+    rejected_metadata = _send_json(
+        broker,
+        {
+            "op": "authorize_external_git_metadata",
+            "workspace": str(workspace),
+            "git_pointer": str(workspace / ".git"),
+            "git_dir": str(tmp_path / "outside-git"),
+            "common_dir": str(tmp_path / "outside-common"),
+            "confirmed": True,
+        },
+    )
+    assert rejected_metadata["status"] == "error"
+    assert rejected_metadata["code"] == "invalid_input"
+    rejected_unknown_grant = _send_json(
+        broker,
+        {
+            "op": "scan",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt["authorization_receipt_id"],
+            "external_git_metadata_receipt_ids": ["unknown-receipt"],
+        },
+    )
+    assert rejected_unknown_grant["status"] == "error"
+    assert rejected_unknown_grant["code"] == "invalid_input"
 
     assert broker.stdin is not None
     broker.stdin.close()
