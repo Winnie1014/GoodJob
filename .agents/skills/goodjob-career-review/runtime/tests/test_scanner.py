@@ -10,15 +10,17 @@ import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 
+import goodjob.scanner as scanner_module
+from goodjob.adapters import AnalysisResult, analyze_file
 from goodjob.auth import AuthorizationRepository, AuthorizationRequest, generate_capability
 from goodjob.cli import run
 from goodjob.db import Database
 from goodjob.paths import DataPaths
-from goodjob.scanner import _open_regular_file
+from goodjob.scanner import ProjectData, ProjectPlan, WorkspaceScanner, _open_regular_file
 
 RUNTIME_DIR = Path(__file__).resolve().parents[1]
 NOTICE_VERSION = "goodjob-source-analysis-v1"
@@ -107,6 +109,21 @@ def _git_wrapper(tmp_path: Path) -> tuple[dict[str, str], Path]:
         },
         audit,
     )
+
+
+def _direct_scanner(data_dir: Path, workspace: Path) -> tuple[WorkspaceScanner, str]:
+    database = Database(DataPaths(data_dir))
+    capability = generate_capability()
+    request = AuthorizationRequest.from_values(
+        receipt_kind="source_analysis",
+        scope=_scope(workspace),
+        notice_version=NOTICE_VERSION,
+    )
+    receipt = AuthorizationRepository(database).issue(
+        capability=capability,
+        request=request,
+    )
+    return WorkspaceScanner(database), receipt.authorization_receipt_id
 
 
 def test_scan_discovers_isolated_projects_and_keeps_sensitive_bytes_out_of_sqlite(
@@ -295,6 +312,113 @@ def test_refresh_fast_reuses_metadata_but_verify_content_detects_same_stat_chang
     assert stale_count >= 1
 
 
+def test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    repository.mkdir(parents=True)
+    _git_init(repository)
+    _git(repository, "config", "user.name", "Test Author")
+    _git(repository, "config", "user.email", "author@example.test")
+    (repository / "pyproject.toml").write_text(
+        "[project]\nname='state-change'\n", encoding="utf-8"
+    )
+    _git(repository, "add", "pyproject.toml")
+    _git(repository, "commit", "-m", "project baseline")
+    source = repository / "main.py"
+    source.write_text("def implementation() -> None:\n    pass\n", encoding="utf-8")
+
+    data_dir = tmp_path / "data"
+    broker = _broker(data_dir)
+    authorized = _send_json(
+        broker,
+        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    )
+    receipt = _object_field(authorized, "receipt")
+    initial = _send_json(
+        broker,
+        {
+            "op": "scan",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt["authorization_receipt_id"],
+        },
+    )
+    workspace_id = _object_field(initial, "scan_run")["workspace_id"]
+    assert isinstance(workspace_id, str)
+    original_stat = source.stat()
+    _git(repository, "add", "main.py")
+    _git(repository, "commit", "-m", "commit implementation")
+    assert source.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+    refreshed = _send_json(
+        broker,
+        {
+            "op": "refresh",
+            "workspace": str(workspace),
+            "workspace_id": workspace_id,
+            "authorization_receipt_id": receipt["authorization_receipt_id"],
+            "change_detection_mode": "fast",
+        },
+    )
+    _close_broker(broker)
+
+    assert refreshed["status"] == "ok"
+    refresh_run = _object_field(refreshed, "scan_run")
+    assert refresh_run["status"] == "completed"
+    refresh_run_id = refresh_run["scan_run_id"]
+    assert isinstance(refresh_run_id, str)
+    connection = sqlite3.connect(data_dir / "goodjob.sqlite3")
+    states = {
+        str(row[0])
+        for row in connection.execute(
+            """
+            SELECT DISTINCT evidence.commit_state
+            FROM evidence
+            JOIN source_revisions AS revision
+              ON revision.source_revision_id = evidence.source_revision_id
+            JOIN source_artifacts AS artifact ON artifact.artifact_id = revision.artifact_id
+            WHERE artifact.relative_path = 'main.py'
+            """
+        )
+    }
+    revision_count = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM source_revisions AS revision
+        JOIN source_artifacts AS artifact ON artifact.artifact_id = revision.artifact_id
+        WHERE artifact.relative_path = 'main.py'
+        """
+    ).fetchone()[0]
+    validity_rows = connection.execute(
+        """
+        SELECT evidence.commit_state, validity.validity, replacement.commit_state
+        FROM evidence_validities AS validity
+        JOIN evidence ON evidence.evidence_id = validity.evidence_id
+        JOIN source_revisions AS revision
+          ON revision.source_revision_id = evidence.source_revision_id
+        JOIN source_artifacts AS artifact ON artifact.artifact_id = revision.artifact_id
+        LEFT JOIN evidence AS replacement
+          ON replacement.evidence_id = validity.replacement_evidence_id
+        WHERE validity.scan_run_id = ? AND artifact.relative_path = 'main.py'
+        """,
+        (refresh_run_id,),
+    ).fetchall()
+    connection.close()
+    assert states == {"untracked", "committed"}
+    assert revision_count == 1
+    assert validity_rows
+    assert all(
+        (state == "committed") == (validity == "current")
+        for state, validity, _ in validity_rows
+    )
+    assert all(
+        replacement == "committed"
+        for state, validity, replacement in validity_rows
+        if state == "untracked" and validity == "stale"
+    )
+
+
 def test_scan_rejects_a_receipt_scope_for_a_different_workspace_before_creating_a_run(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -399,6 +523,83 @@ def test_descriptor_reader_rejects_a_file_or_directory_symlink(tmp_path: Path) -
         _open_regular_file(workspace, "file.py")
     with pytest.raises(OSError):
         _open_regular_file(workspace, "directory/secret.py")
+
+
+def test_adapter_failures_and_sql_plan_boundaries_are_visible(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "project"
+    project.mkdir(parents=True)
+    (project / "migrations").mkdir()
+    (project / "pyproject.toml").write_text(
+        "[project]\nname='adapter-boundaries'\n", encoding="utf-8"
+    )
+    (project / "README.md").write_text("# Adapter boundaries\n", encoding="utf-8")
+    (project / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+    (project / "package.json").write_text("{broken", encoding="utf-8")
+    (project / "plan.sql").write_text(
+        "CREATE TABLE planned_only (id INTEGER);\n", encoding="utf-8"
+    )
+    (project / "migrations" / "001.sql").write_text(
+        "CREATE TABLE delivered (id INTEGER PRIMARY KEY);\n", encoding="utf-8"
+    )
+
+    data_dir = tmp_path / "data"
+    broker = _broker(data_dir)
+    authorized = _send_json(
+        broker,
+        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    )
+    receipt = _object_field(authorized, "receipt")
+    scanned = _send_json(
+        broker,
+        {
+            "op": "scan",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt["authorization_receipt_id"],
+        },
+    )
+    _close_broker(broker)
+
+    scan_run = _object_field(scanned, "scan_run")
+    assert scan_run["status"] == "partial"
+    issues = cast(list[dict[str, object]], scanned["issues"])
+    assert {issue["kind"] for issue in issues} >= {
+        "source_parse_failed",
+        "manifest_parse_failed",
+    }
+    connection = sqlite3.connect(data_dir / "goodjob.sqlite3")
+    evidence_by_path = {
+        str(path): (
+            {str(kind) for kind in str(kinds).split(",") if kind}
+            if kinds is not None
+            else set()
+        )
+        for path, kinds in connection.execute(
+            """
+            SELECT artifact.relative_path, GROUP_CONCAT(evidence.evidence_kind)
+            FROM source_artifacts AS artifact
+            LEFT JOIN source_revisions AS revision
+              ON revision.artifact_id = artifact.artifact_id
+            LEFT JOIN evidence ON evidence.source_revision_id = revision.source_revision_id
+            GROUP BY artifact.relative_path
+            """
+        )
+    }
+    root_adapter = connection.execute(
+        """
+        SELECT observation.adapter_id
+        FROM module_observations AS observation
+        WHERE observation.relative_root = '.'
+        """
+    ).fetchone()[0]
+    connection.close()
+    assert evidence_by_path["broken.py"] == set()
+    assert evidence_by_path["package.json"] == set()
+    assert evidence_by_path["plan.sql"] == {"documentation"}
+    assert {"migration_definition", "schema_definition"} <= evidence_by_path[
+        "migrations/001.sql"
+    ]
+    assert root_adapter == "python"
 
 
 def test_refresh_marks_confirmed_dead_run_interrupted_and_never_uses_it_as_fast_baseline(
@@ -1171,3 +1372,292 @@ def test_git_history_keeps_an_old_head_as_the_current_worktree_anchor(tmp_path: 
     }
     connection.close()
     assert commits == {head_commit}
+
+
+def test_internal_git_config_cannot_read_an_include_outside_the_authorized_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    outside_config = tmp_path / "outside-config"
+    repository.mkdir(parents=True)
+    _git_init(repository)
+    (repository / "pyproject.toml").write_text("[project]\nname='sandboxed'\n", encoding="utf-8")
+    outside_config.write_text("[invalid external config\n", encoding="utf-8")
+    _git(repository, "config", "include.path", str(outside_config))
+
+    broker = _broker(tmp_path / "data")
+    authorized = _send_json(
+        broker,
+        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    )
+    receipt = _object_field(authorized, "receipt")
+    scanned = _send_json(
+        broker,
+        {
+            "op": "scan",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt["authorization_receipt_id"],
+        },
+    )
+    _close_broker(broker)
+
+    assert scanned["status"] == "ok"
+    coverage = _object_field(scanned, "coverage")
+    assert coverage["fresh_projects"] == 0
+    assert any(
+        isinstance(issue, dict) and issue.get("kind") == "git_repository_boundary_violation"
+        for issue in cast(list[object], scanned["issues"])
+    )
+    database_text = (tmp_path / "data" / "goodjob.sqlite3").read_bytes().decode(
+        "utf-8", errors="ignore"
+    )
+    assert "invalid external config" not in database_text
+
+
+def test_bounded_git_runner_kills_timeout_and_output_flood(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    repository.mkdir(parents=True)
+    _git_init(repository)
+    scanner, _ = _direct_scanner(tmp_path / "data", workspace)
+    binding = scanner._bind_internal_git(repository, workspace)
+    assert binding is not None
+
+    monkeypatch.setattr(scanner_module, "GIT_COMMAND_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        scanner,
+        "_git_command",
+        lambda _binding, _arguments: ["/bin/sleep", "5"],
+    )
+    started = datetime.now(UTC)
+    with pytest.raises(subprocess.TimeoutExpired):
+        scanner._git_bounded_bytes(binding, "status", maximum_output_bytes=1024)
+    assert (datetime.now(UTC) - started).total_seconds() < 2
+
+    monkeypatch.setattr(
+        scanner,
+        "_git_command",
+        lambda _binding, _arguments: ["/usr/bin/yes"],
+    )
+    with pytest.raises(OSError, match="output limit"):
+        scanner._git_bounded_bytes(binding, "status", maximum_output_bytes=1024)
+
+
+def test_unexpected_scan_exception_is_terminalized_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+
+    def fail_discovery(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("injected discovery failure")
+
+    monkeypatch.setattr(scanner, "_discover", fail_discovery)
+    with pytest.raises(RuntimeError, match="injected discovery failure"):
+        scanner.scan(
+            workspace_path=str(workspace),
+            config_revision="test-v1",
+            authorization_receipt_id=receipt_id,
+        )
+
+    with scanner._database.read_connection() as connection:
+        statuses = {
+            str(row["status"]) for row in connection.execute("SELECT status FROM scan_runs")
+        }
+    assert statuses == {"failed"}
+
+
+def test_fast_refresh_reanalyzes_when_adapter_version_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "project"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='versions'\n", encoding="utf-8")
+    (project / "main.py").write_text("def main(): pass\n", encoding="utf-8")
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+    first = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="config-v1",
+        authorization_receipt_id=receipt_id,
+    )
+    monkeypatch.setattr(scanner_module, "ANALYZER_VERSION", "scan-upgraded")
+    scanner.refresh(
+        workspace_id=first.workspace_id,
+        config_revision="config-v1",
+        change_detection_mode="fast",
+        authorization_receipt_id=receipt_id,
+    )
+
+    with scanner._database.read_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT adapter_version, analysis_fingerprint
+            FROM source_revisions AS sr
+            JOIN source_artifacts AS a ON a.artifact_id = sr.artifact_id
+            WHERE a.relative_path = 'main.py'
+            ORDER BY observed_at
+            """
+        ).fetchall()
+    assert len(rows) == 2
+    assert len({str(row["adapter_version"]) for row in rows}) == 2
+    assert len({str(row["analysis_fingerprint"]) for row in rows}) == 2
+
+
+def test_verify_refresh_links_a_same_content_move_without_rewriting_history(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "project"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='moves'\n", encoding="utf-8")
+    original = project / "old_name.py"
+    moved = project / "new_name.py"
+    original.write_text("def stable_symbol(): pass\n", encoding="utf-8")
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+    first = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="config-v1",
+        authorization_receipt_id=receipt_id,
+    )
+    original.rename(moved)
+    scanner.refresh(
+        workspace_id=first.workspace_id,
+        config_revision="config-v1",
+        change_detection_mode="verify_content",
+        authorization_receipt_id=receipt_id,
+    )
+
+    with scanner._database.read_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT current.relative_path, previous.relative_path
+            FROM source_artifacts AS current
+            LEFT JOIN source_artifacts AS previous
+              ON previous.artifact_id = current.supersedes_artifact_id
+            WHERE current.relative_path IN ('old_name.py', 'new_name.py')
+            ORDER BY current.relative_path
+            """
+        ).fetchall()
+    assert [(str(row[0]), str(row[1]) if row[1] is not None else None) for row in rows] == [
+        ("new_name.py", "old_name.py"),
+        ("old_name.py", None),
+    ]
+
+
+def test_same_content_worktrees_reuse_analysis_and_keep_expandable_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    primary = workspace / "primary"
+    linked = workspace / "linked"
+    primary.mkdir(parents=True)
+    _git_init(primary)
+    _git(primary, "config", "user.name", "Test Author")
+    _git(primary, "config", "user.email", "author@example.test")
+    (primary / "pyproject.toml").write_text("[project]\nname='equivalent'\n", encoding="utf-8")
+    (primary / "main.py").write_text("import asyncio\ndef run(): pass\n", encoding="utf-8")
+    _git(primary, "add", ".")
+    _git(primary, "commit", "-m", "same-content baseline")
+    _git(primary, "worktree", "add", "-b", "linked-branch", str(linked))
+
+    analyze_calls: list[str] = []
+    original_analyze_file = analyze_file
+
+    def counted_analyze_file(
+        *,
+        relative_path: str,
+        text: str,
+        artifact_kind: str,
+        adapter_id: str,
+        base_evidence_kind: str,
+    ) -> AnalysisResult:
+        analyze_calls.append(relative_path)
+        return original_analyze_file(
+            relative_path=relative_path,
+            text=text,
+            artifact_kind=artifact_kind,
+            adapter_id=adapter_id,
+            base_evidence_kind=base_evidence_kind,
+        )
+
+    monkeypatch.setattr("goodjob.scanner.analyze_file", counted_analyze_file)
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+    scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="config-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert analyze_calls.count("main.py") == 1
+    with scanner._database.read_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT e.content_equivalence_key, COUNT(*) AS source_count
+            FROM evidence AS e
+            JOIN source_revisions AS sr ON sr.source_revision_id = e.source_revision_id
+            JOIN source_artifacts AS a ON a.artifact_id = sr.artifact_id
+            WHERE a.relative_path = 'main.py'
+            GROUP BY e.content_equivalence_key
+            ORDER BY e.content_equivalence_key
+            """
+        ).fetchall()
+        roots = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT canonical_root FROM worktrees ORDER BY canonical_root"
+            )
+        }
+    assert rows
+    assert {int(row["source_count"]) for row in rows} == {2}
+    assert roots == {str(primary), str(linked)}
+
+
+def test_project_failure_carries_forward_its_baseline_and_keeps_other_projects_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    for name in ("alpha", "beta"):
+        project = workspace / name
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text(f"[project]\nname='{name}'\n", encoding="utf-8")
+        (project / "main.py").write_text(f"NAME = '{name}'\n", encoding="utf-8")
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+    first = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="config-v1",
+        authorization_receipt_id=receipt_id,
+    )
+    original_read_project = scanner._read_project
+
+    def fail_beta(
+        *,
+        plan: ProjectPlan,
+        config_revision: str,
+        change_detection_mode: Literal["fast", "verify_content"] | None,
+        nested_project_roots: set[Path],
+    ) -> ProjectData:
+        if plan.display_name == "beta":
+            raise OSError("injected project failure")
+        return original_read_project(
+            plan=plan,
+            config_revision=config_revision,
+            change_detection_mode=change_detection_mode,
+            nested_project_roots=nested_project_roots,
+        )
+
+    monkeypatch.setattr(scanner, "_read_project", fail_beta)
+    refreshed = scanner.refresh(
+        workspace_id=first.workspace_id,
+        config_revision="config-v1",
+        change_detection_mode="verify_content",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert refreshed.status == "partial"
+    assert refreshed.coverage["fresh_projects"] == 1
+    assert refreshed.coverage["carried_forward_projects"] == 1

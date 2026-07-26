@@ -13,7 +13,7 @@ from goodjob.paths import DataPaths
 def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     version = Database(data_paths).migrate()
 
-    assert version == 2
+    assert version == 4
     assert data_paths.config_file.read_text(encoding="utf-8") == "[goodjob]\nconfig_version = 1\n"
     assert data_paths.artifacts_dir.is_dir()
     assert data_paths.export_tmp_dir.is_dir()
@@ -25,6 +25,9 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     observation_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(worktree_observations)")
     }
+    source_revision_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(source_revisions)")
+    }
     connection.close()
     assert {"schema_migrations", "authorization_receipts", "scan_runs", "evidence"} <= tables
     assert {
@@ -33,7 +36,13 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
         "external_common_dir",
         "external_metadata_receipt_id",
     } <= observation_columns
-    assert Database(data_paths).migrate() == 2
+    assert {
+        "adapter_id",
+        "adapter_version",
+        "config_revision",
+        "analysis_diagnostics",
+    } <= source_revision_columns
+    assert Database(data_paths).migrate() == 4
 
 
 def test_writer_lock_never_steals_an_active_lock(data_paths: DataPaths) -> None:

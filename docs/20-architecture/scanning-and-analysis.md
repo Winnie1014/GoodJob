@@ -43,7 +43,7 @@
 
 ### 3.1 探索顺序
 
-1. 将工作区根解析为规范化实路径；普通目录符号链接只在目标仍位于该授权根内时跟随。遍历器以规范化实路径和平台可用的文件身份维护祖先集与已访问集：命中祖先集时停止递归并记录 `symlink_cycle`，命中已访问目标时不重复发现项目、模块或 Evidence，只记录 alias 覆盖信息。指向根外的普通链接不被读取，并产生可定位的 `ScanIssue`；工作区内 `.git` 指针对受限 Git 元数据的例外按 3.2 执行。
+1. 将工作区根解析为规范化实路径；普通文件和目录符号链接一律不跟随。遍历器用 descriptor-relative `O_NOFOLLOW` 打开实际目录和文件：根内链接记录 `symlink_skipped` alias 覆盖信息，可能逃逸根外的链接记录 `symlink_outside_authorized_root`，二者都不产生项目、模块或 Evidence。需要纳入链接目标时，Owner 应把目标的真实目录作为新的显式工作区运行；工作区内 `.git` 普通文件对受限 Git 元数据的例外按 3.2 执行。
 2. 在普通 ignore 生效前发现 `.git` 目录与 `.git` 指针文件。硬安全排除仍优先，避免进入依赖、构建和密钥区域。
 3. 对每个候选 Git 根读取本地 Git 元数据；先确定独立仓库，再按各自仓库规则扫描。父仓库的 `.gitignore` 不得吞掉内层 Git 仓库。
 4. 用规范化 `git common-dir` 归并同一 Git 项目的主工作树和 linked worktree；每个实际工作树保留单独的根、分支、HEAD 与 dirty observation。
@@ -125,6 +125,8 @@ Owner 可在个人 `config.toml` 中登记少量、精确到相对文件路径�
 | Rust | Cargo workspace/crate、module、feature、bin/lib、错误与异步边界、测试 | crate 关系、编译入口、能力边界与测试证据 |
 | Dart | `pubspec`、package、Flutter 应用入口、路由/状态/平台接线与测试 | 移动端模块、依赖使用、UI/平台与测试证据 |
 | SQL | migration/schema、表/关系、约束/索引、view/trigger、查询文件 | 数据模型、演进和查询能力证据；迁移与计划文档必须区分 |
+
+支持的结构化解析器失败时，该文件仍保留 `SourceArtifact/SourceRevision` 身份与内容哈希，但不生成 `implementation`、`manifest` 或其他成功分析 Evidence；扫描器持久化有界 `analysis_diagnostics`，并创建使项目覆盖降为 `partial` 的 `ScanIssue`。单文件事实达到上限时同样记录 `analysis_truncated`，不得把截断结果呈现为完整理解。诊断只包含运行时定义的状态与补救提示，不保存源码、解析异常原文或项目数据片段。
 
 其他语言仍生成基础档案，并在覆盖中标为“基础分析，未做语言深读”。它们可以支持结构、依赖、文档和配置层面的 Claim；不得生成需要深层调用分析才成立的技术断言。新增深读语言必须作为新的适配器和验收项进入后续决策，不能在首版隐式扩大范围。
 

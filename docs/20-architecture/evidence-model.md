@@ -55,7 +55,7 @@
 | `EVID-E06` | `Module` | `module_id`、`project_id`、`module_key`、`name`、`kind` | `module_key` 是项目内稳定键；同文件可以归属多个逻辑模块，但须标主归属 |
 | `EVID-E07` | `ModuleObservation` | `module_id`、`project_snapshot_id`、`relative_root`、可选 `manifest_evidence_id`、`adapter_id` | 保存本次快照中的模块边界；边界变化不改写历史 |
 | `EVID-E08` | `SourceArtifact` | `artifact_id`、`project_id`、`worktree_id`、`relative_path`、`artifact_kind` | 不保存正文；Project + Worktree + relative_path 唯一 |
-| `EVID-E09` | `SourceRevision` | `source_revision_id`、`artifact_id`、`content_sha256`、`byte_size`、`analysis_fingerprint`、`observed_at` | 不可变；不保存文件字节或源码片段 |
+| `EVID-E09` | `SourceRevision` | `source_revision_id`、`artifact_id`、`content_sha256`、`byte_size`、`analysis_fingerprint`、`adapter_id`、`adapter_version`、`config_revision`、`analysis_diagnostics`、`observed_at` | 不可变；diagnostics 只保存有界的解析/截断状态与补救提示，不保存文件字节、源码片段或解析异常原文 |
 | `EVID-E10` | `ScanRun` | `scan_run_id`、`workspace_id`、`authorization_receipt_id`、`owner_process_identity`、`mode`、`change_detection_mode`、`config_revision`、`started_at`、可选 `finished_at`、`status` | `mode=full\|refresh`；PID+启动标识用于确定中断，终态后不可修改 |
 | `EVID-E11` | `ProjectSnapshot` | `project_snapshot_id`、`project_id`、`scan_run_id`、`created_at`、`coverage_status` | 只有项目事务成功才创建；通过关联表冻结 Worktree/Module/Evidence revision |
 | `EVID-E12` | `ScanRunProject` | `scan_run_id`、`project_id`、`snapshot_disposition`、`project_snapshot_id` | `fresh\|carried_forward\|failed_no_baseline\|excluded`；精确说明部分降级 |

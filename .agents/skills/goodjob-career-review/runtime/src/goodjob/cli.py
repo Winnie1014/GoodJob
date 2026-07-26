@@ -20,6 +20,7 @@ from goodjob.auth import (
 )
 from goodjob.db import Database
 from goodjob.errors import GoodJobError, InvalidInputError
+from goodjob.history import MAX_HISTORY_QUERY_CANDIDATES, HistoryQueryService
 from goodjob.paths import DataPaths
 from goodjob.scanner import (
     ExternalGitGrant,
@@ -124,7 +125,40 @@ def build_parser() -> argparse.ArgumentParser:
     relation_probe.add_argument("--relation-authorization-receipt-id", required=True)
     relation_probe.add_argument("--relation-scope-json", required=True)
     relation_probe.add_argument("--relation-notice-version", required=True)
+
+    history_query = subparsers.add_parser(
+        "query-history-candidates",
+        help="return bounded older-history candidates for one frozen internal Git baseline",
+    )
+    _add_history_query_arguments(history_query)
+    history_query.add_argument(
+        "--maximum-candidates",
+        type=int,
+        default=MAX_HISTORY_QUERY_CANDIDATES,
+    )
+    _add_authorization_arguments(
+        history_query, needs_receipt_id=True, needs_confirmation=False
+    )
+
+    history_read = subparsers.add_parser(
+        "read-history-candidate",
+        help="read one previously selected bounded history candidate path",
+    )
+    _add_history_query_arguments(history_read)
+    history_read.add_argument("--candidate-id", required=True)
+    history_read.add_argument("--selected-path", required=True)
+    _add_authorization_arguments(history_read, needs_receipt_id=True, needs_confirmation=False)
     return parser
+
+
+def _add_history_query_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--scan-run-id", required=True)
+    parser.add_argument("--role-lens-id", required=True)
+    parser.add_argument("--project-id", required=True)
+    parser.add_argument("--worktree-id")
+    parser.add_argument("--relative-paths-json", required=True)
+    parser.add_argument("--query-reason", required=True)
 
 
 def _handle_bootstrap(paths: DataPaths) -> dict[str, Any]:
@@ -384,6 +418,47 @@ def _handle_refresh(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any
     )
 
 
+def _history_paths(raw_paths: str) -> tuple[str, ...]:
+    try:
+        values = json.loads(raw_paths)
+    except json.JSONDecodeError as exc:
+        raise InvalidInputError("relative_paths_json must be valid JSON") from exc
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        raise InvalidInputError("relative_paths_json must be a JSON string list")
+    return tuple(values)
+
+
+def _handle_history_query(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    return HistoryQueryService(Database(paths)).query_candidates(
+        workspace_path=workspace,
+        scan_run_id=args.scan_run_id,
+        role_lens_id=args.role_lens_id,
+        project_id=args.project_id,
+        worktree_id=args.worktree_id,
+        relative_paths=_history_paths(args.relative_paths_json),
+        query_reason=args.query_reason,
+        maximum_candidates=args.maximum_candidates,
+    )
+
+
+def _handle_history_read(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    return HistoryQueryService(Database(paths)).read_candidate(
+        workspace_path=workspace,
+        scan_run_id=args.scan_run_id,
+        role_lens_id=args.role_lens_id,
+        project_id=args.project_id,
+        worktree_id=args.worktree_id,
+        relative_paths=_history_paths(args.relative_paths_json),
+        query_reason=args.query_reason,
+        candidate_id=args.candidate_id,
+        selected_path=args.selected_path,
+    )
+
+
 def _handle_relation_probe(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     capability = _verify_scan_authorization(args, paths, workspace)
@@ -458,6 +533,10 @@ def run(argv: Sequence[str] | None = None) -> int:
             payload = _handle_scan(args, paths)
         elif args.command == "refresh":
             payload = _handle_refresh(args, paths)
+        elif args.command == "query-history-candidates":
+            payload = _handle_history_query(args, paths)
+        elif args.command == "read-history-candidate":
+            payload = _handle_history_read(args, paths)
         elif args.command == "inspect-external-git-candidate":
             payload = _handle_candidate_inspection(args, paths)
         elif args.command == "probe-external-git-relation":

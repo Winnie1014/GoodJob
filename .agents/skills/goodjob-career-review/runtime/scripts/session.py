@@ -18,6 +18,9 @@ from goodjob.errors import GoodJobError, InvalidInputError
 NOTICE_VERSION = "goodjob-source-analysis-v1"
 RELATION_NOTICE_VERSION = "goodjob-external-git-relation-probe-v1"
 METADATA_NOTICE_VERSION = "goodjob-external-git-metadata-v1"
+MAX_HISTORY_QUERY_PATHS = 32
+MAX_HISTORY_QUERY_CANDIDATES = 20
+MAX_HISTORY_CANDIDATE_PATHS = 200
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 
@@ -73,6 +76,19 @@ def _required_nonnegative_integer(message: JsonObject, key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise InvalidInputError(f"session broker field {key!r} must be a non-negative integer")
     return value
+
+
+def _required_text_list(message: JsonObject, key: str, *, maximum: int) -> tuple[str, ...]:
+    value = message.get(key)
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= maximum
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise InvalidInputError(
+            f"session broker field {key!r} must be a bounded non-empty string list"
+        )
+    return tuple(_require_utf8(cast(str, item), key) for item in value)
 
 
 def _scope(workspace: str) -> str:
@@ -261,6 +277,20 @@ class ExternalGitRelation:
     common_dir_inode: int
 
 
+@dataclass(frozen=True)
+class HistoryCandidateBinding:
+    workspace_path: str
+    source_receipt_id: str
+    scan_run_id: str
+    role_lens_id: str
+    project_id: str
+    worktree_id: str | None
+    relative_paths: tuple[str, ...]
+    query_reason: str
+    candidate_id: str
+    changed_paths: tuple[str, ...]
+
+
 def _receipt_arguments(receipt: ReceiptEnvelope) -> list[str]:
     return [
         "--authorization-receipt-id",
@@ -289,6 +319,7 @@ class SessionBroker:
         self._metadata_receipts: dict[str, ReceiptEnvelope] = {}
         self._candidates: dict[tuple[str, str], ExternalGitCandidate] = {}
         self._relations: dict[tuple[str, str], ExternalGitRelation] = {}
+        self._history_candidates: dict[str, HistoryCandidateBinding] = {}
 
     def dispatch(self, message: JsonObject) -> JsonObject:
         operation = _required_text(message, "op")
@@ -308,6 +339,10 @@ class SessionBroker:
             return self._scan(message).payload
         if operation == "refresh":
             return self._refresh(message).payload
+        if operation == "query_history_candidates":
+            return self._query_history_candidates(message).payload
+        if operation == "read_history_candidate":
+            return self._read_history_candidate(message).payload
         raise InvalidInputError(f"unsupported session broker operation: {operation}")
 
     def _authorize_source_analysis(self, message: JsonObject) -> CoreResponse:
@@ -566,6 +601,149 @@ class SessionBroker:
                 self._metadata_grants_json(message),
             ]
         )
+
+    def _query_history_candidates(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        scan_run_id = _required_text(message, "scan_run_id")
+        role_lens_id = _required_text(message, "role_lens_id")
+        project_id = _required_text(message, "project_id")
+        worktree_value = message.get("worktree_id")
+        if worktree_value is not None and not isinstance(worktree_value, str):
+            raise InvalidInputError("worktree_id must be a string when provided")
+        worktree_id = (
+            _require_utf8(worktree_value, "worktree_id")
+            if isinstance(worktree_value, str)
+            else None
+        )
+        relative_paths = _required_text_list(
+            message, "relative_paths", maximum=MAX_HISTORY_QUERY_PATHS
+        )
+        query_reason = _required_text(message, "query_reason")
+        maximum_value = message.get("maximum_candidates", MAX_HISTORY_QUERY_CANDIDATES)
+        if (
+            not isinstance(maximum_value, int)
+            or isinstance(maximum_value, bool)
+            or not 1 <= maximum_value <= MAX_HISTORY_QUERY_CANDIDATES
+        ):
+            raise InvalidInputError(
+                "maximum_candidates must be a bounded positive integer"
+            )
+        arguments = [
+            "query-history-candidates",
+            "--workspace",
+            workspace,
+            "--scan-run-id",
+            scan_run_id,
+            "--role-lens-id",
+            role_lens_id,
+            "--project-id",
+            project_id,
+            "--relative-paths-json",
+            json.dumps(list(relative_paths), ensure_ascii=False, separators=(",", ":")),
+            "--query-reason",
+            query_reason,
+            "--maximum-candidates",
+            str(maximum_value),
+            *_receipt_arguments(source),
+        ]
+        if worktree_id is not None:
+            arguments.extend(["--worktree-id", worktree_id])
+        response = self._run_protected_child(arguments)
+        if response.status != "ok":
+            return response
+        history_value = response.payload.get("history_query")
+        if not isinstance(history_value, dict) or not _is_json_value(history_value):
+            return _protocol_error("GoodJob core returned an invalid history query")
+        history = cast(JsonObject, history_value)
+        candidates_value = history.get("candidates")
+        resolved_worktree = history.get("worktree_id")
+        if not isinstance(candidates_value, list) or len(candidates_value) > maximum_value:
+            return _protocol_error("GoodJob core returned invalid history candidates")
+        if not isinstance(resolved_worktree, str) or (
+            worktree_id is not None and resolved_worktree != worktree_id
+        ):
+            return _protocol_error("GoodJob core returned an invalid history worktree")
+        if (
+            history.get("scan_run_id") != scan_run_id
+            or history.get("role_lens_id") != role_lens_id
+            or history.get("project_id") != project_id
+            or history.get("relative_paths") != sorted(set(relative_paths))
+            or history.get("query_reason") != query_reason
+        ):
+            return _protocol_error("GoodJob core returned a history query for another scope")
+        for candidate_value in candidates_value:
+            if not isinstance(candidate_value, dict) or not _is_json_value(candidate_value):
+                return _protocol_error("GoodJob core returned a malformed history candidate")
+            candidate = cast(JsonObject, candidate_value)
+            try:
+                candidate_id = _required_text(candidate, "candidate_id")
+                changed_paths = _required_text_list(
+                    candidate, "changed_paths", maximum=MAX_HISTORY_CANDIDATE_PATHS
+                )
+            except InvalidInputError:
+                return _protocol_error("GoodJob core returned an incomplete history candidate")
+            binding = HistoryCandidateBinding(
+                workspace_path=str(_workspace_path(workspace)),
+                source_receipt_id=source.authorization_receipt_id,
+                scan_run_id=scan_run_id,
+                role_lens_id=role_lens_id,
+                project_id=project_id,
+                worktree_id=resolved_worktree,
+                relative_paths=tuple(sorted(set(relative_paths))),
+                query_reason=query_reason,
+                candidate_id=candidate_id,
+                changed_paths=changed_paths,
+            )
+            existing = self._history_candidates.get(candidate_id)
+            if existing is not None and existing != binding:
+                return _protocol_error("GoodJob core returned a colliding history candidate")
+            self._history_candidates[candidate_id] = binding
+        return response
+
+    def _read_history_candidate(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        candidate_id = _required_text(message, "candidate_id")
+        selected_path = _required_text(message, "selected_path")
+        binding = self._history_candidates.get(candidate_id)
+        if binding is None:
+            raise InvalidInputError(
+                "query this history candidate in the current session before reading it"
+            )
+        if (
+            binding.workspace_path != str(_workspace_path(workspace))
+            or binding.source_receipt_id != source.authorization_receipt_id
+            or selected_path not in binding.changed_paths
+        ):
+            raise InvalidInputError("history candidate does not match this session request")
+        arguments = [
+            "read-history-candidate",
+            "--workspace",
+            workspace,
+            "--scan-run-id",
+            binding.scan_run_id,
+            "--role-lens-id",
+            binding.role_lens_id,
+            "--project-id",
+            binding.project_id,
+            "--relative-paths-json",
+            json.dumps(
+                list(binding.relative_paths), ensure_ascii=False, separators=(",", ":")
+            ),
+            "--query-reason",
+            binding.query_reason,
+            "--candidate-id",
+            binding.candidate_id,
+            "--selected-path",
+            selected_path,
+            *_receipt_arguments(source),
+        ]
+        if binding.worktree_id is not None:
+            arguments.extend(["--worktree-id", binding.worktree_id])
+        return self._run_protected_child(arguments)
 
     def _source_receipt(self, message: JsonObject) -> ReceiptEnvelope:
         receipt_id = _required_text(message, "authorization_receipt_id")

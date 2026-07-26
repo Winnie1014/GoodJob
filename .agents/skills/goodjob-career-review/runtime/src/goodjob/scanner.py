@@ -6,33 +6,47 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import selectors
+import signal
 import sqlite3
 import stat
 import subprocess
+import sys
 import time
 import uuid
 from collections import Counter
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Literal, cast
 
+from goodjob.adapters import (
+    AnalysisDiagnostic,
+    AnalysisFact,
+    AnalysisResult,
+    adapter_version,
+    analyze_file,
+)
 from goodjob.db import Database
 from goodjob.errors import InvalidInputError
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
-ANALYZER_VERSION = "scan-v1"
+ANALYZER_VERSION = "scan-v2"
 HISTORY_WINDOW_DAYS = 180
 MAX_HISTORY_COMMITS = 250
 MAX_HISTORY_PATHS_PER_COMMIT = 200
 MAX_HISTORY_METADATA_BYTES = 512 * 1024
 MAX_HISTORY_PATH_BYTES = 256 * 1024
 MAX_REMOTE_HEAD_BYTES = 512 * 1024
+MAX_GIT_COMMAND_BYTES = 8 * 1024 * 1024
 MAX_HISTORY_FIELD_BYTES = 512
 GIT_COMMAND_TIMEOUT_SECONDS = 10.0
 GIT_EXECUTABLE_CANDIDATES = (
+    Path("/Applications/Xcode.app/Contents/Developer/usr/bin/git"),
+    Path("/Library/Developer/CommandLineTools/usr/bin/git"),
     Path("/usr/bin/git"),
     Path("/bin/git"),
 )
@@ -40,12 +54,34 @@ GIT_EXECUTABLE = next(
     (str(candidate) for candidate in GIT_EXECUTABLE_CANDIDATES if candidate.is_file()),
     "/usr/bin/git",
 )
+SANDBOX_EXECUTABLE = Path("/usr/bin/sandbox-exec")
+GIT_SANDBOX_PROFILE = " ".join(
+    (
+        '(version 1)',
+        '(import "system.sb")',
+        '(deny default)',
+        '(deny network*)',
+        '(allow process-exec (literal (param "GIT_EXECUTABLE")))',
+        '(allow process-fork)',
+        '('
+        'allow file-read* file-test-existence file-map-executable '
+        '(subpath (param "AUTHORIZED_ROOT")) '
+        '(literal (param "GIT_EXECUTABLE"))'
+        ')',
+        '('
+        'allow file-read-metadata file-test-existence '
+        '(path-ancestors (param "AUTHORIZED_ROOT"))'
+        ')',
+        '(allow file-write-data (literal "/dev/null"))',
+    )
+)
 GIT_ENV = {
     "PATH": "/usr/bin:/bin",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_NO_LAZY_FETCH": "1",
     "GIT_PAGER": "cat",
+    "GIT_LITERAL_PATHSPECS": "1",
     "GIT_NOGLOB_PATHSPECS": "1",
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_TERMINAL_PROMPT": "0",
@@ -124,6 +160,47 @@ def _relative_path(path: Path, root: Path) -> str:
 
 def _short(value: str, maximum: int = 500) -> str:
     return value[:maximum]
+
+
+def _diagnostics_json(diagnostics: tuple[AnalysisDiagnostic, ...]) -> str:
+    return json.dumps(
+        [
+            {
+                "kind": diagnostic.kind,
+                "message": diagnostic.message,
+                "remediation": diagnostic.remediation,
+            }
+            for diagnostic in diagnostics
+        ],
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _analysis_diagnostics(raw: str) -> tuple[AnalysisDiagnostic, ...]:
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("stored analysis diagnostics are invalid") from exc
+    if not isinstance(values, list) or len(values) > 8:
+        raise ValueError("stored analysis diagnostics are invalid")
+    diagnostics: list[AnalysisDiagnostic] = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("stored analysis diagnostic is invalid")
+        kind = value.get("kind")
+        message = value.get("message")
+        remediation = value.get("remediation")
+        if (
+            not isinstance(kind, str)
+            or not isinstance(message, str)
+            or not isinstance(remediation, str)
+            or not kind
+            or max(len(kind), len(message), len(remediation)) > 500
+        ):
+            raise ValueError("stored analysis diagnostic is invalid")
+        diagnostics.append(AnalysisDiagnostic(kind, message, remediation))
+    return tuple(diagnostics)
 
 
 def _open_regular_file(root: Path, relative_path: str) -> tuple[int, os.stat_result]:
@@ -400,6 +477,19 @@ class GitState:
 
 
 @dataclass(frozen=True)
+class InternalGitBinding:
+    """Descriptor identities that bind every Git command to one authorized repository."""
+
+    workspace_root: Path
+    worktree_root: Path
+    git_dir: Path
+    common_dir: Path
+    worktree_identity: tuple[int, int]
+    git_dir_identity: tuple[int, int]
+    common_dir_identity: tuple[int, int]
+
+
+@dataclass(frozen=True)
 class ExternalGitCandidate:
     """Root-internal marker data that may be shown before any external read."""
 
@@ -558,7 +648,11 @@ class PriorObservation:
     source_revision_id: str
     byte_size: int
     mtime_ns: int
+    adapter_id: str
+    adapter_version: str
     config_revision: str
+    commit_state: str
+    analysis_diagnostics: tuple[AnalysisDiagnostic, ...]
 
 
 @dataclass(frozen=True)
@@ -566,12 +660,15 @@ class FileObservation:
     relative_path: str
     artifact_kind: str
     adapter_id: str
+    adapter_version: str
     evidence_kind: str
     commit_state: str
     byte_size: int
     mtime_ns: int
     content_sha256: str | None
     reused_source_revision_id: str | None
+    analysis_facts: tuple[AnalysisFact, ...] | None
+    analysis_diagnostics: tuple[AnalysisDiagnostic, ...]
 
 
 @dataclass(frozen=True)
@@ -699,7 +796,10 @@ class WorkspaceScanner:
 
     def __init__(self, database: Database, *, git_executable: str = GIT_EXECUTABLE) -> None:
         self._database = database
-        self._git_executable = git_executable
+        self._git_executable = str(Path(git_executable).resolve(strict=True))
+        self._analysis_cache: dict[
+            tuple[str, str, str, str, str, str], AnalysisResult
+        ] = {}
 
     def scan(
         self,
@@ -771,6 +871,34 @@ class WorkspaceScanner:
             authorization_receipt_id=authorization_receipt_id,
             started_at=scan_started_at,
         )
+        try:
+            return self._run_started(
+                root=root,
+                workspace_id=workspace_id,
+                scan_run_id=scan_run_id,
+                mode=mode,
+                change_detection_mode=change_detection_mode,
+                config_revision=config_revision,
+                external_git_grants=external_git_grants,
+                scan_started_at=scan_started_at,
+            )
+        except BaseException:
+            with suppress(Exception):
+                self._finish_run(scan_run_id, "failed")
+            raise
+
+    def _run_started(
+        self,
+        *,
+        root: Path,
+        workspace_id: str,
+        scan_run_id: str,
+        mode: Literal["full", "refresh"],
+        change_detection_mode: Literal["fast", "verify_content"] | None,
+        config_revision: str,
+        external_git_grants: tuple[ExternalGitGrant, ...],
+        scan_started_at: str,
+    ) -> ScanResult:
         plans, discovery_issues = self._discover(root, external_git_grants, scan_started_at)
         self._persist_issues(scan_run_id, None, tuple(discovery_issues))
         all_issues = list(discovery_issues)
@@ -1191,6 +1319,91 @@ class WorkspaceScanner:
             os.close(common_fd)
         return "trusted"
 
+    @staticmethod
+    def _bind_internal_git(
+        worktree_root: Path, workspace_root: Path
+    ) -> InternalGitBinding | None:
+        """Bind an internal repository without letting Git rediscover a mutable marker."""
+        marker = worktree_root / ".git"
+        marker_relative = _child_relative(_relative_to_root(worktree_root, workspace_root), ".git")
+        try:
+            marker_stat = _safe_lstat(workspace_root, marker_relative)
+        except OSError:
+            return None
+
+        if stat.S_ISREG(marker_stat.st_mode):
+            git_dir = WorkspaceScanner._git_pointer_target_at(workspace_root, marker_relative)
+            if git_dir is None or not _is_within(git_dir, workspace_root):
+                return None
+        elif stat.S_ISDIR(marker_stat.st_mode):
+            git_dir = marker
+        else:
+            return None
+
+        try:
+            worktree_fd = _open_directory(
+                workspace_root, _relative_to_root(worktree_root, workspace_root)
+            )
+        except OSError:
+            return None
+        try:
+            git_dir_fd = _open_directory(
+                workspace_root, _relative_to_root(git_dir, workspace_root)
+            )
+        except OSError:
+            os.close(worktree_fd)
+            return None
+        try:
+            if stat.S_ISREG(marker_stat.st_mode):
+                common_dir = WorkspaceScanner._relation_target_from_fd(
+                    git_dir_fd, git_dir, "commondir"
+                )
+                back_pointer = WorkspaceScanner._relation_target_from_fd(
+                    git_dir_fd, git_dir, "gitdir"
+                )
+                if common_dir is None or back_pointer != marker:
+                    return None
+            else:
+                try:
+                    common_stat = os.stat(
+                        "commondir", dir_fd=git_dir_fd, follow_symlinks=False
+                    )
+                except FileNotFoundError:
+                    common_dir = git_dir
+                except OSError:
+                    return None
+                else:
+                    if not stat.S_ISREG(common_stat.st_mode):
+                        return None
+                    common_dir = WorkspaceScanner._relation_target_from_fd(
+                        git_dir_fd, git_dir, "commondir"
+                    )
+                    if common_dir is None:
+                        return None
+            if not _is_within(common_dir, workspace_root):
+                return None
+            try:
+                common_dir_fd = _open_directory(
+                    workspace_root, _relative_to_root(common_dir, workspace_root)
+                )
+            except OSError:
+                return None
+            try:
+                return InternalGitBinding(
+                    workspace_root=workspace_root,
+                    worktree_root=worktree_root,
+                    git_dir=git_dir,
+                    common_dir=common_dir,
+                    worktree_identity=_directory_identity(worktree_fd),
+                    git_dir_identity=_directory_identity(git_dir_fd),
+                    common_dir_identity=_directory_identity(common_dir_fd),
+                )
+            finally:
+                os.close(common_dir_fd)
+        finally:
+            os.close(git_dir_fd)
+            os.close(worktree_fd)
+
     def _walk_directories(self, root: Path) -> tuple[list[Path], list[ScanIssueDraft]]:
         directories: list[Path] = []
         issues: list[ScanIssueDraft] = []
@@ -1502,52 +1715,78 @@ class WorkspaceScanner:
         *,
         scan_started_at: str,
     ) -> tuple[GitState | None, ScanIssueDraft | None]:
-        result = self._git(root, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
-        if result.returncode != 0:
+        binding = self._bind_internal_git(root, workspace_root)
+        if binding is None:
             return None, _issue(
                 "broken_repository",
                 "warning",
-                "Local Git metadata could not be resolved with the fixed read-only command.",
+                "Local Git metadata changed or could not be bound to the authorized workspace.",
                 "Repair the repository metadata and run refresh.",
                 _relative_path(root, workspace_root),
             )
-        values = result.stdout.splitlines()
-        if len(values) != 3:
+        try:
+            result = self._git(binding, "rev-parse", "--is-inside-work-tree")
+            if result.returncode != 0 or result.stdout.strip() != "true":
+                boundary_denied = any(
+                    marker in result.stderr
+                    for marker in ("Operation not permitted", "Permission denied")
+                )
+                return None, _issue(
+                    "git_repository_boundary_violation"
+                    if boundary_denied
+                    else "broken_repository",
+                    "warning",
+                    (
+                        "Repository metadata requested a path outside the authorized Git sandbox."
+                        if boundary_denied
+                        else "Local Git metadata could not be read through its bound repository "
+                        "identity."
+                    ),
+                    (
+                        "Remove root-external Git config or object indirection, then run refresh."
+                        if boundary_denied
+                        else "Repair the repository metadata and run refresh."
+                    ),
+                    _relative_path(root, workspace_root),
+                )
+            branch_result = self._git(
+                binding, "symbolic-ref", "--quiet", "--short", "HEAD"
+            )
+            branch = branch_result.stdout.strip() if branch_result.returncode == 0 else None
+            head_result = self._git(binding, "rev-parse", "--verify", "HEAD")
+            head = head_result.stdout.strip() if head_result.returncode == 0 else None
+            if head is not None and not _valid_git_commit(head):
+                return None, _issue(
+                    "broken_repository",
+                    "warning",
+                    "Local Git metadata returned an invalid HEAD commit identity.",
+                    "Repair the repository metadata and run refresh.",
+                    _relative_path(root, workspace_root),
+                )
+            status_result = self._git(
+                binding,
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                maximum_output_bytes=MAX_GIT_COMMAND_BYTES,
+            )
+        except subprocess.TimeoutExpired:
             return None, _issue(
-                "broken_repository",
+                "git_command_timeout",
                 "warning",
-                "Local Git metadata returned an unexpected repository identity.",
-                "Repair the repository metadata and run refresh.",
+                "A bounded local Git command exceeded the scan time limit.",
+                "Reduce repository pressure or repair Git integrations, then run refresh.",
                 _relative_path(root, workspace_root),
             )
-        top_level = self._git_path(root, values[0])
-        git_dir = self._git_path(root, values[1])
-        common_dir = self._git_path(root, values[2])
-        if not (
-            top_level == root
-            and _is_within(git_dir, workspace_root)
-            and _is_within(common_dir, workspace_root)
-        ):
+        except OSError:
             return None, _issue(
-                "external_git_authorization_required",
+                "git_command_resource_limit",
                 "warning",
-                "Git metadata resolves outside the authorized workspace and was not read further.",
-                "Inspect and grant the required two-stage external Git authorization.",
+                "A local Git command exceeded an output limit or lost its bound repository.",
+                "Repair the repository metadata or reduce generated files, then run refresh.",
                 _relative_path(root, workspace_root),
             )
-        branch_result = self._git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
-        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else None
-        head_result = self._git(root, "rev-parse", "--verify", "HEAD")
-        head = head_result.stdout.strip() if head_result.returncode == 0 else None
-        if head is not None and not _valid_git_commit(head):
-            return None, _issue(
-                "broken_repository",
-                "warning",
-                "Local Git metadata returned an invalid HEAD commit identity.",
-                "Repair the repository metadata and run refresh.",
-                _relative_path(root, workspace_root),
-            )
-        status_result = self._git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
         if status_result.returncode != 0:
             return None, _issue(
                 "git_status_unavailable",
@@ -1568,12 +1807,12 @@ class WorkspaceScanner:
             else "clean"
         )
         history_basis, history_entries, history_issues = self._recent_git_history(
-            root, head, branch, scan_started_at, workspace_root
+            binding, head, branch, scan_started_at
         )
         return (
             GitState(
-                git_dir,
-                common_dir,
+                binding.git_dir,
+                binding.common_dir,
                 branch,
                 head,
                 dirty_state,
@@ -1590,13 +1829,12 @@ class WorkspaceScanner:
 
     def _recent_git_history(
         self,
-        root: Path,
+        binding: InternalGitBinding,
         head: str | None,
         branch: str | None,
         scan_started_at: str,
-        workspace_root: Path,
     ) -> tuple[str, tuple[GitHistoryEntry, ...], tuple[ScanIssueDraft, ...]]:
-        relative_root = _relative_path(root, workspace_root)
+        relative_root = _relative_path(binding.worktree_root, binding.workspace_root)
         revisions: tuple[str, ...]
         if head is None:
             return "head_only_unborn", (), ()
@@ -1605,7 +1843,7 @@ class WorkspaceScanner:
                 history_basis = "head_only_detached"
                 revisions = (head,)
             else:
-                default_commit, history_basis = self._default_history_commit(root)
+                default_commit, history_basis = self._default_history_commit(binding)
                 revisions = (
                     (head,)
                     if default_commit is None or default_commit == head
@@ -1614,7 +1852,9 @@ class WorkspaceScanner:
                         default_commit,
                     )
                 )
-            entries, truncated = self._read_recent_history(root, revisions, head, scan_started_at)
+            entries, truncated = self._read_recent_history(
+                binding, revisions, head, scan_started_at
+            )
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return (
                 "history_unavailable",
@@ -1647,9 +1887,9 @@ class WorkspaceScanner:
             ),
         )
 
-    def _default_history_commit(self, root: Path) -> tuple[str | None, str]:
+    def _default_history_commit(self, binding: InternalGitBinding) -> tuple[str | None, str]:
         return_code, raw_targets, _ = self._git_bounded_bytes(
-            root,
+            binding,
             "for-each-ref",
             "--format=%(symref)",
             "refs/remotes/*/HEAD",
@@ -1668,21 +1908,21 @@ class WorkspaceScanner:
             target = next(iter(targets))
             if not target.startswith("refs/remotes/"):
                 return None, "head_only_invalid_remote_head"
-            commit = self._verified_git_commit(root, target)
+            commit = self._verified_git_commit(binding, target)
             if commit is None:
                 return None, "head_only_invalid_remote_head"
             return commit, "head_plus_remote_head"
-        main = self._verified_git_commit(root, "refs/heads/main")
+        main = self._verified_git_commit(binding, "refs/heads/main")
         if main is not None:
             return main, "head_plus_main"
-        master = self._verified_git_commit(root, "refs/heads/master")
+        master = self._verified_git_commit(binding, "refs/heads/master")
         if master is not None:
             return master, "head_plus_master"
         return None, "head_only_no_default_ref"
 
-    def _verified_git_commit(self, root: Path, reference: str) -> str | None:
+    def _verified_git_commit(self, binding: InternalGitBinding, reference: str) -> str | None:
         result = self._git(
-            root,
+            binding,
             "rev-parse",
             "--verify",
             "--quiet",
@@ -1695,7 +1935,11 @@ class WorkspaceScanner:
         return candidate
 
     def _read_recent_history(
-        self, root: Path, revisions: tuple[str, ...], head: str, scan_started_at: str
+        self,
+        binding: InternalGitBinding,
+        revisions: tuple[str, ...],
+        head: str,
+        scan_started_at: str,
     ) -> tuple[tuple[GitHistoryEntry, ...], bool]:
         try:
             started_at = datetime.fromisoformat(scan_started_at.removesuffix("Z") + "+00:00")
@@ -1705,7 +1949,7 @@ class WorkspaceScanner:
             (started_at - timedelta(days=HISTORY_WINDOW_DAYS)).isoformat().replace("+00:00", "Z")
         )
         metadata = self._git_bounded_bytes(
-            root,
+            binding,
             "log",
             "--no-ext-diff",
             "--no-textconv",
@@ -1723,7 +1967,7 @@ class WorkspaceScanner:
         records = self._parse_history_metadata(metadata[1])
         if head not in {record[0] for record in records}:
             head_metadata = self._git_bounded_bytes(
-                root,
+                binding,
                 "log",
                 "--no-ext-diff",
                 "--no-textconv",
@@ -1748,7 +1992,7 @@ class WorkspaceScanner:
         selected = ordered[:MAX_HISTORY_COMMITS]
         entries: list[GitHistoryEntry] = []
         for commit, committed_at, author_name, author_email, subject in selected:
-            paths, paths_truncated = self._history_paths(root, commit)
+            paths, paths_truncated = self._history_paths(binding, commit)
             entries.append(
                 GitHistoryEntry(
                     commit=commit,
@@ -1797,9 +2041,11 @@ class WorkspaceScanner:
             )
         return records
 
-    def _history_paths(self, root: Path, commit: str) -> tuple[tuple[str, ...], bool]:
+    def _history_paths(
+        self, binding: InternalGitBinding, commit: str, *pathspecs: str
+    ) -> tuple[tuple[str, ...], bool]:
         result = self._git_bounded_bytes(
-            root,
+            binding,
             "diff-tree",
             "--no-ext-diff",
             "--no-textconv",
@@ -1810,6 +2056,7 @@ class WorkspaceScanner:
             "-z",
             commit,
             "--",
+            *pathspecs,
             maximum_output_bytes=MAX_HISTORY_PATH_BYTES,
         )
         if result[0] != 0:
@@ -1836,11 +2083,19 @@ class WorkspaceScanner:
             paths.append(path)
         return tuple(paths), truncated
 
-    def _git_command(self, arguments: tuple[str, ...]) -> list[str]:
-        return [
+    def _git_command(
+        self,
+        binding: InternalGitBinding,
+        arguments: tuple[str, ...],
+    ) -> list[str]:
+        if sys.platform != "darwin" or not SANDBOX_EXECUTABLE.is_file():
+            raise OSError("a supported local Git filesystem sandbox is unavailable")
+        git_command = [
             self._git_executable,
             "--no-lazy-fetch",
             "--no-replace-objects",
+            f"--git-dir={binding.git_dir}",
+            f"--work-tree={binding.worktree_root}",
             "-c",
             "core.fsmonitor=false",
             "-c",
@@ -1850,24 +2105,76 @@ class WorkspaceScanner:
             "--no-pager",
             *arguments,
         ]
+        return [
+            str(SANDBOX_EXECUTABLE),
+            "-p",
+            GIT_SANDBOX_PROFILE,
+            "-D",
+            f"AUTHORIZED_ROOT={binding.workspace_root}",
+            "-D",
+            f"GIT_EXECUTABLE={self._git_executable}",
+            *git_command,
+        ]
+
+    @staticmethod
+    def _open_bound_git_directory(
+        binding: InternalGitBinding, path: Path, expected_identity: tuple[int, int]
+    ) -> int:
+        if not _is_within(path, binding.workspace_root):
+            raise OSError("bound Git directory escaped the authorized workspace")
+        directory_fd = _open_directory(
+            binding.workspace_root, _relative_to_root(path, binding.workspace_root)
+        )
+        if _directory_identity(directory_fd) != expected_identity:
+            os.close(directory_fd)
+            raise OSError("bound Git directory identity changed")
+        return directory_fd
 
     def _git_bounded_bytes(
-        self, root: Path, *arguments: str, maximum_output_bytes: int
+        self, binding: InternalGitBinding, *arguments: str, maximum_output_bytes: int
     ) -> tuple[int, bytes, bytes]:
-        root_fd = _open_directory(root)
+        worktree_fd = self._open_bound_git_directory(
+            binding, binding.worktree_root, binding.worktree_identity
+        )
+        try:
+            git_dir_fd = self._open_bound_git_directory(
+                binding, binding.git_dir, binding.git_dir_identity
+            )
+        except Exception:
+            os.close(worktree_fd)
+            raise
+        try:
+            common_dir_fd = self._open_bound_git_directory(
+                binding, binding.common_dir, binding.common_dir_identity
+            )
+        except Exception:
+            os.close(git_dir_fd)
+            os.close(worktree_fd)
+            raise
         process: subprocess.Popen[bytes] | None = None
         selector = selectors.DefaultSelector()
         try:
+            command = self._git_command(
+                binding,
+                arguments,
+            )
+            environment = {
+                **GIT_ENV,
+                "GIT_COMMON_DIR": str(binding.common_dir),
+            }
             process = subprocess.Popen(
-                self._git_command(arguments),
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=GIT_ENV,
-                pass_fds=(root_fd,),
-                preexec_fn=partial(os.fchdir, root_fd),
+                env=environment,
+                pass_fds=(worktree_fd, git_dir_fd, common_dir_fd),
+                preexec_fn=partial(os.fchdir, worktree_fd),
+                start_new_session=True,
             )
         finally:
-            os.close(root_fd)
+            os.close(common_dir_fd)
+            os.close(git_dir_fd)
+            os.close(worktree_fd)
         assert process is not None
         assert process.stdout is not None
         assert process.stderr is not None
@@ -1897,10 +2204,13 @@ class WorkspaceScanner:
             timeout = deadline - time.monotonic()
             if timeout <= 0:
                 raise subprocess.TimeoutExpired(process.args, GIT_COMMAND_TIMEOUT_SECONDS)
-            return process.wait(timeout=timeout), bytes(outputs["stdout"]), bytes(outputs["stderr"])
+            return_code = process.wait(timeout=timeout)
+            self._verify_git_binding(binding)
+            return return_code, bytes(outputs["stdout"]), bytes(outputs["stderr"])
         except BaseException:
             if process.poll() is None:
-                process.kill()
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=GIT_COMMAND_TIMEOUT_SECONDS)
             raise
         finally:
@@ -1909,29 +2219,30 @@ class WorkspaceScanner:
                 if not stream.closed:
                     stream.close()
 
-    def _git(self, root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-        root_fd = _open_directory(root)
-        try:
-            return subprocess.run(
-                self._git_command(arguments),
-                check=False,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                env=GIT_ENV,
-                pass_fds=(root_fd,),
-                preexec_fn=partial(os.fchdir, root_fd),
-                text=True,
-            )
-        finally:
-            os.close(root_fd)
+    def _verify_git_binding(self, binding: InternalGitBinding) -> None:
+        for path, identity in (
+            (binding.worktree_root, binding.worktree_identity),
+            (binding.git_dir, binding.git_dir_identity),
+            (binding.common_dir, binding.common_dir_identity),
+        ):
+            directory_fd = self._open_bound_git_directory(binding, path, identity)
+            os.close(directory_fd)
 
-    @staticmethod
-    def _git_path(root: Path, raw_path: str) -> Path:
-        path = Path(raw_path)
-        if not path.is_absolute():
-            path = root / path
-        return Path(os.path.normpath(str(path)))
+    def _git(
+        self,
+        binding: InternalGitBinding,
+        *arguments: str,
+        maximum_output_bytes: int = MAX_GIT_COMMAND_BYTES,
+    ) -> subprocess.CompletedProcess[str]:
+        return_code, stdout, stderr = self._git_bounded_bytes(
+            binding, *arguments, maximum_output_bytes=maximum_output_bytes
+        )
+        return subprocess.CompletedProcess(
+            args=list(arguments),
+            returncode=return_code,
+            stdout=stdout.decode("utf-8", errors="replace"),
+            stderr=stderr.decode("utf-8", errors="replace"),
+        )
 
     @staticmethod
     def _parse_git_status(output: str) -> dict[str, str]:
@@ -2054,9 +2365,20 @@ class WorkspaceScanner:
             rows = connection.execute(
                 """
                 SELECT a.relative_path, ao.artifact_id, ao.source_revision_id, ao.byte_size,
-                       ao.mtime_ns, sr.config_revision
+                       ao.mtime_ns, source.adapter_id, source.adapter_version,
+                       source.config_revision, source.analysis_diagnostics,
+                       (
+                           SELECT evidence.commit_state
+                           FROM project_snapshot_evidence AS pse
+                           JOIN evidence ON evidence.evidence_id = pse.evidence_id
+                           WHERE pse.project_snapshot_id = ao.project_snapshot_id
+                             AND evidence.source_revision_id = ao.source_revision_id
+                           LIMIT 1
+                       ) AS commit_state
                 FROM artifact_observations AS ao
                 JOIN source_artifacts AS a ON a.artifact_id = ao.artifact_id
+                JOIN source_revisions AS source
+                  ON source.source_revision_id = ao.source_revision_id
                 JOIN project_snapshots AS ps ON ps.project_snapshot_id = ao.project_snapshot_id
                 JOIN scan_runs AS sr ON sr.scan_run_id = ps.scan_run_id
                 WHERE a.worktree_id = ? AND sr.status IN ('completed', 'partial')
@@ -2074,7 +2396,13 @@ class WorkspaceScanner:
                     source_revision_id=str(row["source_revision_id"]),
                     byte_size=int(row["byte_size"]),
                     mtime_ns=int(row["mtime_ns"]),
+                    adapter_id=str(row["adapter_id"]),
+                    adapter_version=str(row["adapter_version"]),
                     config_revision=str(row["config_revision"]),
+                    commit_state=str(row["commit_state"]),
+                    analysis_diagnostics=_analysis_diagnostics(
+                        str(row["analysis_diagnostics"])
+                    ),
                 ),
             )
         return observations
@@ -2149,34 +2477,51 @@ class WorkspaceScanner:
                     commit_state = "not_applicable"
                 else:
                     commit_state = "committed"
+                artifact_kind, adapter_id, evidence_kind = self._classify(path, relative)
+                current_adapter_version = f"{ANALYZER_VERSION}:{adapter_version(adapter_id)}"
                 previous = prior.get(relative)
                 should_reuse = (
                     change_detection_mode == "fast"
                     and previous is not None
                     and previous.byte_size == file_stat.st_size
                     and previous.mtime_ns == file_stat.st_mtime_ns
+                    and previous.adapter_id == adapter_id
+                    and previous.adapter_version == current_adapter_version
                     and previous.config_revision == config_revision
+                    and previous.commit_state == commit_state
                     and commit_state not in {"modified", "untracked"}
                 )
-                artifact_kind, adapter_id, evidence_kind = self._classify(path, relative)
                 if should_reuse:
                     assert previous is not None
+                    for diagnostic in previous.analysis_diagnostics:
+                        issues.append(
+                            _issue(
+                                diagnostic.kind,
+                                "warning",
+                                diagnostic.message,
+                                diagnostic.remediation,
+                                relative,
+                            )
+                        )
                     files.append(
                         FileObservation(
-                            relative,
-                            artifact_kind,
-                            adapter_id,
-                            evidence_kind,
-                            commit_state,
-                            file_stat.st_size,
-                            file_stat.st_mtime_ns,
-                            None,
-                            previous.source_revision_id,
+                            relative_path=relative,
+                            artifact_kind=artifact_kind,
+                            adapter_id=adapter_id,
+                            adapter_version=current_adapter_version,
+                            evidence_kind=evidence_kind,
+                            commit_state=commit_state,
+                            byte_size=file_stat.st_size,
+                            mtime_ns=file_stat.st_mtime_ns,
+                            content_sha256=None,
+                            reused_source_revision_id=previous.source_revision_id,
+                            analysis_facts=None,
+                            analysis_diagnostics=previous.analysis_diagnostics,
                         )
                     )
                     continue
                 content = _read_open_file(file_fd)
-                content.decode("utf-8")
+                decoded_content = content.decode("utf-8")
             except UnicodeDecodeError:
                 excluded["binary_or_undecodable"] += 1
                 issues.append(
@@ -2202,17 +2547,49 @@ class WorkspaceScanner:
                 continue
             finally:
                 os.close(file_fd)
+            content_sha256 = hashlib.sha256(content).hexdigest()
+            cache_key = (
+                content_sha256,
+                adapter_id,
+                current_adapter_version,
+                config_revision,
+                artifact_kind,
+                Path(relative).name,
+            )
+            analysis_result = self._analysis_cache.get(cache_key)
+            if analysis_result is None:
+                analysis_result = analyze_file(
+                    relative_path=relative,
+                    text=decoded_content,
+                    artifact_kind=artifact_kind,
+                    adapter_id=adapter_id,
+                    base_evidence_kind=evidence_kind,
+                )
+                self._analysis_cache[cache_key] = analysis_result
+            for diagnostic in analysis_result.diagnostics:
+                issues.append(
+                    _issue(
+                        diagnostic.kind,
+                        "warning",
+                        diagnostic.message,
+                        diagnostic.remediation,
+                        relative,
+                    )
+                )
             files.append(
                 FileObservation(
-                    relative,
-                    artifact_kind,
-                    adapter_id,
-                    evidence_kind,
-                    commit_state,
-                    file_stat.st_size,
-                    file_stat.st_mtime_ns,
-                    hashlib.sha256(content).hexdigest(),
-                    None,
+                    relative_path=relative,
+                    artifact_kind=artifact_kind,
+                    adapter_id=adapter_id,
+                    adapter_version=current_adapter_version,
+                    evidence_kind=evidence_kind,
+                    commit_state=commit_state,
+                    byte_size=file_stat.st_size,
+                    mtime_ns=file_stat.st_mtime_ns,
+                    content_sha256=content_sha256,
+                    reused_source_revision_id=None,
+                    analysis_facts=analysis_result.facts,
+                    analysis_diagnostics=analysis_result.diagnostics,
                 )
             )
         return files, issues, excluded
@@ -2329,11 +2706,37 @@ class WorkspaceScanner:
     def _classify(path: Path, relative: str) -> tuple[str, str, str]:
         lower_name = path.name.lower()
         suffix = path.suffix.lower()
+        manifest_adapters = {
+            "cargo.toml": "rust",
+            "package.json": "typescript",
+            "pubspec.yaml": "dart",
+            "pyproject.toml": "python",
+        }
+        if lower_name.startswith("requirements") and lower_name.endswith(".txt"):
+            return "manifest", "python", "manifest"
         if path.name in MANIFEST_NAMES or lower_name.endswith((".sln", ".csproj")):
-            return "manifest", "manifest", "manifest"
+            return "manifest", manifest_adapters.get(lower_name, "generic"), "manifest"
         if suffix in SOURCE_EXTENSIONS:
             adapter = SOURCE_EXTENSIONS[suffix]
             path_parts = {part.lower() for part in Path(relative).parts[:-1]}
+            if adapter == "sql" and path_parts.intersection(
+                {
+                    "design",
+                    "designs",
+                    "doc",
+                    "docs",
+                    "plan",
+                    "plans",
+                    "proposal",
+                    "proposals",
+                }
+            ):
+                return "documentation", "generic", "documentation"
+            sql_name_tokens = set(re.split(r"[._-]+", lower_name))
+            if adapter == "sql" and sql_name_tokens.intersection(
+                {"design", "draft", "plan", "planned", "proposal", "proposed"}
+            ):
+                return "documentation", "generic", "documentation"
             if (
                 path_parts.intersection({"test", "tests", "__tests__"})
                 or lower_name.startswith("test_")
@@ -2341,6 +2744,12 @@ class WorkspaceScanner:
                 or ".spec." in lower_name
             ):
                 return "test", adapter, "test_definition"
+            if adapter == "sql":
+                if path_parts.intersection({"migration", "migrations"}):
+                    return "source", adapter, "migration_definition"
+                if "schema" in path_parts or lower_name.startswith("schema."):
+                    return "source", adapter, "schema_definition"
+                return "source", adapter, "query_definition"
             return "source", adapter, "implementation"
         if suffix in {".md", ".rst", ".txt"} or lower_name.startswith("readme"):
             return "documentation", "generic", "documentation"
@@ -2428,7 +2837,6 @@ class WorkspaceScanner:
             )
             module_ids = self._upsert_modules(connection, project.project_id, data)
             current_revisions: dict[str, str] = {}
-            current_evidence: dict[str, str] = {}
             current_history_evidence: dict[tuple[str, str], str] = {}
             for worktree in data.worktrees:
                 state = worktree.plan.git_state
@@ -2456,6 +2864,7 @@ class WorkspaceScanner:
                     current_history_evidence[(worktree_root, entry.commit)] = evidence_id
             for worktree in data.worktrees:
                 worktree_id = worktree_ids[worktree.plan.root]
+                current_paths = {file.relative_path for file in worktree.files}
                 for file in worktree.files:
                     artifact_id = self._upsert_artifact(
                         connection,
@@ -2463,6 +2872,8 @@ class WorkspaceScanner:
                         worktree_id,
                         file.relative_path,
                         file.artifact_kind,
+                        file.content_sha256,
+                        current_paths,
                     )
                     revision_id = self._source_revision(
                         connection,
@@ -2491,7 +2902,7 @@ class WorkspaceScanner:
                         (snapshot_id, artifact_id, revision_id, file.byte_size, file.mtime_ns),
                     )
                     module_id = self._module_for_file(module_ids, file.relative_path)
-                    evidence_id = self._evidence(
+                    evidence_ids = self._evidence_entries(
                         connection,
                         project_id=project.project_id,
                         project_snapshot_id=snapshot_id,
@@ -2500,16 +2911,16 @@ class WorkspaceScanner:
                         file=file,
                         now=now,
                     )
-                    connection.execute(
-                        """
-                        INSERT INTO project_snapshot_evidence(project_snapshot_id, evidence_id)
-                        VALUES (?, ?)
-                        ON CONFLICT(project_snapshot_id, evidence_id) DO NOTHING
-                        """,
-                        (snapshot_id, evidence_id),
-                    )
+                    for evidence_id in evidence_ids:
+                        connection.execute(
+                            """
+                            INSERT INTO project_snapshot_evidence(project_snapshot_id, evidence_id)
+                            VALUES (?, ?)
+                            ON CONFLICT(project_snapshot_id, evidence_id) DO NOTHING
+                            """,
+                            (snapshot_id, evidence_id),
+                        )
                     current_revisions[artifact_id] = revision_id
-                    current_evidence[revision_id] = evidence_id
             for module_key, module_id in module_ids.items():
                 adapter_id = self._module_adapter(data, module_key)
                 connection.execute(
@@ -2526,8 +2937,8 @@ class WorkspaceScanner:
                 connection,
                 scan_run_id=scan_run_id,
                 project_id=project.project_id,
+                project_snapshot_id=snapshot_id,
                 current_revisions=current_revisions,
-                current_evidence=current_evidence,
                 now=now,
             )
             self._resolve_history_evidence_validity(
@@ -2608,13 +3019,27 @@ class WorkspaceScanner:
     @staticmethod
     def _module_adapter(data: ProjectData, module_key: str) -> str:
         prefix = "" if module_key == "." else f"{module_key}/"
-        adapters = {
-            file.adapter_id
+        files = [
+            file
             for worktree in data.worktrees
             for file in worktree.files
             if file.relative_path.startswith(prefix)
+        ]
+        root_manifest_adapters = {
+            file.adapter_id
+            for file in files
+            if file.artifact_kind == "manifest"
+            and Path(file.relative_path).parent.as_posix() == module_key
+            and file.adapter_id != "generic"
         }
-        return sorted(adapters)[0] if adapters else "generic"
+        if root_manifest_adapters:
+            return sorted(root_manifest_adapters)[0]
+        adapter_counts = Counter(
+            file.adapter_id for file in files if file.adapter_id != "generic"
+        )
+        if not adapter_counts:
+            return "generic"
+        return min(adapter_counts, key=lambda adapter: (-adapter_counts[adapter], adapter))
 
     @staticmethod
     def _upsert_artifact(
@@ -2623,6 +3048,8 @@ class WorkspaceScanner:
         worktree_id: str,
         relative_path: str,
         artifact_kind: str,
+        content_sha256: str | None,
+        current_paths: set[str],
     ) -> str:
         row = connection.execute(
             """
@@ -2633,15 +3060,52 @@ class WorkspaceScanner:
         ).fetchone()
         if row is not None:
             return str(row["artifact_id"])
+        supersedes_artifact_id: str | None = None
+        if content_sha256 is not None:
+            candidates = connection.execute(
+                """
+                SELECT a.artifact_id, a.relative_path, MAX(ps.created_at) AS last_seen_at
+                FROM source_artifacts AS a
+                JOIN source_revisions AS sr ON sr.artifact_id = a.artifact_id
+                JOIN artifact_observations AS ao
+                  ON ao.source_revision_id = sr.source_revision_id
+                JOIN project_snapshots AS ps
+                  ON ps.project_snapshot_id = ao.project_snapshot_id
+                WHERE a.project_id = ? AND a.worktree_id = ?
+                  AND a.relative_path <> ? AND sr.content_sha256 = ?
+                GROUP BY a.artifact_id, a.relative_path
+                ORDER BY last_seen_at DESC, a.artifact_id
+                """,
+                (project_id, worktree_id, relative_path, content_sha256),
+            ).fetchall()
+            missing_candidates = [
+                candidate
+                for candidate in candidates
+                if str(candidate["relative_path"]) not in current_paths
+            ]
+            if missing_candidates and (
+                len(missing_candidates) == 1
+                or missing_candidates[0]["last_seen_at"]
+                != missing_candidates[1]["last_seen_at"]
+            ):
+                supersedes_artifact_id = str(missing_candidates[0]["artifact_id"])
         artifact_id = _new_id()
         connection.execute(
             """
             INSERT INTO source_artifacts(
-                artifact_id, project_id, worktree_id, relative_path, artifact_kind
+                artifact_id, project_id, worktree_id, relative_path, artifact_kind,
+                supersedes_artifact_id
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (artifact_id, project_id, worktree_id, relative_path, artifact_kind),
+            (
+                artifact_id,
+                project_id,
+                worktree_id,
+                relative_path,
+                artifact_kind,
+                supersedes_artifact_id,
+            ),
         )
         return artifact_id
 
@@ -2658,7 +3122,7 @@ class WorkspaceScanner:
         assert file.content_sha256 is not None
         fingerprint = hashlib.sha256(
             "\0".join(
-                (file.content_sha256, file.adapter_id, ANALYZER_VERSION, config_revision)
+                (file.content_sha256, file.adapter_id, file.adapter_version, config_revision)
             ).encode("utf-8")
         ).hexdigest()
         row = connection.execute(
@@ -2675,15 +3139,27 @@ class WorkspaceScanner:
             """
             INSERT INTO source_revisions(
                 source_revision_id, artifact_id, content_sha256, byte_size,
-                analysis_fingerprint, observed_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                analysis_fingerprint, adapter_id, adapter_version, config_revision,
+                analysis_diagnostics, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (revision_id, artifact_id, file.content_sha256, file.byte_size, fingerprint, now),
+            (
+                revision_id,
+                artifact_id,
+                file.content_sha256,
+                file.byte_size,
+                fingerprint,
+                file.adapter_id,
+                file.adapter_version,
+                config_revision,
+                _diagnostics_json(file.analysis_diagnostics),
+                now,
+            ),
         )
         return revision_id
 
     @staticmethod
-    def _evidence(
+    def _evidence_entries(
         connection: sqlite3.Connection,
         *,
         project_id: str,
@@ -2692,53 +3168,78 @@ class WorkspaceScanner:
         source_revision_id: str,
         file: FileObservation,
         now: str,
-    ) -> str:
-        locator = json.dumps(
-            {"relative_path": file.relative_path}, separators=(",", ":"), sort_keys=True
-        )
-        row = connection.execute(
-            """
-            SELECT evidence_id FROM evidence
-            WHERE source_revision_id = ? AND evidence_kind = ? AND locator = ? AND commit_state = ?
-            """,
-            (source_revision_id, file.evidence_kind, locator, file.commit_state),
-        ).fetchone()
-        if row is not None:
-            return str(row["evidence_id"])
+    ) -> tuple[str, ...]:
+        if file.analysis_facts is None:
+            rows = connection.execute(
+                """
+                SELECT evidence_id FROM evidence
+                WHERE source_revision_id = ? AND commit_state = ?
+                ORDER BY evidence_kind, locator
+                """,
+                (source_revision_id, file.commit_state),
+            ).fetchall()
+            if rows:
+                return tuple(str(row["evidence_id"]) for row in rows)
+            if file.analysis_diagnostics:
+                return ()
+            raise ValueError("reused source revision has no reusable evidence")
         revision = connection.execute(
             "SELECT analysis_fingerprint FROM source_revisions WHERE source_revision_id = ?",
             (source_revision_id,),
         ).fetchone()
         assert revision is not None
-        equivalence = hashlib.sha256(
-            "\0".join((str(revision["analysis_fingerprint"]), file.evidence_kind, locator)).encode(
-                "utf-8"
+        evidence_ids: list[str] = []
+        for fact in file.analysis_facts:
+            locator_object = fact.locator(file.relative_path)
+            locator = json.dumps(locator_object, separators=(",", ":"), sort_keys=True)
+            row = connection.execute(
+                """
+                SELECT evidence_id FROM evidence
+                WHERE source_revision_id = ? AND evidence_kind = ?
+                  AND locator = ? AND commit_state = ?
+                """,
+                (source_revision_id, fact.evidence_kind, locator, file.commit_state),
+            ).fetchone()
+            if row is not None:
+                evidence_ids.append(str(row["evidence_id"]))
+                continue
+            semantic_locator = {
+                key: value for key, value in locator_object.items() if key != "relative_path"
+            }
+            equivalence = hashlib.sha256(
+                "\0".join(
+                    (
+                        str(revision["analysis_fingerprint"]),
+                        fact.evidence_kind,
+                        json.dumps(semantic_locator, separators=(",", ":"), sort_keys=True),
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
+            evidence_id = _new_id()
+            connection.execute(
+                """
+                INSERT INTO evidence(
+                    evidence_id, project_id, acquisition_scope, project_snapshot_id, module_id,
+                    source_revision_id, content_equivalence_key, origin_kind, evidence_kind,
+                    locator, summary, commit_state, created_at
+                ) VALUES (?, ?, 'scan', ?, ?, ?, ?, 'source_revision', ?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence_id,
+                    project_id,
+                    project_snapshot_id,
+                    module_id,
+                    source_revision_id,
+                    equivalence,
+                    fact.evidence_kind,
+                    locator,
+                    _short(fact.summary),
+                    file.commit_state,
+                    now,
+                ),
             )
-        ).hexdigest()
-        evidence_id = _new_id()
-        connection.execute(
-            """
-            INSERT INTO evidence(
-                evidence_id, project_id, acquisition_scope, project_snapshot_id, module_id,
-                source_revision_id, content_equivalence_key, origin_kind, evidence_kind, locator,
-                summary, commit_state, created_at
-            ) VALUES (?, ?, 'scan', ?, ?, ?, ?, 'source_revision', ?, ?, ?, ?, ?)
-            """,
-            (
-                evidence_id,
-                project_id,
-                project_snapshot_id,
-                module_id,
-                source_revision_id,
-                equivalence,
-                file.evidence_kind,
-                locator,
-                _short(f"Indexed {file.artifact_kind} file as {file.evidence_kind} evidence."),
-                file.commit_state,
-                now,
-            ),
-        )
-        return evidence_id
+            evidence_ids.append(evidence_id)
+        return tuple(evidence_ids)
 
     @staticmethod
     def _history_evidence(
@@ -2807,32 +3308,61 @@ class WorkspaceScanner:
         *,
         scan_run_id: str,
         project_id: str,
+        project_snapshot_id: str,
         current_revisions: dict[str, str],
-        current_evidence: dict[str, str],
         now: str,
     ) -> None:
+        current_rows = connection.execute(
+            """
+            SELECT e.evidence_id, e.evidence_kind, e.locator, sr.artifact_id
+            FROM project_snapshot_evidence AS pse
+            JOIN evidence AS e ON e.evidence_id = pse.evidence_id
+            JOIN source_revisions AS sr ON sr.source_revision_id = e.source_revision_id
+            WHERE pse.project_snapshot_id = ? AND e.origin_kind = 'source_revision'
+            """,
+            (project_snapshot_id,),
+        ).fetchall()
+        current_ids = {str(row["evidence_id"]) for row in current_rows}
+        current_by_key = {
+            (
+                str(row["artifact_id"]),
+                str(row["evidence_kind"]),
+                str(row["locator"]),
+            ): str(row["evidence_id"])
+            for row in current_rows
+        }
         rows = connection.execute(
             """
-            SELECT e.evidence_id, e.source_revision_id, sr.artifact_id
+            SELECT e.evidence_id, e.evidence_kind, e.locator, sr.artifact_id
             FROM evidence AS e
             JOIN source_revisions AS sr ON sr.source_revision_id = e.source_revision_id
             WHERE e.project_id = ? AND e.acquisition_scope = 'scan'
+              AND e.origin_kind = 'source_revision'
             """,
             (project_id,),
         ).fetchall()
         for row in rows:
             evidence_id = str(row["evidence_id"])
-            source_revision_id = str(row["source_revision_id"])
             artifact_id = str(row["artifact_id"])
             current_revision = current_revisions.get(artifact_id)
             validity = (
-                "missing"
+                "current"
+                if evidence_id in current_ids
+                else "missing"
                 if current_revision is None
-                else "current"
-                if current_revision == source_revision_id
                 else "stale"
             )
-            replacement = current_evidence.get(current_revision) if current_revision else None
+            replacement = (
+                current_by_key.get(
+                    (
+                        artifact_id,
+                        str(row["evidence_kind"]),
+                        str(row["locator"]),
+                    )
+                )
+                if validity == "stale"
+                else None
+            )
             connection.execute(
                 """
                 INSERT INTO evidence_validities(

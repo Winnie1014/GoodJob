@@ -283,6 +283,38 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX scan_issues_run_idx ON scan_issues(scan_run_id)",
         ),
     ),
+    Migration(
+        version=3,
+        name="versioned_source_analysis",
+        statements=(
+            (
+                "ALTER TABLE source_revisions ADD COLUMN adapter_id TEXT NOT NULL "
+                "DEFAULT 'legacy'"
+            ),
+            (
+                "ALTER TABLE source_revisions ADD COLUMN adapter_version TEXT NOT NULL "
+                "DEFAULT 'legacy'"
+            ),
+            (
+                "ALTER TABLE source_revisions ADD COLUMN config_revision TEXT NOT NULL "
+                "DEFAULT 'legacy'"
+            ),
+            (
+                "CREATE INDEX source_revisions_analysis_version_idx "
+                "ON source_revisions(adapter_id, adapter_version, config_revision)"
+            ),
+        ),
+    ),
+    Migration(
+        version=4,
+        name="source_analysis_diagnostics",
+        statements=(
+            (
+                "ALTER TABLE source_revisions ADD COLUMN analysis_diagnostics TEXT "
+                "NOT NULL DEFAULT '[]'"
+            ),
+        ),
+    ),
 )
 
 
