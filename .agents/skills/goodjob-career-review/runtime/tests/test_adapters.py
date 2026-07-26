@@ -5,9 +5,7 @@ import time
 from goodjob.adapters import MAX_FACTS_PER_FILE, analyze_file
 
 
-def _kinds(
-    *, relative_path: str, text: str, artifact_kind: str, adapter_id: str
-) -> set[str]:
+def _kinds(*, relative_path: str, text: str, artifact_kind: str, adapter_id: str) -> set[str]:
     return {
         fact.evidence_kind
         for fact in analyze_file(
@@ -121,9 +119,7 @@ def test_adapter_output_is_bounded_even_for_many_symbols() -> None:
     )
 
     assert len(result.facts) == MAX_FACTS_PER_FILE
-    assert {diagnostic.kind for diagnostic in result.diagnostics} == {
-        "analysis_truncated"
-    }
+    assert {diagnostic.kind for diagnostic in result.diagnostics} == {"analysis_truncated"}
 
 
 def test_comment_text_does_not_create_language_or_schema_evidence() -> None:
@@ -135,11 +131,7 @@ def test_comment_text_does_not_create_language_or_schema_evidence() -> None:
     )
     assert "technology_usage" not in _kinds(
         relative_path="lib.rs",
-        text=(
-            "fn borrow<'a>() {}\n"
-            "/* use secret_crate::client; */\n"
-            "pub fn visible() {}\n"
-        ),
+        text=("fn borrow<'a>() {}\n/* use secret_crate::client; */\npub fn visible() {}\n"),
         artifact_kind="source",
         adapter_id="rust",
     )
@@ -161,9 +153,7 @@ def test_supported_parse_failure_returns_a_diagnostic_without_implementation() -
     )
 
     assert result.facts == ()
-    assert {diagnostic.kind for diagnostic in result.diagnostics} == {
-        "source_parse_failed"
-    }
+    assert {diagnostic.kind for diagnostic in result.diagnostics} == {"source_parse_failed"}
 
 
 def test_typescript_import_analysis_is_linear_for_many_malformed_statements() -> None:
@@ -189,6 +179,4 @@ def test_typescript_import_analysis_is_linear_for_many_malformed_statements() ->
     )
 
     assert time.monotonic() - started_at < 2.0
-    assert "symbol_definition" in {
-        fact.evidence_kind for fact in blank_result.facts
-    }
+    assert "symbol_definition" in {fact.evidence_kind for fact in blank_result.facts}

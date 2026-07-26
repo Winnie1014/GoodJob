@@ -72,6 +72,35 @@ def _close_broker(process: subprocess.Popen[str]) -> None:
     assert process.stderr.read() == ""
 
 
+def _authorize_source(
+    process: subprocess.Popen[str], workspace: Path
+) -> tuple[dict[str, object], str]:
+    authorized = _send_json(
+        process,
+        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    )
+    assert authorized["status"] == "ok"
+    receipt = _object_field(authorized, "receipt")
+    validated = _send_json(
+        process,
+        {
+            "op": "validate_job_input",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt["authorization_receipt_id"],
+            "job_input": {
+                "contract_version": "job-input-v1",
+                "target_role": "测试工程师",
+                "jd_input": {"kind": "none"},
+            },
+        },
+    )
+    assert validated["status"] == "ok"
+    job_input = _object_field(validated, "job_input")
+    validation_sha256 = job_input["validation_sha256"]
+    assert isinstance(validation_sha256, str)
+    return authorized, validation_sha256
+
+
 def _git_init(path: Path) -> None:
     subprocess.run(["git", "init", str(path)], check=True, capture_output=True, text=True)
 
@@ -165,16 +194,14 @@ def test_scan_discovers_isolated_projects_and_keeps_sensitive_bytes_out_of_sqlit
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     assert authorized["status"] == "ok"
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -232,15 +259,13 @@ def test_refresh_fast_reuses_metadata_but_verify_content_detects_same_stat_chang
     source.write_text("one\n", encoding="utf-8")
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -255,6 +280,7 @@ def test_refresh_fast_reuses_metadata_but_verify_content_detects_same_stat_chang
         broker,
         {
             "op": "refresh",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "workspace_id": workspace_id,
             "authorization_receipt_id": receipt["authorization_receipt_id"],
@@ -265,6 +291,7 @@ def test_refresh_fast_reuses_metadata_but_verify_content_detects_same_stat_chang
         broker,
         {
             "op": "refresh",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "workspace_id": workspace_id,
             "authorization_receipt_id": receipt["authorization_receipt_id"],
@@ -321,9 +348,7 @@ def test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed
     _git_init(repository)
     _git(repository, "config", "user.name", "Test Author")
     _git(repository, "config", "user.email", "author@example.test")
-    (repository / "pyproject.toml").write_text(
-        "[project]\nname='state-change'\n", encoding="utf-8"
-    )
+    (repository / "pyproject.toml").write_text("[project]\nname='state-change'\n", encoding="utf-8")
     _git(repository, "add", "pyproject.toml")
     _git(repository, "commit", "-m", "project baseline")
     source = repository / "main.py"
@@ -331,15 +356,13 @@ def test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     initial = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -355,6 +378,7 @@ def test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed
         broker,
         {
             "op": "refresh",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "workspace_id": workspace_id,
             "authorization_receipt_id": receipt["authorization_receipt_id"],
@@ -409,8 +433,7 @@ def test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed
     assert revision_count == 1
     assert validity_rows
     assert all(
-        (state == "committed") == (validity == "current")
-        for state, validity, _ in validity_rows
+        (state == "committed") == (validity == "current") for state, validity, _ in validity_rows
     )
     assert all(
         replacement == "committed"
@@ -481,19 +504,13 @@ def test_scan_with_an_authorized_missing_root_performs_no_workspace_or_run_write
     missing_workspace = tmp_path / "missing"
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {
-            "op": "authorize_source_analysis",
-            "workspace": str(missing_workspace),
-            "confirmed": True,
-        },
-    )
+    authorized, validation_sha256 = _authorize_source(broker, missing_workspace)
     receipt = _object_field(authorized, "receipt")
     response = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(missing_workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -523,6 +540,10 @@ def test_descriptor_reader_rejects_a_file_or_directory_symlink(tmp_path: Path) -
         _open_regular_file(workspace, "file.py")
     with pytest.raises(OSError):
         _open_regular_file(workspace, "directory/secret.py")
+    with pytest.raises(OSError):
+        _open_regular_file(workspace, str((outside / "secret.py").resolve()))
+    with pytest.raises(OSError):
+        _open_regular_file(workspace, "../outside/secret.py")
 
 
 def test_adapter_failures_and_sql_plan_boundaries_are_visible(tmp_path: Path) -> None:
@@ -536,24 +557,20 @@ def test_adapter_failures_and_sql_plan_boundaries_are_visible(tmp_path: Path) ->
     (project / "README.md").write_text("# Adapter boundaries\n", encoding="utf-8")
     (project / "broken.py").write_text("def broken(:\n", encoding="utf-8")
     (project / "package.json").write_text("{broken", encoding="utf-8")
-    (project / "plan.sql").write_text(
-        "CREATE TABLE planned_only (id INTEGER);\n", encoding="utf-8"
-    )
+    (project / "plan.sql").write_text("CREATE TABLE planned_only (id INTEGER);\n", encoding="utf-8")
     (project / "migrations" / "001.sql").write_text(
         "CREATE TABLE delivered (id INTEGER PRIMARY KEY);\n", encoding="utf-8"
     )
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -570,9 +587,7 @@ def test_adapter_failures_and_sql_plan_boundaries_are_visible(tmp_path: Path) ->
     connection = sqlite3.connect(data_dir / "goodjob.sqlite3")
     evidence_by_path = {
         str(path): (
-            {str(kind) for kind in str(kinds).split(",") if kind}
-            if kinds is not None
-            else set()
+            {str(kind) for kind in str(kinds).split(",") if kind} if kinds is not None else set()
         )
         for path, kinds in connection.execute(
             """
@@ -596,9 +611,7 @@ def test_adapter_failures_and_sql_plan_boundaries_are_visible(tmp_path: Path) ->
     assert evidence_by_path["broken.py"] == set()
     assert evidence_by_path["package.json"] == set()
     assert evidence_by_path["plan.sql"] == {"documentation"}
-    assert {"migration_definition", "schema_definition"} <= evidence_by_path[
-        "migrations/001.sql"
-    ]
+    assert {"migration_definition", "schema_definition"} <= evidence_by_path["migrations/001.sql"]
     assert root_adapter == "python"
 
 
@@ -613,15 +626,13 @@ def test_refresh_marks_confirmed_dead_run_interrupted_and_never_uses_it_as_fast_
     source.write_text("one\n", encoding="utf-8")
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     initial = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -649,6 +660,7 @@ def test_refresh_marks_confirmed_dead_run_interrupted_and_never_uses_it_as_fast_
         broker,
         {
             "op": "refresh",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "workspace_id": workspace_id,
             "authorization_receipt_id": receipt["authorization_receipt_id"],
@@ -701,15 +713,13 @@ def test_internal_git_history_uses_remote_head_and_persists_bounded_commit_evide
     data_dir = tmp_path / "data"
     audit_env, audit = _git_wrapper(tmp_path)
     broker = _broker(data_dir, extra_env=audit_env)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -773,15 +783,13 @@ def test_root_external_linked_worktree_requires_two_stage_authorization_and_neve
     data_dir = tmp_path / "data"
     audit_env, audit = _git_wrapper(tmp_path)
     broker = _broker(data_dir, extra_env=audit_env)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     source_receipt = _object_field(authorized, "receipt")
     denied = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": source_receipt["authorization_receipt_id"],
         },
@@ -892,6 +900,7 @@ def test_root_external_linked_worktree_requires_two_stage_authorization_and_neve
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": source_receipt["authorization_receipt_id"],
             "external_git_metadata_receipt_ids": [metadata_receipt["authorization_receipt_id"]],
@@ -912,6 +921,7 @@ def test_root_external_linked_worktree_requires_two_stage_authorization_and_neve
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": source_receipt["authorization_receipt_id"],
             "external_git_metadata_receipt_ids": [metadata_receipt["authorization_receipt_id"]],
@@ -983,15 +993,13 @@ def test_root_internal_linked_worktree_is_grouped_without_external_authorization
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -1043,15 +1051,13 @@ def test_git_directory_with_external_commondir_uses_the_same_candidate_bound_pro
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     source_receipt = _object_field(authorized, "receipt")
     denied = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": source_receipt["authorization_receipt_id"],
         },
@@ -1115,6 +1121,7 @@ def test_git_directory_with_external_commondir_uses_the_same_candidate_bound_pro
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": source_receipt["authorization_receipt_id"],
             "external_git_metadata_receipt_ids": [metadata_receipt["authorization_receipt_id"]],
@@ -1152,15 +1159,13 @@ def test_git_history_falls_back_to_main_master_or_head_only_and_handles_detached
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     initial = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -1191,6 +1196,7 @@ def test_git_history_falls_back_to_main_master_or_head_only_and_handles_detached
         broker,
         {
             "op": "refresh",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "workspace_id": workspace_id,
             "authorization_receipt_id": receipt["authorization_receipt_id"],
@@ -1247,15 +1253,13 @@ def test_git_history_checks_every_remote_head_before_declaring_a_unique_default(
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -1297,15 +1301,13 @@ def test_git_history_keeps_the_head_but_excludes_non_head_commits_older_than_180
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -1347,15 +1349,13 @@ def test_git_history_keeps_an_old_head_as_the_current_worktree_anchor(tmp_path: 
 
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -1387,15 +1387,13 @@ def test_internal_git_config_cannot_read_an_include_outside_the_authorized_works
     _git(repository, "config", "include.path", str(outside_config))
 
     broker = _broker(tmp_path / "data")
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
-    )
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
     receipt = _object_field(authorized, "receipt")
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt["authorization_receipt_id"],
         },
@@ -1409,8 +1407,8 @@ def test_internal_git_config_cannot_read_an_include_outside_the_authorized_works
         isinstance(issue, dict) and issue.get("kind") == "git_repository_boundary_violation"
         for issue in cast(list[object], scanned["issues"])
     )
-    database_text = (tmp_path / "data" / "goodjob.sqlite3").read_bytes().decode(
-        "utf-8", errors="ignore"
+    database_text = (
+        (tmp_path / "data" / "goodjob.sqlite3").read_bytes().decode("utf-8", errors="ignore")
     )
     assert "invalid external config" not in database_text
 

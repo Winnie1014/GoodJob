@@ -4,29 +4,44 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import math
 import os
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeGuard, cast
 
-from goodjob.auth import ReceiptKind, generate_capability
-from goodjob.errors import GoodJobError, InvalidInputError
+RUNTIME_DIR = Path(__file__).resolve().parents[1]
+TRUSTED_SOURCE_DIR = RUNTIME_DIR / "src"
+sys.path.insert(0, str(TRUSTED_SOURCE_DIR))
 
+from goodjob.auth import ReceiptKind, generate_capability  # noqa: E402
+from goodjob.errors import GoodJobError, InvalidInputError  # noqa: E402
+
+CORE_BOOTSTRAP = (
+    "import sys;"
+    f"sys.path.insert(0, {str(TRUSTED_SOURCE_DIR)!r});"
+    "from goodjob.cli import main;main()"
+)
 NOTICE_VERSION = "goodjob-source-analysis-v1"
 RELATION_NOTICE_VERSION = "goodjob-external-git-relation-probe-v1"
 METADATA_NOTICE_VERSION = "goodjob-external-git-metadata-v1"
 MAX_HISTORY_QUERY_PATHS = 32
 MAX_HISTORY_QUERY_CANDIDATES = 20
 MAX_HISTORY_CANDIDATE_PATHS = 200
+MAX_SOURCE_REVISION_BATCH = 200
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 
 
 def _is_json_value(value: object) -> TypeGuard[JsonValue]:
-    if value is None or isinstance(value, bool | int | float | str):
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if value is None or isinstance(value, bool | int | str):
         return True
     if isinstance(value, list):
         return all(_is_json_value(item) for item in value)
@@ -35,12 +50,17 @@ def _is_json_value(value: object) -> TypeGuard[JsonValue]:
     return False
 
 
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"unsupported JSON constant: {value}")
+
+
 def _json_object(raw: str) -> JsonObject:
     try:
-        payload: object = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        payload: object = json.loads(raw, parse_constant=_reject_json_constant)
+        is_json_object = isinstance(payload, dict) and _is_json_value(payload)
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise InvalidInputError("session broker input must be valid JSON") from exc
-    if not isinstance(payload, dict) or not _is_json_value(payload):
+    if not is_json_object:
         raise InvalidInputError("session broker input must be a JSON object")
     return cast(JsonObject, payload)
 
@@ -50,6 +70,13 @@ def _required_text(message: JsonObject, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidInputError(f"session broker field {key!r} must be a non-empty string")
     return _require_utf8(value, key)
+
+
+def _required_object(message: JsonObject, key: str) -> JsonObject:
+    value = message.get(key)
+    if not isinstance(value, dict) or not _is_json_value(value):
+        raise InvalidInputError(f"session broker field {key!r} must be a JSON object")
+    return cast(JsonObject, value)
 
 
 def _optional_text(message: JsonObject, key: str, default: str) -> str:
@@ -281,6 +308,7 @@ class ExternalGitRelation:
 class HistoryCandidateBinding:
     workspace_path: str
     source_receipt_id: str
+    preparation_run_id: str
     scan_run_id: str
     role_lens_id: str
     project_id: str
@@ -289,6 +317,13 @@ class HistoryCandidateBinding:
     query_reason: str
     candidate_id: str
     changed_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PreparationBinding:
+    workspace_path: str
+    scan_run_id: str
+    role_lens_id: str
 
 
 def _receipt_arguments(receipt: ReceiptEnvelope) -> list[str]:
@@ -308,18 +343,33 @@ def _protocol_error(message: str) -> CoreResponse:
     return CoreResponse({"status": "error", "code": "core_protocol_error", "message": message})
 
 
+def _write_all(file_descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    try:
+        chunk_size = max(1, os.fpathconf(file_descriptor, "PC_PIPE_BUF"))
+    except OSError:
+        chunk_size = 512
+    while view:
+        written = os.write(file_descriptor, view[:chunk_size])
+        if written <= 0:
+            raise OSError("unable to write protected child input")
+        view = view[written:]
+
+
 class SessionBroker:
     """Hold one raw capability only until the parent task closes standard input."""
 
     def __init__(self, data_dir: str | None) -> None:
         self._capability = generate_capability()
-        self._data_dir = data_dir
+        self._data_dir = str(Path(data_dir).expanduser().resolve()) if data_dir else None
         self._source_receipts: dict[str, ReceiptEnvelope] = {}
         self._relation_receipts: dict[str, ReceiptEnvelope] = {}
         self._metadata_receipts: dict[str, ReceiptEnvelope] = {}
         self._candidates: dict[tuple[str, str], ExternalGitCandidate] = {}
         self._relations: dict[tuple[str, str], ExternalGitRelation] = {}
         self._history_candidates: dict[str, HistoryCandidateBinding] = {}
+        self._preparation_runs: dict[str, PreparationBinding] = {}
+        self._validated_job_inputs: dict[str, str] = {}
 
     def dispatch(self, message: JsonObject) -> JsonObject:
         operation = _required_text(message, "op")
@@ -339,6 +389,14 @@ class SessionBroker:
             return self._scan(message).payload
         if operation == "refresh":
             return self._refresh(message).payload
+        if operation == "scan_overview":
+            return self._scan_overview(message).payload
+        if operation == "validate_job_input":
+            return self._validate_job_input(message).payload
+        if operation == "prepare_start":
+            return self._prepare_start(message).payload
+        if operation == "verify_source_revision":
+            return self._verify_source_revision(message).payload
         if operation == "query_history_candidates":
             return self._query_history_candidates(message).payload
         if operation == "read_history_candidate":
@@ -564,6 +622,7 @@ class SessionBroker:
         workspace = _required_text(message, "workspace")
         source = self._source_receipt(message)
         self._require_source_scope(source, workspace)
+        self._require_validated_job_input(message, workspace)
         config_revision = _optional_text(message, "config_revision", "goodjob-scan-config-v1")
         return self._run_protected_child(
             [
@@ -583,6 +642,7 @@ class SessionBroker:
         workspace_id = _required_text(message, "workspace_id")
         source = self._source_receipt(message)
         self._require_source_scope(source, workspace)
+        self._require_validated_job_input(message, workspace)
         config_revision = _optional_text(message, "config_revision", "goodjob-scan-config-v1")
         mode = _optional_text(message, "change_detection_mode", "fast")
         if mode not in {"fast", "verify_content"}:
@@ -602,12 +662,168 @@ class SessionBroker:
             ]
         )
 
+    def _scan_overview(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        self._require_validated_job_input(message, workspace)
+        arguments = [
+            "scan-overview",
+            "--workspace",
+            workspace,
+            *_receipt_arguments(source),
+        ]
+        scan_run_id = message.get("scan_run_id")
+        if scan_run_id is not None:
+            if not isinstance(scan_run_id, str) or not scan_run_id.strip():
+                raise InvalidInputError("scan_run_id must be a non-empty string when provided")
+            arguments.extend(["--scan-run-id", _require_utf8(scan_run_id, "scan_run_id")])
+        return self._run_protected_child(arguments)
+
+    def _prepare_start(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        request = _required_object(message, "preparation_request")
+        self._require_validated_job_input(request, workspace)
+        expected_scan_run_id = _required_text(request, "scan_run_id")
+        response = self._run_protected_child(
+            [
+                "prepare-start",
+                "--workspace",
+                workspace,
+                *_receipt_arguments(source),
+            ],
+            payload=request,
+        )
+        if response.status != "ok":
+            return response
+        preparation_value = response.payload.get("preparation_run")
+        role_lens_value = response.payload.get("role_lens")
+        if (
+            not isinstance(preparation_value, dict)
+            or not _is_json_value(preparation_value)
+            or not isinstance(role_lens_value, dict)
+            or not _is_json_value(role_lens_value)
+        ):
+            return _protocol_error("GoodJob core returned an invalid PreparationRun")
+        preparation = cast(JsonObject, preparation_value)
+        role_lens = cast(JsonObject, role_lens_value)
+        try:
+            preparation_run_id = _required_text(preparation, "preparation_run_id")
+            scan_run_id = _required_text(preparation, "scan_run_id")
+            role_lens_id = _required_text(role_lens, "role_lens_id")
+        except InvalidInputError:
+            return _protocol_error("GoodJob core returned an incomplete PreparationRun")
+        if scan_run_id != expected_scan_run_id or preparation.get("role_lens_id") != role_lens_id:
+            return _protocol_error("GoodJob core returned a PreparationRun for another input")
+        binding = PreparationBinding(
+            workspace_path=str(_workspace_path(workspace)),
+            scan_run_id=scan_run_id,
+            role_lens_id=role_lens_id,
+        )
+        existing = self._preparation_runs.get(preparation_run_id)
+        if existing is not None and existing != binding:
+            return _protocol_error("GoodJob core returned a colliding PreparationRun")
+        self._preparation_runs[preparation_run_id] = binding
+        return response
+
+    def _require_validated_job_input(self, message: JsonObject, workspace: str) -> str:
+        canonical_workspace = str(_workspace_path(workspace))
+        validation_sha256 = _required_text(message, "job_input_validation_sha256")
+        current = self._validated_job_inputs.get(canonical_workspace)
+        if current is None or not hmac.compare_digest(validation_sha256, current):
+            raise InvalidInputError(
+                "validate this exact job input in the current session before protected analysis"
+            )
+        return validation_sha256
+
+    def _validate_job_input(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        canonical_workspace = str(_workspace_path(workspace))
+        self._validated_job_inputs.pop(canonical_workspace, None)
+        job_input = _required_object(message, "job_input")
+        response = self._run_protected_child(
+            [
+                "validate-job-input",
+                "--workspace",
+                workspace,
+                *_receipt_arguments(source),
+            ],
+            payload=job_input,
+        )
+        if response.status != "ok":
+            return response
+        result_value = response.payload.get("job_input")
+        if not isinstance(result_value, dict) or not _is_json_value(result_value):
+            return _protocol_error("GoodJob core returned an invalid JobInput validation")
+        result = cast(JsonObject, result_value)
+        try:
+            validation_sha256 = _required_text(result, "validation_sha256")
+        except InvalidInputError:
+            return _protocol_error("GoodJob core returned an incomplete JobInput validation")
+        self._validated_job_inputs[canonical_workspace] = validation_sha256
+        return response
+
+    def _verify_source_revision(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        preparation_run_id = _required_text(message, "preparation_run_id")
+        binding = self._preparation_runs.get(preparation_run_id)
+        if binding is None:
+            raise InvalidInputError(
+                "start this PreparationRun in the current session before checking its sources"
+            )
+        if binding.workspace_path != str(_workspace_path(workspace)):
+            raise InvalidInputError("PreparationRun does not match the requested workspace")
+        source_revision_ids = _required_text_list(
+            message, "source_revision_ids", maximum=MAX_SOURCE_REVISION_BATCH
+        )
+        phase = _required_text(message, "phase")
+        if phase != "before_read":
+            raise InvalidInputError("public source checks only support the before_read phase")
+        response = self._run_protected_child(
+            [
+                "verify-source-revision",
+                "--workspace",
+                workspace,
+                "--preparation-run-id",
+                preparation_run_id,
+                *_receipt_arguments(source),
+            ],
+            payload={
+                "phase": phase,
+                "source_revision_ids": list(source_revision_ids),
+            },
+        )
+        if (
+            response.status == "ok"
+            and response.payload.get("preparation_run_id") != preparation_run_id
+        ):
+            return _protocol_error("GoodJob core checked sources for another PreparationRun")
+        return response
+
     def _query_history_candidates(self, message: JsonObject) -> CoreResponse:
         workspace = _required_text(message, "workspace")
         source = self._source_receipt(message)
         self._require_source_scope(source, workspace)
+        preparation_run_id = _required_text(message, "preparation_run_id")
         scan_run_id = _required_text(message, "scan_run_id")
         role_lens_id = _required_text(message, "role_lens_id")
+        preparation = self._preparation_runs.get(preparation_run_id)
+        if preparation is None:
+            raise InvalidInputError(
+                "start this PreparationRun in the current session before querying history"
+            )
+        if preparation != PreparationBinding(
+            workspace_path=str(_workspace_path(workspace)),
+            scan_run_id=scan_run_id,
+            role_lens_id=role_lens_id,
+        ):
+            raise InvalidInputError("history query does not match the active PreparationRun")
         project_id = _required_text(message, "project_id")
         worktree_value = message.get("worktree_id")
         if worktree_value is not None and not isinstance(worktree_value, str):
@@ -627,13 +843,13 @@ class SessionBroker:
             or isinstance(maximum_value, bool)
             or not 1 <= maximum_value <= MAX_HISTORY_QUERY_CANDIDATES
         ):
-            raise InvalidInputError(
-                "maximum_candidates must be a bounded positive integer"
-            )
+            raise InvalidInputError("maximum_candidates must be a bounded positive integer")
         arguments = [
             "query-history-candidates",
             "--workspace",
             workspace,
+            "--preparation-run-id",
+            preparation_run_id,
             "--scan-run-id",
             scan_run_id,
             "--role-lens-id",
@@ -667,6 +883,7 @@ class SessionBroker:
             return _protocol_error("GoodJob core returned an invalid history worktree")
         if (
             history.get("scan_run_id") != scan_run_id
+            or history.get("preparation_run_id") != preparation_run_id
             or history.get("role_lens_id") != role_lens_id
             or history.get("project_id") != project_id
             or history.get("relative_paths") != sorted(set(relative_paths))
@@ -687,6 +904,7 @@ class SessionBroker:
             binding = HistoryCandidateBinding(
                 workspace_path=str(_workspace_path(workspace)),
                 source_receipt_id=source.authorization_receipt_id,
+                preparation_run_id=preparation_run_id,
                 scan_run_id=scan_run_id,
                 role_lens_id=role_lens_id,
                 project_id=project_id,
@@ -723,6 +941,8 @@ class SessionBroker:
             "read-history-candidate",
             "--workspace",
             workspace,
+            "--preparation-run-id",
+            binding.preparation_run_id,
             "--scan-run-id",
             binding.scan_run_id,
             "--role-lens-id",
@@ -730,9 +950,7 @@ class SessionBroker:
             "--project-id",
             binding.project_id,
             "--relative-paths-json",
-            json.dumps(
-                list(binding.relative_paths), ensure_ascii=False, separators=(",", ":")
-            ),
+            json.dumps(list(binding.relative_paths), ensure_ascii=False, separators=(",", ":")),
             "--query-reason",
             binding.query_reason,
             "--candidate-id",
@@ -807,29 +1025,98 @@ class SessionBroker:
             )
         return json.dumps(grants, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
-    def _run_protected_child(self, arguments: list[str]) -> CoreResponse:
-        read_fd, write_fd = os.pipe()
-        command = [sys.executable, "-m", "goodjob"]
+    def _run_protected_child(
+        self, arguments: list[str], *, payload: JsonObject | None = None
+    ) -> CoreResponse:
+        payload_bytes: bytes | None = None
+        if payload is not None:
+            try:
+                payload_bytes = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                    allow_nan=False,
+                ).encode("utf-8")
+            except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as exc:
+                raise InvalidInputError("protected payload must contain canonical JSON") from exc
+        try:
+            capability_read_fd, capability_write_fd = os.pipe()
+        except OSError as exc:
+            raise InvalidInputError("unable to allocate protected capability channel") from exc
+        payload_read_fd: int | None = None
+        payload_write_fd: int | None = None
+        if payload is not None:
+            try:
+                payload_read_fd, payload_write_fd = os.pipe()
+            except OSError as exc:
+                os.close(capability_read_fd)
+                os.close(capability_write_fd)
+                raise InvalidInputError("unable to allocate protected payload channel") from exc
+        command = [sys.executable, "-I", "-B", "-c", CORE_BOOTSTRAP]
         if self._data_dir:
             command.extend(["--data-dir", self._data_dir])
+        child_arguments = list(arguments)
+        pass_fds = [capability_read_fd]
+        if payload_read_fd is not None:
+            child_arguments.extend(["--payload-fd", str(payload_read_fd)])
+            pass_fds.append(payload_read_fd)
+        full_command = [
+            *command,
+            *child_arguments,
+            "--capability-fd",
+            str(capability_read_fd),
+        ]
+        child_environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("PYTHON")
+        }
         try:
             process = subprocess.Popen(
-                [*command, *arguments, "--capability-fd", str(read_fd)],
+                full_command,
+                cwd=RUNTIME_DIR,
+                env=child_environment,
                 close_fds=True,
-                pass_fds=(read_fd,),
+                pass_fds=tuple(pass_fds),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-        finally:
-            os.close(read_fd)
+        except Exception:
+            os.close(capability_read_fd)
+            os.close(capability_write_fd)
+            if payload_read_fd is not None:
+                os.close(payload_read_fd)
+            if payload_write_fd is not None:
+                os.close(payload_write_fd)
+            raise
+        os.close(capability_read_fd)
+        if payload_read_fd is not None:
+            os.close(payload_read_fd)
+        write_error: OSError | None = None
+        capability_write_open = True
         try:
-            os.write(write_fd, self._capability)
+            _write_all(capability_write_fd, self._capability)
+            os.close(capability_write_fd)
+            capability_write_open = False
+            if payload_write_fd is not None and payload_bytes is not None:
+                _write_all(payload_write_fd, payload_bytes)
+        except OSError as exc:
+            write_error = exc
         finally:
-            os.close(write_fd)
+            if capability_write_open:
+                os.close(capability_write_fd)
+            if payload_write_fd is not None:
+                os.close(payload_write_fd)
+        if write_error is not None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            process.communicate()
+            raise InvalidInputError(
+                "unable to deliver protected input to GoodJob core"
+            ) from write_error
         stdout, stderr = process.communicate()
         return CoreResponse.from_process(
-            subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            subprocess.CompletedProcess(full_command, process.returncode, stdout, stderr)
         )
 
 

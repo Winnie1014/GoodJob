@@ -28,6 +28,7 @@ HISTORY_QUERY_CONTRACT_VERSION = "history-query-v1"
 
 @dataclass(frozen=True)
 class HistoryQueryContext:
+    preparation_run_id: str
     scan_run_id: str
     role_lens_id: str
     project_id: str
@@ -74,6 +75,7 @@ class HistoryQueryService:
         self,
         *,
         workspace_path: Path,
+        preparation_run_id: str,
         scan_run_id: str,
         role_lens_id: str,
         project_id: str,
@@ -84,6 +86,7 @@ class HistoryQueryService:
     ) -> dict[str, object]:
         context = self._context(
             workspace_path=workspace_path,
+            preparation_run_id=preparation_run_id,
             scan_run_id=scan_run_id,
             role_lens_id=role_lens_id,
             project_id=project_id,
@@ -100,6 +103,7 @@ class HistoryQueryService:
             "status": "ok",
             "history_query": {
                 "contract_version": HISTORY_QUERY_CONTRACT_VERSION,
+                "preparation_run_id": context.preparation_run_id,
                 "scan_run_id": context.scan_run_id,
                 "role_lens_id": context.role_lens_id,
                 "project_id": context.project_id,
@@ -117,6 +121,7 @@ class HistoryQueryService:
         self,
         *,
         workspace_path: Path,
+        preparation_run_id: str,
         scan_run_id: str,
         role_lens_id: str,
         project_id: str,
@@ -128,6 +133,7 @@ class HistoryQueryService:
     ) -> dict[str, object]:
         context = self._context(
             workspace_path=workspace_path,
+            preparation_run_id=preparation_run_id,
             scan_run_id=scan_run_id,
             role_lens_id=role_lens_id,
             project_id=project_id,
@@ -136,9 +142,7 @@ class HistoryQueryService:
             query_reason=query_reason,
         )
         candidates, _ = self._query(context, MAX_HISTORY_QUERY_CANDIDATES)
-        candidate = next(
-            (item for item in candidates if item.candidate_id == candidate_id), None
-        )
+        candidate = next((item for item in candidates if item.candidate_id == candidate_id), None)
         if candidate is None:
             raise InvalidInputError("history candidate is not valid for this frozen query")
         if selected_path not in candidate.changed_paths or not self._path_matches_query(
@@ -196,6 +200,7 @@ class HistoryQueryService:
         self,
         *,
         workspace_path: Path,
+        preparation_run_id: str,
         scan_run_id: str,
         role_lens_id: str,
         project_id: str,
@@ -203,6 +208,8 @@ class HistoryQueryService:
         relative_paths: tuple[str, ...],
         query_reason: str,
     ) -> HistoryQueryContext:
+        if not preparation_run_id.strip() or len(preparation_run_id) > 200:
+            raise InvalidInputError("preparation_run_id must be a bounded non-empty value")
         if not role_lens_id.strip() or len(role_lens_id) > 200:
             raise InvalidInputError("role_lens_id must be a bounded non-empty value")
         if not query_reason.strip() or len(query_reason) > 500:
@@ -219,6 +226,11 @@ class HistoryQueryService:
                        wo.head_commit, wo.external_common_dir
                 FROM scan_runs AS sr
                 JOIN workspaces AS ws ON ws.workspace_id = sr.workspace_id
+                JOIN preparation_runs AS pr
+                  ON pr.scan_run_id = sr.scan_run_id
+                 AND pr.preparation_run_id = ?
+                 AND pr.role_lens_id = ?
+                 AND pr.status IN ('analyzing', 'awaiting_context')
                 JOIN scan_run_projects AS srp ON srp.scan_run_id = sr.scan_run_id
                 JOIN projects AS p ON p.project_id = srp.project_id
                 JOIN project_snapshots AS ps
@@ -233,7 +245,13 @@ class HistoryQueryService:
                   AND srp.snapshot_disposition IN ('fresh', 'carried_forward')
                 ORDER BY w.worktree_id
                 """,
-                (scan_run_id, project_id, str(authorized_root)),
+                (
+                    preparation_run_id,
+                    role_lens_id,
+                    scan_run_id,
+                    project_id,
+                    str(authorized_root),
+                ),
             ).fetchall()
             if worktree_id is not None:
                 rows = [row for row in rows if str(row["worktree_id"]) == worktree_id]
@@ -280,6 +298,7 @@ class HistoryQueryService:
         ):
             raise InvalidInputError("Git repository identity changed after the frozen scan")
         return HistoryQueryContext(
+            preparation_run_id=preparation_run_id,
             scan_run_id=scan_run_id,
             role_lens_id=role_lens_id,
             project_id=project_id,
@@ -301,9 +320,7 @@ class HistoryQueryService:
         except ValueError as exc:
             raise InvalidInputError("frozen scan start time is invalid") from exc
         cutoff = (
-            (started_at - timedelta(days=HISTORY_WINDOW_DAYS))
-            .isoformat()
-            .replace("+00:00", "Z")
+            (started_at - timedelta(days=HISTORY_WINDOW_DAYS)).isoformat().replace("+00:00", "Z")
         )
         try:
             result = self._scanner._git_bounded_bytes(

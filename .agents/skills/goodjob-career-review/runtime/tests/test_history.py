@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,9 +54,7 @@ def _broker(data_dir: Path) -> subprocess.Popen[str]:
     )
 
 
-def _send_json(
-    process: subprocess.Popen[str], payload: dict[str, object]
-) -> dict[str, object]:
+def _send_json(process: subprocess.Popen[str], payload: dict[str, object]) -> dict[str, object]:
     assert process.stdin is not None
     assert process.stdout is not None
     process.stdin.write(json.dumps(payload) + "\n")
@@ -119,10 +118,27 @@ def test_targeted_history_is_bounded_transient_and_session_scoped(tmp_path: Path
     receipt = _object(authorized, "receipt")
     receipt_id = receipt["authorization_receipt_id"]
     assert isinstance(receipt_id, str)
+    validated = _send_json(
+        broker,
+        {
+            "op": "validate_job_input",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "job_input": {
+                "contract_version": "job-input-v1",
+                "target_role": "系统工程师",
+                "jd_input": {"kind": "none"},
+            },
+        },
+    )
+    validated_job_input = _object(validated, "job_input")
+    validation_sha256 = validated_job_input["validation_sha256"]
+    assert isinstance(validation_sha256, str)
     scanned = _send_json(
         broker,
         {
             "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
             "workspace": str(workspace),
             "authorization_receipt_id": receipt_id,
         },
@@ -130,6 +146,51 @@ def test_targeted_history_is_bounded_transient_and_session_scoped(tmp_path: Path
     scan_run = _object(scanned, "scan_run")
     scan_run_id = scan_run["scan_run_id"]
     assert isinstance(scan_run_id, str)
+    prepared = _send_json(
+        broker,
+        {
+            "op": "prepare_start",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "preparation_request": {
+                "contract_version": "preparation-request-v1",
+                "request_id": str(uuid.uuid4()),
+                "scan_run_id": scan_run_id,
+                "config_revision": "history-test-v1",
+                "target_role": "系统工程师",
+                "jd_input": {"kind": "none"},
+                "job_input_validation_sha256": validation_sha256,
+                "requested_exports": [],
+                "evidence_limit_per_project": 20,
+                "role_lens": {
+                    "contract_version": "role-lens-v1",
+                    "dimensions": [
+                        {
+                            "key": "system_depth",
+                            "display_name": "系统深度",
+                            "weight_bps": 10000,
+                            "evaluation_criteria": "评价系统实现和演进证据",
+                            "required_evidence_kinds": ["implementation"],
+                        }
+                    ],
+                    "evidence_requirements": ["implementation"],
+                    "ranking_rules": ["系统相关性优先"],
+                    "output_sections": ["系统能力"],
+                    "question_strategy": {"primary": "追问技术演进"},
+                    "gap_rules": ["缺少证据则记录缺口"],
+                    "assumptions": ["未提供岗位 JD"],
+                    "generator_id": "history-test",
+                    "prompt_contract_version": "history-test-v1",
+                },
+            },
+        },
+    )
+    preparation_run = _object(prepared, "preparation_run")
+    preparation_run_id = preparation_run["preparation_run_id"]
+    assert isinstance(preparation_run_id, str)
+    role_lens = _object(prepared, "role_lens")
+    role_lens_id = role_lens["role_lens_id"]
+    assert isinstance(role_lens_id, str)
 
     connection = sqlite3.connect(data_dir / "goodjob.sqlite3")
     identifiers = connection.execute(
@@ -153,14 +214,34 @@ def test_targeted_history_is_bounded_transient_and_session_scoped(tmp_path: Path
     assert recent_commit in persisted_history
     assert old_commit not in persisted_history
 
+    rejected_fake_lens = _send_json(
+        broker,
+        {
+            "op": "query_history_candidates",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "preparation_run_id": preparation_run_id,
+            "scan_run_id": scan_run_id,
+            "role_lens_id": "forged-role-lens",
+            "project_id": project_id,
+            "worktree_id": worktree_id,
+            "relative_paths": ["main.py"],
+            "query_reason": "伪造岗位镜头不得读取历史",
+            "maximum_candidates": 5,
+        },
+    )
+    assert rejected_fake_lens["status"] == "error"
+    assert rejected_fake_lens["code"] == "invalid_input"
+
     queried = _send_json(
         broker,
         {
             "op": "query_history_candidates",
             "workspace": str(workspace),
             "authorization_receipt_id": receipt_id,
+            "preparation_run_id": preparation_run_id,
             "scan_run_id": scan_run_id,
-            "role_lens_id": "role-lens-test-v1",
+            "role_lens_id": role_lens_id,
             "project_id": project_id,
             "worktree_id": worktree_id,
             "relative_paths": ["main.py"],
@@ -214,8 +295,9 @@ def test_targeted_history_is_bounded_transient_and_session_scoped(tmp_path: Path
             "op": "query_history_candidates",
             "workspace": str(workspace),
             "authorization_receipt_id": receipt_id,
+            "preparation_run_id": preparation_run_id,
             "scan_run_id": scan_run_id,
-            "role_lens_id": "role-lens-test-v1",
+            "role_lens_id": role_lens_id,
             "project_id": project_id,
             "worktree_id": worktree_id,
             "relative_paths": [magic_path],
@@ -269,8 +351,9 @@ def test_targeted_history_is_bounded_transient_and_session_scoped(tmp_path: Path
             "op": "query_history_candidates",
             "workspace": str(other_workspace),
             "authorization_receipt_id": other_receipt["authorization_receipt_id"],
+            "preparation_run_id": preparation_run_id,
             "scan_run_id": scan_run_id,
-            "role_lens_id": "role-lens-test-v1",
+            "role_lens_id": role_lens_id,
             "project_id": project_id,
             "worktree_id": worktree_id,
             "relative_paths": ["main.py"],

@@ -22,12 +22,19 @@ from goodjob.db import Database
 from goodjob.errors import GoodJobError, InvalidInputError
 from goodjob.history import MAX_HISTORY_QUERY_CANDIDATES, HistoryQueryService
 from goodjob.paths import DataPaths
+from goodjob.preparation import (
+    MAX_PRIVATE_PAYLOAD_BYTES,
+    PreparationService,
+    validate_job_input,
+)
 from goodjob.scanner import (
     ExternalGitGrant,
     WorkspaceScanner,
     inspect_external_git_candidate,
     probe_external_git_relation,
 )
+
+MAX_PROTECTED_PAYLOAD_BYTES = MAX_PRIVATE_PAYLOAD_BYTES
 
 
 def _write_json(stream: Any, payload: dict[str, Any]) -> None:
@@ -57,6 +64,15 @@ def _add_authorization_arguments(
             action="store_true",
             help="record that the Skill already showed and received required owner confirmation",
         )
+
+
+def _add_payload_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--payload-fd",
+        type=int,
+        required=True,
+        help="inherited descriptor carrying bounded private structured input",
+    )
 
 
 def _authorization_request(args: argparse.Namespace) -> AuthorizationRequest:
@@ -105,6 +121,38 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--external-git-metadata-grants-json", default="[]")
     _add_authorization_arguments(refresh, needs_receipt_id=True, needs_confirmation=False)
 
+    scan_overview = subparsers.add_parser(
+        "scan-overview",
+        help="return one reusable terminal scan without reading project sources",
+    )
+    scan_overview.add_argument("--workspace", required=True)
+    scan_overview.add_argument("--scan-run-id")
+    _add_authorization_arguments(scan_overview, needs_receipt_id=True, needs_confirmation=False)
+
+    job_input = subparsers.add_parser(
+        "validate-job-input",
+        help="validate private role and JD inputs without creating business state",
+    )
+    job_input.add_argument("--workspace", required=True)
+    _add_payload_argument(job_input)
+    _add_authorization_arguments(job_input, needs_receipt_id=True, needs_confirmation=False)
+
+    prepare = subparsers.add_parser(
+        "prepare-start", help="freeze one dynamic RoleLens against a terminal scan"
+    )
+    prepare.add_argument("--workspace", required=True)
+    _add_payload_argument(prepare)
+    _add_authorization_arguments(prepare, needs_receipt_id=True, needs_confirmation=False)
+
+    source_check = subparsers.add_parser(
+        "verify-source-revision",
+        help="record an exact before-read source revision check",
+    )
+    source_check.add_argument("--workspace", required=True)
+    source_check.add_argument("--preparation-run-id", required=True)
+    _add_payload_argument(source_check)
+    _add_authorization_arguments(source_check, needs_receipt_id=True, needs_confirmation=False)
+
     candidate_inspection = subparsers.add_parser(
         "inspect-external-git-candidate",
         help="inspect only a root-internal .git marker before relation authorization",
@@ -136,9 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=MAX_HISTORY_QUERY_CANDIDATES,
     )
-    _add_authorization_arguments(
-        history_query, needs_receipt_id=True, needs_confirmation=False
-    )
+    _add_authorization_arguments(history_query, needs_receipt_id=True, needs_confirmation=False)
 
     history_read = subparsers.add_parser(
         "read-history-candidate",
@@ -153,6 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_history_query_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", required=True)
+    parser.add_argument("--preparation-run-id", required=True)
     parser.add_argument("--scan-run-id", required=True)
     parser.add_argument("--role-lens-id", required=True)
     parser.add_argument("--project-id", required=True)
@@ -418,6 +465,81 @@ def _handle_refresh(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any
     )
 
 
+def _handle_scan_overview(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    return WorkspaceScanner(Database(paths)).overview(
+        workspace_path=str(workspace),
+        scan_run_id=args.scan_run_id,
+    )
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"unsupported JSON constant: {value}")
+
+
+def _read_payload_from_fd(fd: int, *, capability_fd: int) -> dict[str, object]:
+    if fd < 0 or fd == capability_fd:
+        raise InvalidInputError("payload file descriptor must be distinct and non-negative")
+    chunks: list[bytes] = []
+    remaining = MAX_PROTECTED_PAYLOAD_BYTES + 1
+    try:
+        while remaining > 0:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    except OSError as exc:
+        raise InvalidInputError("unable to read the protected structured payload") from exc
+    raw = b"".join(chunks)
+    if len(raw) > MAX_PROTECTED_PAYLOAD_BYTES:
+        raise InvalidInputError("protected structured payload exceeds the byte limit")
+    try:
+        payload: object = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+        raise InvalidInputError("protected structured payload must be valid UTF-8 JSON") from exc
+    if not isinstance(payload, dict):
+        raise InvalidInputError("protected structured payload must be a JSON object")
+    return payload
+
+
+def _handle_prepare_start(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    return PreparationService(Database(paths)).start(
+        workspace_path=workspace,
+        authorization_receipt_id=args.authorization_receipt_id,
+        request_value=payload,
+    )
+
+
+def _handle_validate_job_input(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    return validate_job_input(payload)
+
+
+def _handle_source_check(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    raw_ids = payload.get("source_revision_ids")
+    if not isinstance(raw_ids, list) or any(not isinstance(value, str) for value in raw_ids):
+        raise InvalidInputError("source_revision_ids must be a JSON string list")
+    phase = payload.get("phase")
+    if not isinstance(phase, str):
+        raise InvalidInputError("source check phase must be a string")
+    return PreparationService(Database(paths)).verify_source_revisions(
+        preparation_run_id=args.preparation_run_id,
+        authorization_receipt_id=args.authorization_receipt_id,
+        source_revision_ids=tuple(raw_ids),
+        phase=phase,
+    )
+
+
 def _history_paths(raw_paths: str) -> tuple[str, ...]:
     try:
         values = json.loads(raw_paths)
@@ -433,6 +555,7 @@ def _handle_history_query(args: argparse.Namespace, paths: DataPaths) -> dict[st
     _verify_scan_authorization(args, paths, workspace)
     return HistoryQueryService(Database(paths)).query_candidates(
         workspace_path=workspace,
+        preparation_run_id=args.preparation_run_id,
         scan_run_id=args.scan_run_id,
         role_lens_id=args.role_lens_id,
         project_id=args.project_id,
@@ -448,6 +571,7 @@ def _handle_history_read(args: argparse.Namespace, paths: DataPaths) -> dict[str
     _verify_scan_authorization(args, paths, workspace)
     return HistoryQueryService(Database(paths)).read_candidate(
         workspace_path=workspace,
+        preparation_run_id=args.preparation_run_id,
         scan_run_id=args.scan_run_id,
         role_lens_id=args.role_lens_id,
         project_id=args.project_id,
@@ -533,6 +657,14 @@ def run(argv: Sequence[str] | None = None) -> int:
             payload = _handle_scan(args, paths)
         elif args.command == "refresh":
             payload = _handle_refresh(args, paths)
+        elif args.command == "scan-overview":
+            payload = _handle_scan_overview(args, paths)
+        elif args.command == "validate-job-input":
+            payload = _handle_validate_job_input(args, paths)
+        elif args.command == "prepare-start":
+            payload = _handle_prepare_start(args, paths)
+        elif args.command == "verify-source-revision":
+            payload = _handle_source_check(args, paths)
         elif args.command == "query-history-candidates":
             payload = _handle_history_query(args, paths)
         elif args.command == "read-history-candidate":

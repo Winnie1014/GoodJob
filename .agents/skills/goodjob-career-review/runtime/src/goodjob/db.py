@@ -287,10 +287,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=3,
         name="versioned_source_analysis",
         statements=(
-            (
-                "ALTER TABLE source_revisions ADD COLUMN adapter_id TEXT NOT NULL "
-                "DEFAULT 'legacy'"
-            ),
+            ("ALTER TABLE source_revisions ADD COLUMN adapter_id TEXT NOT NULL DEFAULT 'legacy'"),
             (
                 "ALTER TABLE source_revisions ADD COLUMN adapter_version TEXT NOT NULL "
                 "DEFAULT 'legacy'"
@@ -313,6 +310,152 @@ MIGRATIONS: tuple[Migration, ...] = (
                 "ALTER TABLE source_revisions ADD COLUMN analysis_diagnostics TEXT "
                 "NOT NULL DEFAULT '[]'"
             ),
+        ),
+    ),
+    Migration(
+        version=5,
+        name="role_oriented_preparation",
+        statements=(
+            """
+            CREATE TABLE job_inputs (
+                job_input_id TEXT PRIMARY KEY,
+                role_name TEXT NOT NULL,
+                jd_input_kind TEXT NOT NULL CHECK (
+                    jd_input_kind IN ('none', 'text', 'file', 'continue_without_jd')
+                ),
+                jd_text TEXT,
+                jd_source_path TEXT,
+                jd_content_sha256 TEXT,
+                inferred_level TEXT,
+                level_override TEXT,
+                primary_language TEXT NOT NULL CHECK (primary_language = 'zh-CN'),
+                created_at TEXT NOT NULL,
+                CHECK (
+                    (jd_input_kind IN ('none', 'continue_without_jd')
+                        AND jd_text IS NULL
+                        AND jd_source_path IS NULL
+                        AND jd_content_sha256 IS NULL)
+                    OR (jd_input_kind = 'text'
+                        AND jd_text IS NOT NULL
+                        AND jd_source_path IS NULL
+                        AND jd_content_sha256 IS NOT NULL)
+                    OR (jd_input_kind = 'file'
+                        AND jd_text IS NOT NULL
+                        AND jd_source_path IS NOT NULL
+                        AND jd_content_sha256 IS NOT NULL)
+                )
+            )
+            """,
+            """
+            CREATE TABLE role_lenses (
+                role_lens_id TEXT PRIMARY KEY,
+                job_input_id TEXT NOT NULL REFERENCES job_inputs(job_input_id),
+                contract_version TEXT NOT NULL,
+                dimensions TEXT NOT NULL,
+                evidence_requirements TEXT NOT NULL,
+                ranking_rules TEXT NOT NULL,
+                output_sections TEXT NOT NULL,
+                question_strategy TEXT NOT NULL,
+                gap_rules TEXT NOT NULL,
+                assumptions TEXT NOT NULL,
+                generator_id TEXT NOT NULL,
+                prompt_contract_version TEXT NOT NULL,
+                lens_sha256 TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE preparation_runs (
+                preparation_run_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                request_sha256 TEXT NOT NULL,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+                scan_run_id TEXT NOT NULL REFERENCES scan_runs(scan_run_id),
+                role_lens_id TEXT NOT NULL REFERENCES role_lenses(role_lens_id),
+                authorization_receipt_id TEXT NOT NULL REFERENCES
+                    authorization_receipts(authorization_receipt_id),
+                config_revision TEXT NOT NULL,
+                requested_exports TEXT NOT NULL,
+                evidence_limit_per_project INTEGER NOT NULL CHECK (
+                    evidence_limit_per_project BETWEEN 1 AND 200
+                ),
+                status TEXT NOT NULL CHECK (
+                    status IN (
+                        'collecting', 'awaiting_context', 'analyzing', 'ready',
+                        'rendering', 'completed', 'partial', 'render_failed',
+                        'refresh_required', 'failed', 'interrupted', 'cancelled'
+                    )
+                ),
+                status_reason TEXT,
+                started_at TEXT NOT NULL,
+                last_transition_at TEXT NOT NULL,
+                finished_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE preparation_run_projects (
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                project_snapshot_id TEXT REFERENCES project_snapshots(project_snapshot_id),
+                snapshot_disposition TEXT NOT NULL CHECK (
+                    snapshot_disposition IN (
+                        'fresh', 'carried_forward', 'failed_no_baseline', 'excluded'
+                    )
+                ),
+                PRIMARY KEY (preparation_run_id, project_id),
+                CHECK (
+                    (snapshot_disposition IN ('fresh', 'carried_forward')
+                        AND project_snapshot_id IS NOT NULL)
+                    OR (snapshot_disposition IN ('failed_no_baseline', 'excluded')
+                        AND project_snapshot_id IS NULL)
+                )
+            )
+            """,
+            """
+            CREATE TABLE preparation_source_checks (
+                source_check_id TEXT PRIMARY KEY,
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                source_revision_id TEXT NOT NULL REFERENCES
+                    source_revisions(source_revision_id),
+                phase TEXT NOT NULL CHECK (phase IN ('preflight', 'before_read', 'commit')),
+                expected_sha256 TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('passed', 'mismatch'))
+            )
+            """,
+            """
+            CREATE TABLE preparation_source_mismatches (
+                source_mismatch_id TEXT PRIMARY KEY,
+                source_check_id TEXT NOT NULL UNIQUE REFERENCES
+                    preparation_source_checks(source_check_id),
+                mismatch_kind TEXT NOT NULL CHECK (
+                    mismatch_kind IN ('missing', 'unreadable', 'sha256_mismatch')
+                ),
+                observed_sha256 TEXT,
+                detected_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE scan_run_overviews (
+                scan_run_id TEXT PRIMARY KEY REFERENCES scan_runs(scan_run_id),
+                coverage_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX preparation_runs_workspace_status_idx
+            ON preparation_runs(workspace_id, status, started_at)
+            """,
+            """
+            CREATE INDEX preparation_run_projects_snapshot_idx
+            ON preparation_run_projects(preparation_run_id, snapshot_disposition)
+            """,
+            """
+            CREATE INDEX preparation_source_checks_run_phase_idx
+            ON preparation_source_checks(preparation_run_id, phase, source_revision_id)
+            """,
         ),
     ),
 )

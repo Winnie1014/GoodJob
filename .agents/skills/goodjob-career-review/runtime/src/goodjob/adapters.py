@@ -219,9 +219,7 @@ def _is_python_main_guard(node: ast.expr) -> bool:
     )
 
 
-def _without_comments(
-    text: str, *, line_marker: str, quote_characters: str = "'\"`"
-) -> str:
+def _without_comments(text: str, *, line_marker: str, quote_characters: str = "'\"`") -> str:
     """Blank comments in one linear pass while preserving line and byte positions."""
     output = list(text)
     quote: str | None = None
@@ -340,8 +338,12 @@ def _typescript_facts(text: str) -> list[AnalysisFact]:
                 symbol_kind=symbol_kind,
             ),
         )
-    for token, route_kind in (("createRoot(", "react_root"), ("createBrowserRouter(", "router"),
-                              ("<Route", "route_component"), ("app.listen(", "server_listen")):
+    for token, route_kind in (
+        ("createRoot(", "react_root"),
+        ("createBrowserRouter(", "router"),
+        ("<Route", "route_component"),
+        ("app.listen(", "server_listen"),
+    ):
         position = text.find(token)
         if position >= 0:
             _append(
@@ -489,8 +491,11 @@ def _dart_facts(text: str) -> list[AnalysisFact]:
                 entry_kind="main",
             ),
         )
-    for token, route_kind in (("MaterialApp(", "material_app"), ("GoRoute(", "go_router"),
-                              ("Navigator.", "navigator")):
+    for token, route_kind in (
+        ("MaterialApp(", "material_app"),
+        ("GoRoute(", "go_router"),
+        ("Navigator.", "navigator"),
+    ):
         position = text.find(token)
         if position >= 0:
             _append(
@@ -556,9 +561,7 @@ def _sql_facts(text: str) -> list[AnalysisFact]:
     return facts
 
 
-def _manifest_facts(
-    filename: str, text: str, adapter_id: str
-) -> tuple[list[AnalysisFact], bool]:
+def _manifest_facts(filename: str, text: str, adapter_id: str) -> tuple[list[AnalysisFact], bool]:
     facts: list[AnalysisFact] = []
     lower = filename.lower()
     if lower == "package.json":
@@ -666,9 +669,7 @@ def _manifest_facts(
         pubspec_section: str | None = None
         for raw_line in text.splitlines():
             if raw_line and not raw_line.startswith((" ", "\t")):
-                pubspec_section = (
-                    raw_line.removesuffix(":") if raw_line.endswith(":") else None
-                )
+                pubspec_section = raw_line.removesuffix(":") if raw_line.endswith(":") else None
                 continue
             if pubspec_section not in {"dependencies", "dev_dependencies"}:
                 continue

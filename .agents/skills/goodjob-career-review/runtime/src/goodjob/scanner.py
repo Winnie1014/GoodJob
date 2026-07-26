@@ -32,8 +32,13 @@ from goodjob.adapters import (
 )
 from goodjob.db import Database
 from goodjob.errors import InvalidInputError
+from goodjob.source_io import (
+    MAX_SOURCE_FILE_BYTES,
+    open_regular_file,
+    read_open_file,
+)
 
-MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_FILE_BYTES = MAX_SOURCE_FILE_BYTES
 ANALYZER_VERSION = "scan-v2"
 HISTORY_WINDOW_DAYS = 180
 MAX_HISTORY_COMMITS = 250
@@ -43,6 +48,14 @@ MAX_HISTORY_PATH_BYTES = 256 * 1024
 MAX_REMOTE_HEAD_BYTES = 512 * 1024
 MAX_GIT_COMMAND_BYTES = 8 * 1024 * 1024
 MAX_HISTORY_FIELD_BYTES = 512
+ROLE_LENS_CONTEXT_CONTRACT_VERSION = "role-lens-context-v1"
+MAX_ROLE_LENS_CONTEXT_PROJECTS = 200
+MAX_ROLE_LENS_CONTEXT_MODULES = 500
+MAX_ROLE_LENS_CONTEXT_MODULES_PER_PROJECT = 20
+MAX_ROLE_LENS_CONTEXT_EVIDENCE_SAMPLES = 500
+MAX_ROLE_LENS_CONTEXT_EVIDENCE_PER_PROJECT = 10
+SCAN_OVERVIEW_CONTRACT_VERSION = "scan-overview-v1"
+MAX_SCAN_OVERVIEW_ISSUES = 200
 GIT_COMMAND_TIMEOUT_SECONDS = 10.0
 GIT_EXECUTABLE_CANDIDATES = (
     Path("/Applications/Xcode.app/Contents/Developer/usr/bin/git"),
@@ -57,21 +70,18 @@ GIT_EXECUTABLE = next(
 SANDBOX_EXECUTABLE = Path("/usr/bin/sandbox-exec")
 GIT_SANDBOX_PROFILE = " ".join(
     (
-        '(version 1)',
+        "(version 1)",
         '(import "system.sb")',
-        '(deny default)',
-        '(deny network*)',
+        "(deny default)",
+        "(deny network*)",
         '(allow process-exec (literal (param "GIT_EXECUTABLE")))',
-        '(allow process-fork)',
-        '('
-        'allow file-read* file-test-existence file-map-executable '
+        "(allow process-fork)",
+        "("
+        "allow file-read* file-test-existence file-map-executable "
         '(subpath (param "AUTHORIZED_ROOT")) '
         '(literal (param "GIT_EXECUTABLE"))'
-        ')',
-        '('
-        'allow file-read-metadata file-test-existence '
-        '(path-ancestors (param "AUTHORIZED_ROOT"))'
-        ')',
+        ")",
+        '(allow file-read-metadata file-test-existence (path-ancestors (param "AUTHORIZED_ROOT")))',
         '(allow file-write-data (literal "/dev/null"))',
     )
 )
@@ -204,27 +214,11 @@ def _analysis_diagnostics(raw: str) -> tuple[AnalysisDiagnostic, ...]:
 
 
 def _open_regular_file(root: Path, relative_path: str) -> tuple[int, os.stat_result]:
-    """Open a workspace file without following any path component symlink."""
-    parts = PurePosixPath(relative_path).parts
-    if not parts or any(part in {"", ".", ".."} for part in parts):
-        raise OSError("relative path is not safe to open")
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | nofollow
-    root_fd = os.open(root, directory_flags)
-    directory_fd = root_fd
-    try:
-        for part in parts[:-1]:
-            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
-            os.close(directory_fd)
-            directory_fd = next_fd
-        file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=directory_fd)
-        file_stat = os.fstat(file_fd)
-        if not stat.S_ISREG(file_stat.st_mode):
-            os.close(file_fd)
-            raise OSError("path is not a regular file")
-        return file_fd, file_stat
-    finally:
-        os.close(directory_fd)
+    return open_regular_file(root, relative_path)
+
+
+def _read_open_file(file_fd: int, *, maximum_bytes: int = MAX_FILE_BYTES) -> bytes:
+    return read_open_file(file_fd, maximum_bytes=maximum_bytes)
 
 
 def _open_directory(root: Path, relative_path: str = ".") -> int:
@@ -318,19 +312,6 @@ def _safe_lstat(root: Path, relative_path: str) -> os.stat_result:
         return os.stat(relative.name, dir_fd=directory_fd, follow_symlinks=False)
     finally:
         os.close(directory_fd)
-
-
-def _read_open_file(file_fd: int, *, maximum_bytes: int = MAX_FILE_BYTES) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = os.read(file_fd, 1024 * 1024)
-        if not chunk:
-            return b"".join(chunks)
-        total += len(chunk)
-        if total > maximum_bytes:
-            raise OSError("file exceeded the indexing limit while it was open")
-        chunks.append(chunk)
 
 
 def _child_relative(directory_relative: str, child_name: str) -> str:
@@ -797,9 +778,7 @@ class WorkspaceScanner:
     def __init__(self, database: Database, *, git_executable: str = GIT_EXECUTABLE) -> None:
         self._database = database
         self._git_executable = str(Path(git_executable).resolve(strict=True))
-        self._analysis_cache: dict[
-            tuple[str, str, str, str, str, str], AnalysisResult
-        ] = {}
+        self._analysis_cache: dict[tuple[str, str, str, str, str, str], AnalysisResult] = {}
 
     def scan(
         self,
@@ -845,6 +824,150 @@ class WorkspaceScanner:
             external_git_grants=external_git_grants,
         )
 
+    def overview(
+        self,
+        *,
+        workspace_path: str,
+        scan_run_id: str | None = None,
+    ) -> dict[str, object]:
+        """Return one reusable terminal scan without reading project sources."""
+        root = Path(workspace_path).expanduser().resolve(strict=False)
+        with self._database.read_connection() as connection:
+            parameters: list[object] = [str(root)]
+            requested_filter = ""
+            if scan_run_id is not None:
+                if not scan_run_id.strip() or len(scan_run_id) > 200:
+                    raise InvalidInputError("scan_run_id must be a bounded non-empty value")
+                requested_filter = " AND sr.scan_run_id = ?"
+                parameters.append(scan_run_id)
+            row = connection.execute(
+                f"""
+                SELECT sr.scan_run_id, sr.workspace_id, sr.status, sr.mode,
+                       sr.change_detection_mode, sr.config_revision, sr.started_at,
+                       sr.finished_at, sro.coverage_json
+                FROM scan_runs AS sr
+                JOIN workspaces AS w ON w.workspace_id = sr.workspace_id
+                LEFT JOIN scan_run_overviews AS sro ON sro.scan_run_id = sr.scan_run_id
+                WHERE w.canonical_root = ?
+                  AND sr.status IN ('completed', 'partial', 'failed')
+                  AND (sr.status IN ('completed', 'partial') OR sro.scan_run_id IS NOT NULL)
+                  {requested_filter}
+                ORDER BY sr.started_at DESC, sr.scan_run_id DESC
+                LIMIT 1
+                """,
+                tuple(parameters),
+            ).fetchone()
+            if row is None:
+                return {
+                    "status": "ok",
+                    "scan_overview": {
+                        "contract_version": SCAN_OVERVIEW_CONTRACT_VERSION,
+                        "found": False,
+                        "workspace_path": str(root),
+                        "scan_run": None,
+                        "coverage": None,
+                        "issues": [],
+                        "limits": {
+                            "issue_limit": MAX_SCAN_OVERVIEW_ISSUES,
+                            "available_issues": 0,
+                            "issues_truncated": False,
+                        },
+                    },
+                }
+            selected_scan_run_id = str(row["scan_run_id"])
+            coverage = self._overview_coverage(connection, row, selected_scan_run_id)
+            issue_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM scan_issues WHERE scan_run_id = ?",
+                    (selected_scan_run_id,),
+                ).fetchone()["count"]
+            )
+            issue_rows = connection.execute(
+                """
+                SELECT issue_id, project_id, artifact_id, kind, severity,
+                       relative_path, message, remediation
+                FROM scan_issues
+                WHERE scan_run_id = ?
+                ORDER BY CASE severity
+                    WHEN 'error' THEN 0
+                    WHEN 'warning' THEN 1
+                    ELSE 2
+                END, issue_id
+                LIMIT ?
+                """,
+                (selected_scan_run_id, MAX_SCAN_OVERVIEW_ISSUES),
+            ).fetchall()
+        return {
+            "status": "ok",
+            "scan_overview": {
+                "contract_version": SCAN_OVERVIEW_CONTRACT_VERSION,
+                "found": True,
+                "workspace_path": str(root),
+                "scan_run": {
+                    "scan_run_id": selected_scan_run_id,
+                    "workspace_id": str(row["workspace_id"]),
+                    "status": str(row["status"]),
+                    "mode": str(row["mode"]),
+                    "change_detection_mode": row["change_detection_mode"],
+                    "config_revision": str(row["config_revision"]),
+                    "started_at": str(row["started_at"]),
+                    "finished_at": row["finished_at"],
+                },
+                "coverage": coverage,
+                "issues": [
+                    {
+                        "issue_id": str(issue["issue_id"]),
+                        "project_id": issue["project_id"],
+                        "artifact_id": issue["artifact_id"],
+                        "kind": str(issue["kind"]),
+                        "severity": str(issue["severity"]),
+                        "relative_path": issue["relative_path"],
+                        "message": str(issue["message"]),
+                        "remediation": str(issue["remediation"]),
+                    }
+                    for issue in issue_rows
+                ],
+                "limits": {
+                    "issue_limit": MAX_SCAN_OVERVIEW_ISSUES,
+                    "available_issues": issue_count,
+                    "issues_truncated": issue_count > len(issue_rows),
+                },
+            },
+        }
+
+    def _overview_coverage(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        scan_run_id: str,
+    ) -> dict[str, object]:
+        stored = row["coverage_json"]
+        if stored is not None:
+            try:
+                value = json.loads(str(stored))
+            except (json.JSONDecodeError, RecursionError) as exc:
+                raise InvalidInputError("stored scan overview is not valid JSON") from exc
+            if not isinstance(value, dict):
+                raise InvalidInputError("stored scan overview is not a JSON object")
+            return cast(dict[str, object], value)
+        dispositions = Counter(
+            {
+                str(disposition["snapshot_disposition"]): int(disposition["count"])
+                for disposition in connection.execute(
+                    """
+                    SELECT snapshot_disposition, COUNT(*) AS count
+                    FROM scan_run_projects WHERE scan_run_id = ?
+                    GROUP BY snapshot_disposition
+                    """,
+                    (scan_run_id,),
+                ).fetchall()
+            }
+        )
+        coverage = self._coverage(scan_run_id, dispositions, Counter())
+        coverage["overview_provenance"] = "reconstructed_without_exclusion_counts"
+        coverage["excluded_by_category_available"] = False
+        return coverage
+
     def _run(
         self,
         *,
@@ -884,7 +1007,7 @@ class WorkspaceScanner:
             )
         except BaseException:
             with suppress(Exception):
-                self._finish_run(scan_run_id, "failed")
+                self._finish_run(scan_run_id, "failed", None)
             raise
 
     def _run_started(
@@ -951,14 +1074,15 @@ class WorkspaceScanner:
         all_issues.extend(carried_issues)
         dispositions.update(carried_dispositions)
         status = self._final_status(scan_run_id, dispositions, all_issues)
-        self._finish_run(scan_run_id, status)
+        coverage = self._coverage(scan_run_id, dispositions, excluded)
+        self._finish_run(scan_run_id, status, coverage)
         return ScanResult(
             scan_run_id=scan_run_id,
             workspace_id=workspace_id,
             status=status,
             mode=mode,
             change_detection_mode=change_detection_mode,
-            coverage=self._coverage(scan_run_id, dispositions, excluded),
+            coverage=coverage,
             issues=tuple(all_issues),
         )
 
@@ -1320,9 +1444,7 @@ class WorkspaceScanner:
         return "trusted"
 
     @staticmethod
-    def _bind_internal_git(
-        worktree_root: Path, workspace_root: Path
-    ) -> InternalGitBinding | None:
+    def _bind_internal_git(worktree_root: Path, workspace_root: Path) -> InternalGitBinding | None:
         """Bind an internal repository without letting Git rediscover a mutable marker."""
         marker = worktree_root / ".git"
         marker_relative = _child_relative(_relative_to_root(worktree_root, workspace_root), ".git")
@@ -1347,9 +1469,7 @@ class WorkspaceScanner:
         except OSError:
             return None
         try:
-            git_dir_fd = _open_directory(
-                workspace_root, _relative_to_root(git_dir, workspace_root)
-            )
+            git_dir_fd = _open_directory(workspace_root, _relative_to_root(git_dir, workspace_root))
         except OSError:
             os.close(worktree_fd)
             return None
@@ -1365,9 +1485,7 @@ class WorkspaceScanner:
                     return None
             else:
                 try:
-                    common_stat = os.stat(
-                        "commondir", dir_fd=git_dir_fd, follow_symlinks=False
-                    )
+                    common_stat = os.stat("commondir", dir_fd=git_dir_fd, follow_symlinks=False)
                 except FileNotFoundError:
                     common_dir = git_dir
                 except OSError:
@@ -1732,9 +1850,7 @@ class WorkspaceScanner:
                     for marker in ("Operation not permitted", "Permission denied")
                 )
                 return None, _issue(
-                    "git_repository_boundary_violation"
-                    if boundary_denied
-                    else "broken_repository",
+                    "git_repository_boundary_violation" if boundary_denied else "broken_repository",
                     "warning",
                     (
                         "Repository metadata requested a path outside the authorized Git sandbox."
@@ -1749,9 +1865,7 @@ class WorkspaceScanner:
                     ),
                     _relative_path(root, workspace_root),
                 )
-            branch_result = self._git(
-                binding, "symbolic-ref", "--quiet", "--short", "HEAD"
-            )
+            branch_result = self._git(binding, "symbolic-ref", "--quiet", "--short", "HEAD")
             branch = branch_result.stdout.strip() if branch_result.returncode == 0 else None
             head_result = self._git(binding, "rev-parse", "--verify", "HEAD")
             head = head_result.stdout.strip() if head_result.returncode == 0 else None
@@ -2400,9 +2514,7 @@ class WorkspaceScanner:
                     adapter_version=str(row["adapter_version"]),
                     config_revision=str(row["config_revision"]),
                     commit_state=str(row["commit_state"]),
-                    analysis_diagnostics=_analysis_diagnostics(
-                        str(row["analysis_diagnostics"])
-                    ),
+                    analysis_diagnostics=_analysis_diagnostics(str(row["analysis_diagnostics"])),
                 ),
             )
         return observations
@@ -3034,9 +3146,7 @@ class WorkspaceScanner:
         }
         if root_manifest_adapters:
             return sorted(root_manifest_adapters)[0]
-        adapter_counts = Counter(
-            file.adapter_id for file in files if file.adapter_id != "generic"
-        )
+        adapter_counts = Counter(file.adapter_id for file in files if file.adapter_id != "generic")
         if not adapter_counts:
             return "generic"
         return min(adapter_counts, key=lambda adapter: (-adapter_counts[adapter], adapter))
@@ -3085,8 +3195,7 @@ class WorkspaceScanner:
             ]
             if missing_candidates and (
                 len(missing_candidates) == 1
-                or missing_candidates[0]["last_seen_at"]
-                != missing_candidates[1]["last_seen_at"]
+                or missing_candidates[0]["last_seen_at"] != missing_candidates[1]["last_seen_at"]
             ):
                 supersedes_artifact_id = str(missing_candidates[0]["artifact_id"])
         artifact_id = _new_id()
@@ -3534,9 +3643,14 @@ class WorkspaceScanner:
             return "partial"
         return "completed"
 
-    def _finish_run(self, scan_run_id: str, status: str) -> None:
+    def _finish_run(
+        self,
+        scan_run_id: str,
+        status: str,
+        coverage: dict[str, object] | None,
+    ) -> None:
         with self._database.write_transaction() as connection:
-            connection.execute(
+            updated = connection.execute(
                 """
                 UPDATE scan_runs
                 SET status = ?, finished_at = ?
@@ -3544,6 +3658,24 @@ class WorkspaceScanner:
                 """,
                 (status, _now(), scan_run_id),
             )
+            if coverage is not None and updated.rowcount == 1:
+                connection.execute(
+                    """
+                    INSERT INTO scan_run_overviews(scan_run_id, coverage_json, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        scan_run_id,
+                        json.dumps(
+                            coverage,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                            allow_nan=False,
+                        ),
+                        _now(),
+                    ),
+                )
 
     def _coverage(
         self,
@@ -3605,6 +3737,7 @@ class WorkspaceScanner:
                 """,
                 (scan_run_id,),
             ).fetchall()
+            role_lens_context = self._role_lens_context(connection, scan_run_id)
         history_basis_by_worktree = {
             str(row["canonical_root"]): str(row["history_basis"]) for row in observations
         }
@@ -3624,6 +3757,8 @@ class WorkspaceScanner:
             and row["external_metadata_read_fields"] is not None
         }
         return {
+            "overview_provenance": "recorded",
+            "excluded_by_category_available": True,
             "projects": sum(dispositions.values()),
             "fresh_projects": dispositions["fresh"],
             "carried_forward_projects": dispositions["carried_forward"],
@@ -3636,4 +3771,204 @@ class WorkspaceScanner:
             "history_basis_by_worktree": history_basis_by_worktree,
             "external_git_metadata": external_git_metadata,
             "excluded_by_category": dict(sorted(excluded.items())),
+            "role_lens_context": role_lens_context,
+        }
+
+    @staticmethod
+    def _role_lens_context(connection: sqlite3.Connection, scan_run_id: str) -> dict[str, object]:
+        total_projects = int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM scan_run_projects WHERE scan_run_id = ?",
+                (scan_run_id,),
+            ).fetchone()["count"]
+        )
+        project_rows = connection.execute(
+            """
+            SELECT srp.project_id, p.display_name, srp.snapshot_disposition,
+                   srp.project_snapshot_id, ps.coverage_status
+            FROM scan_run_projects AS srp
+            JOIN projects AS p ON p.project_id = srp.project_id
+            LEFT JOIN project_snapshots AS ps
+              ON ps.project_snapshot_id = srp.project_snapshot_id
+            WHERE srp.scan_run_id = ?
+            ORDER BY srp.project_id
+            LIMIT ?
+            """,
+            (scan_run_id, MAX_ROLE_LENS_CONTEXT_PROJECTS),
+        ).fetchall()
+        available_modules = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM scan_run_projects AS srp
+                JOIN module_observations AS mo
+                  ON mo.project_snapshot_id = srp.project_snapshot_id
+                WHERE srp.scan_run_id = ?
+                """,
+                (scan_run_id,),
+            ).fetchone()["count"]
+        )
+        available_evidence = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM scan_run_projects AS srp
+                JOIN project_snapshot_evidence AS pse
+                  ON pse.project_snapshot_id = srp.project_snapshot_id
+                WHERE srp.scan_run_id = ?
+                """,
+                (scan_run_id,),
+            ).fetchone()["count"]
+        )
+        projects: list[dict[str, object]] = []
+        returned_modules = 0
+        returned_evidence_samples = 0
+        for project in project_rows:
+            snapshot_id = project["project_snapshot_id"]
+            module_kind_counts: dict[str, int] = {}
+            adapter_counts: dict[str, int] = {}
+            modules: list[dict[str, object]] = []
+            evidence_kind_counts: dict[str, int] = {}
+            evidence_samples: list[dict[str, object]] = []
+            project_module_count = 0
+            project_evidence_count = 0
+            if snapshot_id is not None:
+                module_count_row = connection.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM module_observations
+                    WHERE project_snapshot_id = ?
+                    """,
+                    (snapshot_id,),
+                ).fetchone()
+                assert module_count_row is not None
+                project_module_count = int(module_count_row["count"])
+                for row in connection.execute(
+                    """
+                    SELECT m.kind, mo.adapter_id, COUNT(*) AS count
+                    FROM module_observations AS mo
+                    JOIN modules AS m ON m.module_id = mo.module_id
+                    WHERE mo.project_snapshot_id = ?
+                    GROUP BY m.kind, mo.adapter_id
+                    ORDER BY m.kind, mo.adapter_id
+                    """,
+                    (snapshot_id,),
+                ).fetchall():
+                    count = int(row["count"])
+                    kind = str(row["kind"])
+                    adapter = str(row["adapter_id"])
+                    module_kind_counts[kind] = module_kind_counts.get(kind, 0) + count
+                    adapter_counts[adapter] = adapter_counts.get(adapter, 0) + count
+                module_limit = min(
+                    MAX_ROLE_LENS_CONTEXT_MODULES_PER_PROJECT,
+                    MAX_ROLE_LENS_CONTEXT_MODULES - returned_modules,
+                )
+                if module_limit > 0:
+                    module_rows = connection.execute(
+                        """
+                        SELECT m.module_id, m.name, m.kind, mo.relative_root, mo.adapter_id
+                        FROM module_observations AS mo
+                        JOIN modules AS m ON m.module_id = mo.module_id
+                        WHERE mo.project_snapshot_id = ?
+                        ORDER BY m.module_id
+                        LIMIT ?
+                        """,
+                        (snapshot_id, module_limit),
+                    ).fetchall()
+                    modules = [
+                        {
+                            "module_id": str(row["module_id"]),
+                            "name": str(row["name"]),
+                            "kind": str(row["kind"]),
+                            "relative_root": str(row["relative_root"]),
+                            "adapter_id": str(row["adapter_id"]),
+                        }
+                        for row in module_rows
+                    ]
+                    returned_modules += len(modules)
+                for row in connection.execute(
+                    """
+                    SELECT e.evidence_kind, COUNT(*) AS count
+                    FROM project_snapshot_evidence AS pse
+                    JOIN evidence AS e ON e.evidence_id = pse.evidence_id
+                    WHERE pse.project_snapshot_id = ?
+                    GROUP BY e.evidence_kind
+                    ORDER BY e.evidence_kind
+                    """,
+                    (snapshot_id,),
+                ).fetchall():
+                    evidence_kind_counts[str(row["evidence_kind"])] = int(row["count"])
+                project_evidence_count = sum(evidence_kind_counts.values())
+                evidence_limit = min(
+                    MAX_ROLE_LENS_CONTEXT_EVIDENCE_PER_PROJECT,
+                    MAX_ROLE_LENS_CONTEXT_EVIDENCE_SAMPLES - returned_evidence_samples,
+                )
+                if evidence_limit > 0:
+                    evidence_rows = connection.execute(
+                        """
+                        WITH representatives AS (
+                            SELECT e.evidence_kind, MIN(e.evidence_id) AS evidence_id
+                            FROM project_snapshot_evidence AS pse
+                            JOIN evidence AS e ON e.evidence_id = pse.evidence_id
+                            WHERE pse.project_snapshot_id = ?
+                            GROUP BY e.evidence_kind
+                        )
+                        SELECT e.evidence_id, e.module_id, e.evidence_kind,
+                               e.summary, e.commit_state
+                        FROM representatives AS representative
+                        JOIN evidence AS e ON e.evidence_id = representative.evidence_id
+                        ORDER BY e.evidence_kind, e.evidence_id
+                        LIMIT ?
+                        """,
+                        (snapshot_id, evidence_limit),
+                    ).fetchall()
+                    evidence_samples = [
+                        {
+                            "evidence_id": str(row["evidence_id"]),
+                            "module_id": row["module_id"],
+                            "evidence_kind": str(row["evidence_kind"]),
+                            "summary": str(row["summary"]),
+                            "commit_state": str(row["commit_state"]),
+                        }
+                        for row in evidence_rows
+                    ]
+                    returned_evidence_samples += len(evidence_samples)
+            projects.append(
+                {
+                    "project_id": str(project["project_id"]),
+                    "display_name": str(project["display_name"]),
+                    "snapshot_disposition": str(project["snapshot_disposition"]),
+                    "project_snapshot_id": snapshot_id,
+                    "coverage_status": project["coverage_status"],
+                    "module_count": project_module_count,
+                    "module_kind_counts": module_kind_counts,
+                    "adapter_counts": adapter_counts,
+                    "modules": modules,
+                    "modules_truncated": project_module_count > len(modules),
+                    "evidence_count": project_evidence_count,
+                    "evidence_kind_counts": evidence_kind_counts,
+                    "evidence_samples": evidence_samples,
+                    "evidence_samples_truncated": project_evidence_count > len(evidence_samples),
+                }
+            )
+        return {
+            "contract_version": ROLE_LENS_CONTEXT_CONTRACT_VERSION,
+            "untrusted_data": True,
+            "scan_run_id": scan_run_id,
+            "projects": projects,
+            "limits": {
+                "maximum_projects": MAX_ROLE_LENS_CONTEXT_PROJECTS,
+                "available_projects": total_projects,
+                "returned_projects": len(projects),
+                "projects_truncated": total_projects > len(projects),
+                "maximum_modules": MAX_ROLE_LENS_CONTEXT_MODULES,
+                "available_modules": available_modules,
+                "returned_modules": returned_modules,
+                "modules_truncated": available_modules > returned_modules,
+                "maximum_evidence_samples": MAX_ROLE_LENS_CONTEXT_EVIDENCE_SAMPLES,
+                "evidence_sample_strategy": "one_per_evidence_kind_per_project",
+                "available_evidence": available_evidence,
+                "returned_evidence_samples": returned_evidence_samples,
+                "evidence_samples_truncated": available_evidence > returned_evidence_samples,
+            },
         }
