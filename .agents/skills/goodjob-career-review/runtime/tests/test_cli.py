@@ -773,3 +773,367 @@ def test_preparation_protocol_does_not_echo_private_payload_and_is_task_bound(
     assert copied_run["status"] == "error"
     assert copied_run["code"] == "invalid_input"
     _stop_broker(next_task)
+
+
+def test_record_analysis_is_private_task_bound_and_idempotent(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "tests").mkdir(parents=True)
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "broker-analysis"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    (workspace / "app.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    (workspace / "tests" / "test_app.py").write_text(
+        "from app import run\n\ndef test_run():\n    assert run() == 1\n",
+        encoding="utf-8",
+    )
+    data_dir = tmp_path / "data"
+    broker = _start_broker(data_dir)
+    authorized = _send_json(
+        broker,
+        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    )
+    receipt = authorized["receipt"]
+    assert isinstance(receipt, dict)
+    receipt_id = receipt["authorization_receipt_id"]
+    validated = _send_json(
+        broker,
+        {
+            "op": "validate_job_input",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "job_input": {
+                "contract_version": "job-input-v1",
+                "target_role": "应用软件工程师",
+                "jd_input": {"kind": "none"},
+            },
+        },
+    )
+    job = validated["job_input"]
+    assert isinstance(job, dict)
+    scanned = _send_json(
+        broker,
+        {
+            "op": "scan",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "job_input_validation_sha256": job["validation_sha256"],
+        },
+    )
+    scan_run = scanned["scan_run"]
+    assert isinstance(scan_run, dict)
+    prepared = _send_json(
+        broker,
+        {
+            "op": "prepare_start",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "preparation_request": {
+                "contract_version": "preparation-request-v1",
+                "request_id": str(uuid.uuid4()),
+                "scan_run_id": scan_run["scan_run_id"],
+                "config_revision": "broker-analysis-v1",
+                "target_role": "应用软件工程师",
+                "jd_input": {"kind": "none"},
+                "job_input_validation_sha256": job["validation_sha256"],
+                "requested_exports": [],
+                "evidence_limit_per_project": 100,
+                "role_lens": {
+                    "contract_version": "role-lens-v1",
+                    "dimensions": [
+                        {
+                            "key": "implementation",
+                            "display_name": "实现",
+                            "weight_bps": 6000,
+                            "evaluation_criteria": "评价当前实现",
+                            "required_evidence_kinds": ["implementation"],
+                        },
+                        {
+                            "key": "verification",
+                            "display_name": "验证",
+                            "weight_bps": 4000,
+                            "evaluation_criteria": "评价测试定义",
+                            "required_evidence_kinds": ["test_definition"],
+                        },
+                    ],
+                    "evidence_requirements": ["implementation", "test_definition"],
+                    "ranking_rules": ["证据覆盖优先"],
+                    "output_sections": ["项目讲解"],
+                    "question_strategy": {"primary": "追问实现"},
+                    "gap_rules": ["缺少证据时保留缺口"],
+                    "assumptions": ["未提供 JD"],
+                    "generator_id": "broker-test",
+                    "prompt_contract_version": "broker-test-v1",
+                },
+            },
+        },
+    )
+    preparation_run = prepared["preparation_run"]
+    role_lens = prepared["role_lens"]
+    bundle = prepared["evidence_bundle"]
+    assert isinstance(preparation_run, dict)
+    assert isinstance(role_lens, dict)
+    assert isinstance(bundle, dict)
+    evidence_items = bundle["evidence_items"]
+    coverage = bundle["coverage"]
+    assert isinstance(evidence_items, list)
+    assert isinstance(coverage, list)
+    implementation = next(
+        item
+        for item in evidence_items
+        if isinstance(item, dict) and item["evidence_kind"] == "implementation"
+    )
+    test_definition = next(
+        item
+        for item in evidence_items
+        if isinstance(item, dict) and item["evidence_kind"] == "test_definition"
+    )
+    project = next(item for item in coverage if isinstance(item, dict) and item["eligible"])
+    assert isinstance(implementation, dict)
+    assert isinstance(test_definition, dict)
+    assert isinstance(project, dict)
+    context_requested = _send_json(
+        broker,
+        {
+            "op": "request_context",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "context_interview_request": {
+                "contract_version": "context-interview-request-v1",
+                "request_id": str(uuid.uuid4()),
+                "preparation_run_id": preparation_run["preparation_run_id"],
+                "question_set_version": "broker-context-v1",
+                "cards": [
+                    {
+                        "project_id": project["project_id"],
+                        "questions": [
+                            {
+                                "question_id": "owner-role",
+                                "fact_kinds": ["role"],
+                                "prompt": "你在项目中承担什么职责？",
+                            },
+                            {
+                                "question_id": "owner-learning",
+                                "fact_kinds": ["learning"],
+                                "prompt": "你从项目中学到了什么？",
+                            },
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+    context_interview = context_requested["context_interview"]
+    assert isinstance(context_interview, dict)
+    context_answered = _send_json(
+        broker,
+        {
+            "op": "interview",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "interview_input": {
+                "contract_version": "interview-input-v1",
+                "request_id": str(uuid.uuid4()),
+                "mode": "context",
+                "preparation_run_id": preparation_run["preparation_run_id"],
+                "context_interview_id": context_interview["context_interview_id"],
+                "answers": [
+                    {
+                        "project_id": project["project_id"],
+                        "status": "answered",
+                        "structured_answer": {
+                            "owner-role": "负责可测试入口的实现。",
+                            "owner-learning": "学会了用边界测试固定行为。",
+                        },
+                        "facts": [
+                            {
+                                "fact_key": "owner-role",
+                                "fact_kind": "role",
+                                "statement": "负责可测试入口的实现。",
+                            },
+                            {
+                                "fact_key": "owner-learning",
+                                "fact_kind": "learning",
+                                "statement": "学会了用边界测试固定行为。",
+                            },
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+    context_batch = context_answered["context_answer_batch"]
+    assert isinstance(context_batch, dict)
+    context_answers = context_batch["answers"]
+    assert isinstance(context_answers, list)
+    context_answer = context_answers[0]
+    assert isinstance(context_answer, dict)
+    context_facts = context_answer["facts"]
+    assert isinstance(context_facts, list)
+    role_fact = next(
+        fact for fact in context_facts if isinstance(fact, dict) and fact["fact_kind"] == "role"
+    )
+    assert isinstance(role_fact, dict)
+    role_evidence_id = role_fact["evidence_id"]
+    assert isinstance(role_evidence_id, str)
+    first_page = _send_json(
+        broker,
+        {
+            "op": "list_context_evidence",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "context_evidence_request": {
+                "contract_version": "context-evidence-page-request-v1",
+                "preparation_run_id": preparation_run["preparation_run_id"],
+                "project_id": project["project_id"],
+                "limit": 1,
+            },
+        },
+    )
+    page = first_page["context_evidence_page"]
+    assert isinstance(page, dict)
+    assert page["item_count"] == 1
+    assert page["total_items"] == 2
+    assert page["has_more"] is True
+    cursor = page["next_cursor"]
+    assert isinstance(cursor, str)
+    second_page = _send_json(
+        broker,
+        {
+            "op": "list_context_evidence",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "context_evidence_request": {
+                "contract_version": "context-evidence-page-request-v1",
+                "preparation_run_id": preparation_run["preparation_run_id"],
+                "project_id": project["project_id"],
+                "cursor": cursor,
+                "limit": 1,
+            },
+        },
+    )
+    second_page_value = second_page["context_evidence_page"]
+    assert isinstance(second_page_value, dict)
+    assert second_page_value["item_count"] == 1
+    assert second_page_value["has_more"] is False
+    paged_items = page["items"] + second_page_value["items"]
+    assert isinstance(paged_items, list)
+    assert {item["evidence_id"] for item in paged_items if isinstance(item, dict)} == {
+        fact["evidence_id"] for fact in context_facts if isinstance(fact, dict)
+    }
+    analysis_request: dict[str, object] = {
+        "contract_version": "analysis-commit-v1",
+        "request_id": str(uuid.uuid4()),
+        "preparation_run_id": preparation_run["preparation_run_id"],
+        "role_lens_id": role_lens["role_lens_id"],
+        "evidence_drafts": [],
+        "claim_drafts": [
+            {
+                "draft_id": "broker-claim",
+                "claim_key": "broker-analysis",
+                "category": "implementation_method",
+                "scope_kind": "project",
+                "project_id": project["project_id"],
+                "section": "project_story",
+                "statement_tokens": [{"kind": "text", "value": "我实现了可测试入口。"}],
+                "facets": ["implemented", "test_defined"],
+                "support_level": "cross_checked",
+                "personal_attribution": "implemented",
+                "review_semantic_projection": {
+                    "concept_keys": ["entry"],
+                    "mechanism_keys": ["function"],
+                    "behavior_contract_keys": ["return-value"],
+                    "tradeoff_keys": [],
+                    "technology_identifiers": ["python"],
+                },
+                "evidence_relations": [
+                    {
+                        "evidence_ref": implementation["evidence_id"],
+                        "relation": "supports",
+                        "supported_facets": ["implemented"],
+                    },
+                    {
+                        "evidence_ref": test_definition["evidence_id"],
+                        "relation": "supports",
+                        "supported_facets": ["test_defined"],
+                    },
+                    {
+                        "evidence_ref": role_evidence_id,
+                        "relation": "contextualizes",
+                        "supported_facets": [],
+                    },
+                ],
+            }
+        ],
+        "project_assessments": [
+            {
+                "project_id": project["project_id"],
+                "dimension_scores_milli": {"implementation": 800, "verification": 700},
+                "coverage_bps": 10000,
+                "evidence_refs": [
+                    implementation["evidence_id"],
+                    test_definition["evidence_id"],
+                    role_evidence_id,
+                ],
+                "gap_refs": [],
+                "rationale_tokens": [{"kind": "text", "value": "实现与测试定义均可追溯。"}],
+            }
+        ],
+        "knowledge_gaps": [],
+    }
+    first = _send_json(
+        broker,
+        {
+            "op": "record_analysis",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "analysis_commit_request": analysis_request,
+        },
+    )
+    repeated = _send_json(
+        broker,
+        {
+            "op": "record_analysis",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "analysis_commit_request": analysis_request,
+        },
+    )
+    assert first == repeated
+    assert first["run_status"] == "ready"
+    _stop_broker(broker)
+
+    fresh_broker = _start_broker(data_dir)
+    fresh_authorized = _send_json(
+        fresh_broker,
+        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    )
+    fresh_receipt = fresh_authorized["receipt"]
+    assert isinstance(fresh_receipt, dict)
+    rejected_page = _send_json(
+        fresh_broker,
+        {
+            "op": "list_context_evidence",
+            "workspace": str(workspace),
+            "authorization_receipt_id": fresh_receipt["authorization_receipt_id"],
+            "context_evidence_request": {
+                "contract_version": "context-evidence-page-request-v1",
+                "preparation_run_id": preparation_run["preparation_run_id"],
+                "limit": 1,
+            },
+        },
+    )
+    assert rejected_page["status"] == "error"
+    assert rejected_page["code"] == "invalid_input"
+    rejected = _send_json(
+        fresh_broker,
+        {
+            "op": "record_analysis",
+            "workspace": str(workspace),
+            "authorization_receipt_id": fresh_receipt["authorization_receipt_id"],
+            "analysis_commit_request": analysis_request,
+        },
+    )
+    assert rejected["status"] == "error"
+    assert rejected["code"] == "invalid_input"
+    _stop_broker(fresh_broker)

@@ -29,6 +29,7 @@ MAX_DIMENSIONS = 20
 MAX_EVIDENCE_KINDS_PER_DIMENSION = 32
 MAX_EVIDENCE_PER_PROJECT = 200
 MAX_BUNDLE_EVIDENCE = 1000
+MAX_BUNDLE_CONTEXT_EVIDENCE = 400
 MAX_BUNDLE_ISSUES = 200
 MAX_SOURCE_REVISION_BATCH = 200
 MAX_PRIVATE_PAYLOAD_BYTES = 12 * 1024 * 1024
@@ -1262,6 +1263,23 @@ class PreparationService:
                     for project in current_projects
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO preparation_context_facts(
+                    preparation_run_id, context_fact_id, project_id, fact_key,
+                    bound_status, bound_at
+                )
+                SELECT ?, pcf.context_fact_id, pcf.project_id, pcf.fact_key, 'current', ?
+                FROM project_context_facts AS pcf
+                JOIN preparation_run_projects AS prp
+                  ON prp.preparation_run_id = ?
+                 AND prp.project_id = pcf.project_id
+                 AND prp.snapshot_disposition IN ('fresh', 'carried_forward')
+                WHERE pcf.status = 'current'
+                ORDER BY pcf.project_id, pcf.fact_key
+                """,
+                (preparation_run_id, timestamp, preparation_run_id),
+            )
             self._insert_source_checks(connection, preparation_run_id, "preflight", checks)
         return preparation_run_id
 
@@ -1471,11 +1489,83 @@ class PreparationService:
             for project in project_rows
             if str(project["snapshot_disposition"]) in {"fresh", "carried_forward"}
         ]
+        context_evidence_count_row = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM preparation_context_facts AS pcf_bound
+            JOIN evidence_contexts AS ec
+              ON ec.context_fact_id = pcf_bound.context_fact_id
+            WHERE pcf_bound.preparation_run_id = ?
+              AND pcf_bound.bound_status = 'current'
+            """,
+            (preparation_run_id,),
+        ).fetchone()
+        assert context_evidence_count_row is not None
+        context_evidence_count = int(context_evidence_count_row["count"])
+        context_rows = connection.execute(
+            """
+            SELECT e.evidence_id, e.project_id, e.acquisition_scope, e.origin_kind,
+                   e.evidence_kind, e.locator,
+                   e.summary, e.commit_state, pcf.context_fact_id, pcf.fact_key,
+                   pcf.fact_kind, pcf.statement, pcf.source_kind,
+                   pcf_bound.bound_status
+            FROM preparation_context_facts AS pcf_bound
+            JOIN project_context_facts AS pcf
+              ON pcf.context_fact_id = pcf_bound.context_fact_id
+            JOIN evidence_contexts AS ec
+              ON ec.context_fact_id = pcf.context_fact_id
+            JOIN evidence AS e ON e.evidence_id = ec.evidence_id
+            WHERE pcf_bound.preparation_run_id = ?
+              AND pcf_bound.bound_status = 'current'
+            ORDER BY e.project_id, pcf.fact_key, e.evidence_id
+            LIMIT ?
+            """,
+            (preparation_run_id, MAX_BUNDLE_CONTEXT_EVIDENCE),
+        ).fetchall()
+        context_items: list[dict[str, object]] = [
+            {
+                "evidence_id": str(row["evidence_id"]),
+                "project_id": str(row["project_id"]),
+                "project_snapshot_id": None,
+                "acquisition_scope": str(row["acquisition_scope"]),
+                "origin_kind": str(row["origin_kind"]),
+                "worktree_id": None,
+                "worktree_relative_root": None,
+                "module_id": None,
+                "source_revision_id": None,
+                "relative_path": None,
+                "workspace_relative_path": None,
+                "content_sha256": None,
+                "analysis_fingerprint": None,
+                "content_equivalence_key": None,
+                "evidence_kind": str(row["evidence_kind"]),
+                "locator": _stored_json(row["locator"], "context Evidence locator"),
+                "summary": str(row["summary"]),
+                "commit_state": str(row["commit_state"]),
+                "validity": "current",
+                "context_fact": {
+                    "context_fact_id": str(row["context_fact_id"]),
+                    "fact_key": str(row["fact_key"]),
+                    "fact_kind": str(row["fact_kind"]),
+                    "statement": str(row["statement"]),
+                    "source_kind": str(row["source_kind"]),
+                    "bound_status": str(row["bound_status"]),
+                },
+                "priority_dimension_keys": [],
+                "priority_weight_bps": 0,
+            }
+            for row in context_rows
+        ]
+        scan_bundle_capacity = MAX_BUNDLE_EVIDENCE - len(context_items)
         effective_limit = requested_limit
         if eligible_projects:
-            effective_limit = min(
-                requested_limit,
-                max(1, MAX_BUNDLE_EVIDENCE // len(eligible_projects)),
+            effective_limit = (
+                min(
+                    requested_limit,
+                    max(1, scan_bundle_capacity // len(eligible_projects)),
+                )
+                if scan_bundle_capacity > 0
+                else 0
             )
         dimension_by_kind: dict[str, list[RoleDimension]] = {}
         for dimension in dimensions:
@@ -1487,8 +1577,8 @@ class PreparationService:
         }
         evidence_items: list[dict[str, object]] = []
         for project in eligible_projects:
-            remaining = MAX_BUNDLE_EVIDENCE - len(evidence_items)
-            if remaining <= 0:
+            remaining = scan_bundle_capacity - len(evidence_items)
+            if remaining <= 0 or effective_limit <= 0:
                 break
             project_limit = min(effective_limit, remaining)
             priority_expression = "0 DESC"
@@ -1508,7 +1598,8 @@ class PreparationService:
             query_parameters.append(project_limit)
             evidence_rows = connection.execute(
                 f"""
-                SELECT e.evidence_id, e.project_id, e.project_snapshot_id, e.module_id,
+                SELECT e.evidence_id, e.project_id, e.project_snapshot_id,
+                       e.acquisition_scope, e.origin_kind, e.module_id,
                        e.source_revision_id, e.evidence_kind, e.locator, e.summary,
                        e.commit_state, e.content_equivalence_key, sa.worktree_id,
                        wt.canonical_root AS worktree_root, sa.relative_path,
@@ -1555,6 +1646,8 @@ class PreparationService:
                         "evidence_id": str(evidence["evidence_id"]),
                         "project_id": str(evidence["project_id"]),
                         "project_snapshot_id": evidence["project_snapshot_id"],
+                        "acquisition_scope": str(evidence["acquisition_scope"]),
+                        "origin_kind": str(evidence["origin_kind"]),
                         "worktree_id": evidence["worktree_id"],
                         "worktree_relative_root": worktree_relative_root,
                         "module_id": evidence["module_id"],
@@ -1569,6 +1662,7 @@ class PreparationService:
                         "summary": str(evidence["summary"]),
                         "commit_state": str(evidence["commit_state"]),
                         "validity": str(evidence["validity"]),
+                        "context_fact": None,
                         "priority_dimension_keys": [
                             dimension.key for dimension in matching_dimensions
                         ],
@@ -1577,6 +1671,7 @@ class PreparationService:
                         ),
                     }
                 )
+        evidence_items.extend(context_items)
         suggestions: list[dict[str, object]] = []
         seen_source_revisions: set[str] = set()
         for item in evidence_items:
@@ -1654,6 +1749,7 @@ class PreparationService:
         ).fetchone()
         assert total_evidence_row is not None
         total_evidence_count = int(total_evidence_row["count"])
+        total_evidence_count += context_evidence_count
         return {
             "contract_version": EVIDENCE_BUNDLE_CONTRACT_VERSION,
             "preparation_run_id": preparation_run_id,
@@ -1679,6 +1775,8 @@ class PreparationService:
                 "maximum_total_evidence": MAX_BUNDLE_EVIDENCE,
                 "available_evidence": total_evidence_count,
                 "evidence_truncated": total_evidence_count > len(evidence_items),
+                "available_context_evidence": context_evidence_count,
+                "context_evidence_truncated": context_evidence_count > len(context_items),
                 "issues_truncated": total_issue_count > len(issues),
             },
         }

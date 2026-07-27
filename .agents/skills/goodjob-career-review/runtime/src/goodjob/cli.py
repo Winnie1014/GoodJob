@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from goodjob.analysis import AnalysisService
 from goodjob.auth import (
     AuthorizationRepository,
     AuthorizationRequest,
@@ -18,6 +19,7 @@ from goodjob.auth import (
     read_capability_from_fd,
     receipt_kind_values,
 )
+from goodjob.context import ContextInterviewService
 from goodjob.db import Database
 from goodjob.errors import GoodJobError, InvalidInputError
 from goodjob.history import MAX_HISTORY_QUERY_CANDIDATES, HistoryQueryService
@@ -152,6 +154,42 @@ def build_parser() -> argparse.ArgumentParser:
     source_check.add_argument("--preparation-run-id", required=True)
     _add_payload_argument(source_check)
     _add_authorization_arguments(source_check, needs_receipt_id=True, needs_confirmation=False)
+
+    context_request = subparsers.add_parser(
+        "request-context",
+        help="persist one project-batched context interview for an active preparation run",
+    )
+    context_request.add_argument("--workspace", required=True)
+    _add_payload_argument(context_request)
+    _add_authorization_arguments(context_request, needs_receipt_id=True, needs_confirmation=False)
+
+    interview = subparsers.add_parser(
+        "interview",
+        help="append one structured context answer batch",
+    )
+    interview.add_argument("--workspace", required=True)
+    _add_payload_argument(interview)
+    _add_authorization_arguments(interview, needs_receipt_id=True, needs_confirmation=False)
+
+    context_evidence = subparsers.add_parser(
+        "list-context-evidence",
+        help="page through context Evidence frozen into an active preparation run",
+    )
+    context_evidence.add_argument("--workspace", required=True)
+    _add_payload_argument(context_evidence)
+    _add_authorization_arguments(
+        context_evidence,
+        needs_receipt_id=True,
+        needs_confirmation=False,
+    )
+
+    analysis = subparsers.add_parser(
+        "record-analysis",
+        help="validate and atomically freeze Evidence, Claims, gaps, and assessments",
+    )
+    analysis.add_argument("--workspace", required=True)
+    _add_payload_argument(analysis)
+    _add_authorization_arguments(analysis, needs_receipt_id=True, needs_confirmation=False)
 
     candidate_inspection = subparsers.add_parser(
         "inspect-external-git-candidate",
@@ -540,6 +578,47 @@ def _handle_source_check(args: argparse.Namespace, paths: DataPaths) -> dict[str
     )
 
 
+def _handle_context_request(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    return ContextInterviewService(Database(paths)).request_context(
+        authorization_receipt_id=args.authorization_receipt_id,
+        request_value=payload,
+    )
+
+
+def _handle_interview(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    return ContextInterviewService(Database(paths)).record_context(
+        authorization_receipt_id=args.authorization_receipt_id,
+        request_value=payload,
+    )
+
+
+def _handle_context_evidence(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    return ContextInterviewService(Database(paths)).list_context_evidence(
+        authorization_receipt_id=args.authorization_receipt_id,
+        request_value=payload,
+    )
+
+
+def _handle_record_analysis(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    return AnalysisService(Database(paths)).record_analysis(
+        workspace_path=workspace,
+        authorization_receipt_id=args.authorization_receipt_id,
+        request_value=payload,
+    )
+
+
 def _history_paths(raw_paths: str) -> tuple[str, ...]:
     try:
         values = json.loads(raw_paths)
@@ -665,6 +744,14 @@ def run(argv: Sequence[str] | None = None) -> int:
             payload = _handle_prepare_start(args, paths)
         elif args.command == "verify-source-revision":
             payload = _handle_source_check(args, paths)
+        elif args.command == "request-context":
+            payload = _handle_context_request(args, paths)
+        elif args.command == "interview":
+            payload = _handle_interview(args, paths)
+        elif args.command == "list-context-evidence":
+            payload = _handle_context_evidence(args, paths)
+        elif args.command == "record-analysis":
+            payload = _handle_record_analysis(args, paths)
         elif args.command == "query-history-candidates":
             payload = _handle_history_query(args, paths)
         elif args.command == "read-history-candidate":

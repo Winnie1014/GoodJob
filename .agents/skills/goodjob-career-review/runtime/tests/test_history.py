@@ -328,6 +328,116 @@ def test_targeted_history_is_bounded_transient_and_session_scoped(tmp_path: Path
     assert magic_content["blob_text"] == historical_magic_source
     assert "main.py" not in str(magic_content["diff_text"])
 
+    evidence_bundle = _object(prepared, "evidence_bundle")
+    evidence_items = evidence_bundle["evidence_items"]
+    assert isinstance(evidence_items, list)
+    current_implementation = next(
+        item
+        for item in evidence_items
+        if isinstance(item, dict)
+        and item["project_id"] == project_id
+        and item["evidence_kind"] == "implementation"
+    )
+    assert isinstance(current_implementation, dict)
+    analysis = _send_json(
+        broker,
+        {
+            "op": "record_analysis",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "analysis_commit_request": {
+                "contract_version": "analysis-commit-v1",
+                "request_id": str(uuid.uuid4()),
+                "preparation_run_id": preparation_run_id,
+                "role_lens_id": role_lens_id,
+                "evidence_drafts": [
+                    {
+                        "draft_id": "legacy-history",
+                        "origin_kind": "git_commit",
+                        "project_id": project_id,
+                        "worktree_id": worktree_id,
+                        "evidence_kind": "git_history",
+                        "locator": {},
+                        "summary": (
+                            "The selected historical change explains an older implementation."
+                        ),
+                        "commit_state": "historical",
+                        "candidate_id": candidate_id,
+                        "selected_path": "main.py",
+                        "query_reason": "验证旧实现的技术演进",
+                        "commit": old_commit,
+                        "metadata_sha256": candidate["metadata_sha256"],
+                        "diff_sha256": candidate_read["diff_sha256"],
+                        "blob_sha256": candidate_read["blob_sha256"],
+                    }
+                ],
+                "claim_drafts": [
+                    {
+                        "draft_id": "history-claim",
+                        "claim_key": "implementation-evolution",
+                        "category": "implementation_method",
+                        "scope_kind": "project",
+                        "project_id": project_id,
+                        "section": "project_story",
+                        "statement_tokens": [
+                            {
+                                "kind": "text",
+                                "value": "该项目",
+                            },
+                            {
+                                "kind": "text",
+                                "value": "的当前实现可结合受限历史证据解释技术演进。",
+                            },
+                        ],
+                        "facets": ["implemented"],
+                        "support_level": "single_source",
+                        "personal_attribution": "none",
+                        "review_semantic_projection": {
+                            "concept_keys": ["implementation-evolution"],
+                            "mechanism_keys": ["bounded-history"],
+                            "behavior_contract_keys": ["current-to-legacy"],
+                            "tradeoff_keys": [],
+                            "technology_identifiers": ["git"],
+                        },
+                        "evidence_relations": [
+                            {
+                                "evidence_ref": current_implementation["evidence_id"],
+                                "relation": "supports",
+                                "supported_facets": ["implemented"],
+                            },
+                            {
+                                "evidence_ref": "legacy-history",
+                                "relation": "contextualizes",
+                                "supported_facets": [],
+                            },
+                        ],
+                    }
+                ],
+                "project_assessments": [
+                    {
+                        "project_id": project_id,
+                        "dimension_scores_milli": {"system_depth": 850},
+                        "coverage_bps": 10000,
+                        "evidence_refs": [
+                            current_implementation["evidence_id"],
+                            "legacy-history",
+                        ],
+                        "gap_refs": [],
+                        "rationale_tokens": [
+                            {
+                                "kind": "text",
+                                "value": "当前实现和受限历史定位共同支持演进讲解。",
+                            }
+                        ],
+                    }
+                ],
+                "knowledge_gaps": [],
+            },
+        },
+    )
+    assert analysis["status"] == "ok"
+    assert analysis["run_status"] == "ready"
+
     database_bytes = (data_dir / "goodjob.sqlite3").read_bytes()
     assert historical_source.encode() not in database_bytes
     assert historical_magic_source.encode() not in database_bytes

@@ -458,6 +458,268 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=6,
+        name="context_and_atomic_analysis",
+        statements=(
+            (
+                "ALTER TABLE evidence ADD COLUMN preparation_run_id TEXT "
+                "REFERENCES preparation_runs(preparation_run_id)"
+            ),
+            "ALTER TABLE evidence ADD COLUMN query_reason TEXT",
+            """
+            CREATE TABLE context_interviews (
+                context_interview_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                request_sha256 TEXT NOT NULL,
+                preparation_run_id TEXT NOT NULL UNIQUE REFERENCES
+                    preparation_runs(preparation_run_id),
+                question_set_version TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('open', 'completed', 'cancelled')),
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE context_question_cards (
+                context_interview_id TEXT NOT NULL REFERENCES
+                    context_interviews(context_interview_id),
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                questions_json TEXT NOT NULL,
+                PRIMARY KEY (context_interview_id, project_id)
+            )
+            """,
+            """
+            CREATE TABLE context_answer_batches (
+                context_answer_batch_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                request_sha256 TEXT NOT NULL,
+                context_interview_id TEXT NOT NULL UNIQUE REFERENCES
+                    context_interviews(context_interview_id),
+                preparation_run_id TEXT NOT NULL UNIQUE REFERENCES
+                    preparation_runs(preparation_run_id),
+                committed_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE context_answers (
+                answer_id TEXT PRIMARY KEY,
+                context_answer_batch_id TEXT NOT NULL REFERENCES
+                    context_answer_batches(context_answer_batch_id),
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                question_set_version TEXT NOT NULL,
+                answer_status TEXT NOT NULL CHECK (
+                    answer_status IN ('answered', 'partial', 'skipped')
+                ),
+                structured_answer TEXT NOT NULL,
+                answered_at TEXT NOT NULL,
+                UNIQUE (context_answer_batch_id, project_id)
+            )
+            """,
+            """
+            CREATE TABLE project_context_facts (
+                context_fact_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                fact_key TEXT NOT NULL,
+                fact_kind TEXT NOT NULL CHECK (
+                    fact_kind IN (
+                        'business_goal', 'target_user', 'role', 'ownership',
+                        'metric', 'outcome', 'tradeoff', 'learning'
+                    )
+                ),
+                statement TEXT NOT NULL CHECK (length(statement) <= 2000),
+                source_kind TEXT NOT NULL CHECK (source_kind IN ('config', 'context_answer')),
+                source_answer_id TEXT REFERENCES context_answers(answer_id),
+                config_revision TEXT,
+                status TEXT NOT NULL CHECK (status IN ('current', 'superseded', 'withdrawn')),
+                created_at TEXT NOT NULL,
+                CHECK (
+                    (source_kind = 'context_answer' AND source_answer_id IS NOT NULL
+                        AND config_revision IS NULL)
+                    OR (source_kind = 'config' AND source_answer_id IS NULL
+                        AND config_revision IS NOT NULL)
+                )
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX project_context_facts_current_idx
+            ON project_context_facts(project_id, fact_key)
+            WHERE status = 'current'
+            """,
+            """
+            CREATE TABLE evidence_contexts (
+                evidence_id TEXT PRIMARY KEY REFERENCES evidence(evidence_id),
+                context_fact_id TEXT NOT NULL UNIQUE REFERENCES
+                    project_context_facts(context_fact_id)
+            )
+            """,
+            """
+            CREATE TABLE preparation_context_facts (
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                context_fact_id TEXT NOT NULL REFERENCES project_context_facts(context_fact_id),
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                fact_key TEXT NOT NULL,
+                bound_status TEXT NOT NULL CHECK (bound_status = 'current'),
+                bound_at TEXT NOT NULL,
+                PRIMARY KEY (preparation_run_id, context_fact_id),
+                UNIQUE (preparation_run_id, project_id, fact_key)
+            )
+            """,
+            """
+            CREATE TABLE analysis_commits (
+                analysis_commit_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                request_sha256 TEXT NOT NULL,
+                preparation_run_id TEXT NOT NULL UNIQUE REFERENCES
+                    preparation_runs(preparation_run_id),
+                role_lens_id TEXT NOT NULL REFERENCES role_lenses(role_lens_id),
+                contract_version TEXT NOT NULL,
+                evidence_count INTEGER NOT NULL CHECK (evidence_count >= 0),
+                claim_count INTEGER NOT NULL CHECK (claim_count >= 0),
+                assessment_count INTEGER NOT NULL CHECK (assessment_count >= 0),
+                gap_count INTEGER NOT NULL CHECK (gap_count >= 0),
+                committed_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE claims (
+                claim_id TEXT PRIMARY KEY,
+                identity_sha256 TEXT NOT NULL UNIQUE,
+                claim_key TEXT NOT NULL,
+                category TEXT NOT NULL CHECK (
+                    category IN (
+                        'technology', 'business', 'architecture', 'implementation_method',
+                        'challenge', 'tradeoff', 'contribution', 'outcome', 'learning',
+                        'knowledge_gap'
+                    )
+                ),
+                scope_kind TEXT NOT NULL CHECK (scope_kind IN ('project', 'worktree', 'module')),
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                worktree_id TEXT REFERENCES worktrees(worktree_id),
+                module_id TEXT REFERENCES modules(module_id),
+                created_at TEXT NOT NULL,
+                CHECK (
+                    (scope_kind = 'project' AND worktree_id IS NULL AND module_id IS NULL)
+                    OR (scope_kind = 'worktree' AND worktree_id IS NOT NULL AND module_id IS NULL)
+                    OR (scope_kind = 'module' AND module_id IS NOT NULL)
+                )
+            )
+            """,
+            """
+            CREATE TABLE claim_revisions (
+                claim_revision_id TEXT PRIMARY KEY,
+                claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+                revision_no INTEGER NOT NULL CHECK (revision_no >= 1),
+                revision_sha256 TEXT NOT NULL,
+                statement TEXT NOT NULL CHECK (length(statement) <= 4000),
+                statement_tokens TEXT NOT NULL,
+                facets TEXT NOT NULL,
+                support_level TEXT NOT NULL CHECK (
+                    support_level IN (
+                        'single_source', 'cross_checked', 'user_confirmed', 'conflicted'
+                    )
+                ),
+                review_semantic_projection TEXT NOT NULL,
+                review_semantic_sha256 TEXT NOT NULL,
+                supersedes_id TEXT REFERENCES claim_revisions(claim_revision_id),
+                created_at TEXT NOT NULL,
+                UNIQUE (claim_id, revision_no),
+                UNIQUE (claim_id, revision_sha256)
+            )
+            """,
+            """
+            CREATE TABLE claim_evidence (
+                claim_revision_id TEXT NOT NULL REFERENCES
+                    claim_revisions(claim_revision_id),
+                evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+                relation TEXT NOT NULL CHECK (
+                    relation IN ('supports', 'contradicts', 'contextualizes')
+                ),
+                supported_facets TEXT NOT NULL,
+                PRIMARY KEY (claim_revision_id, evidence_id, relation)
+            )
+            """,
+            """
+            CREATE TABLE preparation_claims (
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                claim_revision_id TEXT NOT NULL REFERENCES
+                    claim_revisions(claim_revision_id),
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                worktree_id TEXT REFERENCES worktrees(worktree_id),
+                module_id TEXT REFERENCES modules(module_id),
+                rank INTEGER NOT NULL CHECK (rank >= 1),
+                section TEXT NOT NULL,
+                PRIMARY KEY (preparation_run_id, claim_revision_id),
+                UNIQUE (preparation_run_id, rank)
+            )
+            """,
+            """
+            CREATE TABLE knowledge_gaps (
+                gap_id TEXT PRIMARY KEY,
+                gap_key TEXT NOT NULL,
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                scope_kind TEXT NOT NULL CHECK (
+                    scope_kind IN ('role_global', 'project', 'module')
+                ),
+                scope_id TEXT NOT NULL,
+                project_id TEXT REFERENCES projects(project_id),
+                module_id TEXT REFERENCES modules(module_id),
+                dimension TEXT NOT NULL,
+                stable_gap_concept_key TEXT NOT NULL,
+                gap_contract_version TEXT NOT NULL,
+                description TEXT NOT NULL CHECK (length(description) <= 4000),
+                description_tokens TEXT NOT NULL,
+                severity TEXT NOT NULL CHECK (
+                    severity IN ('low', 'medium', 'high', 'critical')
+                ),
+                resolution_kind TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'superseded')),
+                UNIQUE (preparation_run_id, gap_key)
+            )
+            """,
+            """
+            CREATE TABLE project_assessments (
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                project_id TEXT NOT NULL REFERENCES projects(project_id),
+                project_snapshot_id TEXT NOT NULL REFERENCES
+                    project_snapshots(project_snapshot_id),
+                snapshot_disposition TEXT NOT NULL CHECK (
+                    snapshot_disposition IN ('fresh', 'carried_forward')
+                ),
+                dimension_scores_milli TEXT NOT NULL,
+                evidence_and_gap_refs TEXT NOT NULL,
+                rationale TEXT NOT NULL CHECK (length(rationale) <= 4000),
+                rationale_tokens TEXT NOT NULL,
+                coverage_bps INTEGER NOT NULL CHECK (coverage_bps BETWEEN 0 AND 10000),
+                base_score_milli INTEGER NOT NULL CHECK (base_score_milli BETWEEN 0 AND 1000),
+                final_score_milli INTEGER NOT NULL CHECK (final_score_milli BETWEEN 0 AND 1000),
+                rank INTEGER NOT NULL CHECK (rank >= 1),
+                PRIMARY KEY (preparation_run_id, project_id),
+                UNIQUE (preparation_run_id, rank)
+            )
+            """,
+            """
+            CREATE INDEX claims_project_scope_idx
+            ON claims(project_id, scope_kind, claim_key)
+            """,
+            """
+            CREATE INDEX claim_revisions_claim_idx
+            ON claim_revisions(claim_id, revision_no)
+            """,
+            """
+            CREATE INDEX knowledge_gaps_run_scope_idx
+            ON knowledge_gaps(preparation_run_id, scope_kind, scope_id)
+            """,
+            """
+            CREATE INDEX evidence_preparation_run_idx
+            ON evidence(preparation_run_id, project_id)
+            """,
+        ),
+    ),
 )
 
 

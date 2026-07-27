@@ -320,6 +320,25 @@ class HistoryCandidateBinding:
 
 
 @dataclass(frozen=True)
+class HistoryCandidateReadBinding:
+    workspace_path: str
+    source_receipt_id: str
+    preparation_run_id: str
+    scan_run_id: str
+    role_lens_id: str
+    project_id: str
+    worktree_id: str
+    relative_paths: tuple[str, ...]
+    query_reason: str
+    candidate_id: str
+    selected_path: str
+    commit: str
+    metadata_sha256: str
+    diff_sha256: str
+    blob_sha256: str | None
+
+
+@dataclass(frozen=True)
 class PreparationBinding:
     workspace_path: str
     scan_run_id: str
@@ -368,6 +387,7 @@ class SessionBroker:
         self._candidates: dict[tuple[str, str], ExternalGitCandidate] = {}
         self._relations: dict[tuple[str, str], ExternalGitRelation] = {}
         self._history_candidates: dict[str, HistoryCandidateBinding] = {}
+        self._history_candidate_reads: dict[tuple[str, str], HistoryCandidateReadBinding] = {}
         self._preparation_runs: dict[str, PreparationBinding] = {}
         self._validated_job_inputs: dict[str, str] = {}
 
@@ -397,6 +417,14 @@ class SessionBroker:
             return self._prepare_start(message).payload
         if operation == "verify_source_revision":
             return self._verify_source_revision(message).payload
+        if operation == "request_context":
+            return self._request_context(message).payload
+        if operation == "interview":
+            return self._interview(message).payload
+        if operation == "list_context_evidence":
+            return self._list_context_evidence(message).payload
+        if operation == "record_analysis":
+            return self._record_analysis(message).payload
         if operation == "query_history_candidates":
             return self._query_history_candidates(message).payload
         if operation == "read_history_candidate":
@@ -806,6 +834,185 @@ class SessionBroker:
             return _protocol_error("GoodJob core checked sources for another PreparationRun")
         return response
 
+    def _request_context(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        request = _required_object(message, "context_interview_request")
+        preparation_run_id = _required_text(request, "preparation_run_id")
+        self._require_preparation_binding(workspace, preparation_run_id)
+        response = self._run_protected_child(
+            [
+                "request-context",
+                "--workspace",
+                workspace,
+                *_receipt_arguments(source),
+            ],
+            payload=request,
+        )
+        if response.status != "ok":
+            return response
+        interview_value = response.payload.get("context_interview")
+        if not isinstance(interview_value, dict) or not _is_json_value(interview_value):
+            return _protocol_error("GoodJob core returned an invalid context interview")
+        interview = cast(JsonObject, interview_value)
+        if interview.get("preparation_run_id") != preparation_run_id:
+            return _protocol_error("GoodJob core returned context for another PreparationRun")
+        return response
+
+    def _interview(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        request = _required_object(message, "interview_input")
+        preparation_run_id = _required_text(request, "preparation_run_id")
+        self._require_preparation_binding(workspace, preparation_run_id)
+        response = self._run_protected_child(
+            ["interview", "--workspace", workspace, *_receipt_arguments(source)],
+            payload=request,
+        )
+        if response.status != "ok":
+            return response
+        batch_value = response.payload.get("context_answer_batch")
+        if not isinstance(batch_value, dict) or not _is_json_value(batch_value):
+            return _protocol_error("GoodJob core returned an invalid context answer batch")
+        batch = cast(JsonObject, batch_value)
+        if batch.get("preparation_run_id") != preparation_run_id:
+            return _protocol_error("GoodJob core returned answers for another PreparationRun")
+        return response
+
+    def _list_context_evidence(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        request = _required_object(message, "context_evidence_request")
+        preparation_run_id = _required_text(request, "preparation_run_id")
+        self._require_preparation_binding(workspace, preparation_run_id)
+        response = self._run_protected_child(
+            [
+                "list-context-evidence",
+                "--workspace",
+                workspace,
+                *_receipt_arguments(source),
+            ],
+            payload=request,
+        )
+        if response.status != "ok":
+            return response
+        page_value = response.payload.get("context_evidence_page")
+        if not isinstance(page_value, dict) or not _is_json_value(page_value):
+            return _protocol_error("GoodJob core returned an invalid context Evidence page")
+        page = cast(JsonObject, page_value)
+        if page.get("preparation_run_id") != preparation_run_id:
+            return _protocol_error("GoodJob core returned context Evidence for another run")
+        return response
+
+    def _record_analysis(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source = self._source_receipt(message)
+        self._require_source_scope(source, workspace)
+        request = _required_object(message, "analysis_commit_request")
+        if "_history_proofs" in request:
+            raise InvalidInputError("analysis_commit_request contains a reserved broker field")
+        preparation_run_id = _required_text(request, "preparation_run_id")
+        role_lens_id = _required_text(request, "role_lens_id")
+        preparation = self._require_preparation_binding(workspace, preparation_run_id)
+        if preparation.role_lens_id != role_lens_id:
+            raise InvalidInputError("analysis does not match the active RoleLens")
+        raw_drafts = request.get("evidence_drafts", [])
+        if not isinstance(raw_drafts, list):
+            raise InvalidInputError("analysis evidence_drafts must be a JSON list")
+        proofs: list[JsonObject] = []
+        seen_reads: set[tuple[str, str]] = set()
+        for raw_draft in raw_drafts:
+            if not isinstance(raw_draft, dict) or not _is_json_value(raw_draft):
+                raise InvalidInputError("analysis contains a malformed EvidenceDraft")
+            draft = cast(JsonObject, raw_draft)
+            if draft.get("origin_kind") != "git_commit":
+                continue
+            candidate_id = _required_text(draft, "candidate_id")
+            selected_path = _required_text(draft, "selected_path")
+            key = (candidate_id, selected_path)
+            read = self._history_candidate_reads.get(key)
+            if read is None:
+                raise InvalidInputError(
+                    "read this exact history candidate in the current task before analysis"
+                )
+            if key in seen_reads:
+                raise InvalidInputError("one history candidate path may be committed only once")
+            seen_reads.add(key)
+            blob_value = draft.get("blob_sha256")
+            if blob_value is not None and not isinstance(blob_value, str):
+                raise InvalidInputError("Git EvidenceDraft blob_sha256 must be a string or null")
+            if (
+                read.workspace_path != str(_workspace_path(workspace))
+                or read.preparation_run_id != preparation_run_id
+                or read.role_lens_id != role_lens_id
+                or draft.get("project_id") != read.project_id
+                or draft.get("worktree_id") != read.worktree_id
+                or draft.get("query_reason") != read.query_reason
+                or draft.get("commit") != read.commit
+                or draft.get("metadata_sha256") != read.metadata_sha256
+                or draft.get("diff_sha256") != read.diff_sha256
+                or blob_value != read.blob_sha256
+            ):
+                raise InvalidInputError("Git EvidenceDraft does not match its task-scoped read")
+            proofs.append(
+                {
+                    "candidate_id": read.candidate_id,
+                    "preparation_run_id": read.preparation_run_id,
+                    "scan_run_id": read.scan_run_id,
+                    "role_lens_id": read.role_lens_id,
+                    "project_id": read.project_id,
+                    "worktree_id": read.worktree_id,
+                    "relative_paths": list(read.relative_paths),
+                    "query_reason": read.query_reason,
+                    "selected_path": read.selected_path,
+                    "commit": read.commit,
+                    "metadata_sha256": read.metadata_sha256,
+                    "diff_sha256": read.diff_sha256,
+                    "blob_sha256": read.blob_sha256,
+                }
+            )
+        protected_request = dict(request)
+        protected_request["_history_proofs"] = cast(list[JsonValue], proofs)
+        response = self._run_protected_child(
+            [
+                "record-analysis",
+                "--workspace",
+                workspace,
+                *_receipt_arguments(source),
+            ],
+            payload=protected_request,
+        )
+        if response.status != "ok":
+            return response
+        commit_value = response.payload.get("analysis_commit")
+        if commit_value is None:
+            if response.payload.get("preparation_run_id") != preparation_run_id:
+                return _protocol_error("GoodJob core rejected analysis for another run")
+            return response
+        if not isinstance(commit_value, dict) or not _is_json_value(commit_value):
+            return _protocol_error("GoodJob core returned an invalid analysis commit")
+        commit = cast(JsonObject, commit_value)
+        if commit.get("preparation_run_id") != preparation_run_id:
+            return _protocol_error("GoodJob core committed analysis for another run")
+        return response
+
+    def _require_preparation_binding(
+        self,
+        workspace: str,
+        preparation_run_id: str,
+    ) -> PreparationBinding:
+        binding = self._preparation_runs.get(preparation_run_id)
+        if binding is None:
+            raise InvalidInputError(
+                "start this PreparationRun in the current task before continuing analysis"
+            )
+        if binding.workspace_path != str(_workspace_path(workspace)):
+            raise InvalidInputError("PreparationRun does not match the requested workspace")
+        return binding
+
     def _query_history_candidates(self, message: JsonObject) -> CoreResponse:
         workspace = _required_text(message, "workspace")
         source = self._source_receipt(message)
@@ -961,7 +1168,58 @@ class SessionBroker:
         ]
         if binding.worktree_id is not None:
             arguments.extend(["--worktree-id", binding.worktree_id])
-        return self._run_protected_child(arguments)
+        response = self._run_protected_child(arguments)
+        if response.status != "ok":
+            return response
+        read_value = response.payload.get("history_candidate_read")
+        if not isinstance(read_value, dict) or not _is_json_value(read_value):
+            return _protocol_error("GoodJob core returned an invalid history candidate read")
+        read = cast(JsonObject, read_value)
+        candidate_value = read.get("candidate")
+        if not isinstance(candidate_value, dict) or not _is_json_value(candidate_value):
+            return _protocol_error("GoodJob core returned incomplete history candidate metadata")
+        candidate = cast(JsonObject, candidate_value)
+        try:
+            returned_candidate_id = _required_text(candidate, "candidate_id")
+            commit = _required_text(candidate, "commit")
+            metadata_sha256 = _required_text(candidate, "metadata_sha256")
+            returned_path = _required_text(read, "selected_path")
+            returned_reason = _required_text(read, "query_reason")
+            diff_sha256 = _required_text(read, "diff_sha256")
+        except InvalidInputError:
+            return _protocol_error("GoodJob core returned incomplete history candidate hashes")
+        blob_value = read.get("blob_sha256")
+        if blob_value is not None and not isinstance(blob_value, str):
+            return _protocol_error("GoodJob core returned an invalid history blob hash")
+        if (
+            binding.worktree_id is None
+            or returned_candidate_id != binding.candidate_id
+            or returned_path != selected_path
+            or returned_reason != binding.query_reason
+        ):
+            return _protocol_error("GoodJob core read another history candidate scope")
+        read_binding = HistoryCandidateReadBinding(
+            workspace_path=binding.workspace_path,
+            source_receipt_id=binding.source_receipt_id,
+            preparation_run_id=binding.preparation_run_id,
+            scan_run_id=binding.scan_run_id,
+            role_lens_id=binding.role_lens_id,
+            project_id=binding.project_id,
+            worktree_id=binding.worktree_id,
+            relative_paths=binding.relative_paths,
+            query_reason=binding.query_reason,
+            candidate_id=binding.candidate_id,
+            selected_path=selected_path,
+            commit=commit,
+            metadata_sha256=metadata_sha256,
+            diff_sha256=diff_sha256,
+            blob_sha256=blob_value,
+        )
+        existing = self._history_candidate_reads.get((binding.candidate_id, selected_path))
+        if existing is not None and existing != read_binding:
+            return _protocol_error("GoodJob core returned a changed history candidate read")
+        self._history_candidate_reads[(binding.candidate_id, selected_path)] = read_binding
+        return response
 
     def _source_receipt(self, message: JsonObject) -> ReceiptEnvelope:
         receipt_id = _required_text(message, "authorization_receipt_id")
