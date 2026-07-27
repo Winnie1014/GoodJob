@@ -1136,6 +1136,52 @@ def test_record_analysis_is_private_task_bound_and_idempotent(tmp_path: Path) ->
     )
     fresh_receipt = fresh_authorized["receipt"]
     assert isinstance(fresh_receipt, dict)
+    mock_targets = _send_json(
+        fresh_broker,
+        {
+            "op": "interview",
+            "workspace": str(workspace),
+            "authorization_receipt_id": fresh_receipt["authorization_receipt_id"],
+            "interview_input": {
+                "contract_version": "interview-input-v1",
+                "mode": "mock_review",
+                "action": "list_targets",
+                "preparation_run_id": preparation_run["preparation_run_id"],
+            },
+        },
+    )
+    mock_review = mock_targets["mock_review"]
+    assert isinstance(mock_review, dict)
+    mock_questions = mock_review["questions"]
+    assert isinstance(mock_questions, list) and mock_questions
+    mock_question = mock_questions[0]
+    assert isinstance(mock_question, dict)
+    recorded_review = _send_json(
+        fresh_broker,
+        {
+            "op": "interview",
+            "workspace": str(workspace),
+            "authorization_receipt_id": fresh_receipt["authorization_receipt_id"],
+            "interview_input": {
+                "contract_version": "interview-input-v1",
+                "request_id": str(uuid.uuid4()),
+                "mode": "mock_review",
+                "action": "record_review",
+                "preparation_run_id": preparation_run["preparation_run_id"],
+                "review_target_binding_id": mock_question["review_target_binding_id"],
+                "question_id": mock_question["question_id"],
+                "review": {
+                    "summary": "能够解释主路径，异常边界仍需练习。",
+                    "mastery_level": "developing",
+                    "weak_points": ["异常边界"],
+                    "next_review_at": "2026-08-20",
+                },
+            },
+        },
+    )
+    interview_review = recorded_review["interview_review"]
+    assert isinstance(interview_review, dict)
+    assert interview_review["preparation_run_id"] == preparation_run["preparation_run_id"]
     rejected_page = _send_json(
         fresh_broker,
         {

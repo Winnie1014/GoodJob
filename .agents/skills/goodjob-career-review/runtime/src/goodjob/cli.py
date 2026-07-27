@@ -30,6 +30,7 @@ from goodjob.preparation import (
     validate_job_input,
 )
 from goodjob.reporting import ArtifactSnapshotService
+from goodjob.review import ReviewService
 from goodjob.scanner import (
     ExternalGitGrant,
     WorkspaceScanner,
@@ -166,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     interview = subparsers.add_parser(
         "interview",
-        help="append one structured context answer batch",
+        help="append structured context answers or one bounded mock-interview review",
     )
     interview.add_argument("--workspace", required=True)
     _add_payload_argument(interview)
@@ -599,6 +600,12 @@ def _handle_interview(args: argparse.Namespace, paths: DataPaths) -> dict[str, A
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
     payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    if payload.get("mode") == "mock_review":
+        return ReviewService(Database(paths)).interview(
+            workspace_path=workspace,
+            authorization_receipt_id=args.authorization_receipt_id,
+            request_value=payload,
+        )
     return ContextInterviewService(Database(paths)).record_context(
         authorization_receipt_id=args.authorization_receipt_id,
         request_value=payload,

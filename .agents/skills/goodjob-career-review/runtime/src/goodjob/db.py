@@ -775,6 +775,151 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=8,
+        name="review_state_lineage",
+        statements=(
+            """
+            CREATE TABLE review_targets (
+                review_target_id TEXT PRIMARY KEY,
+                target_kind TEXT NOT NULL CHECK (target_kind IN ('claim', 'topic')),
+                stable_subject_id TEXT NOT NULL,
+                topic_contract_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (target_kind, stable_subject_id, topic_contract_version)
+            )
+            """,
+            """
+            CREATE TABLE review_target_bindings (
+                review_target_binding_id TEXT PRIMARY KEY,
+                review_target_id TEXT NOT NULL REFERENCES
+                    review_targets(review_target_id),
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                subject_projection TEXT NOT NULL,
+                subject_projection_sha256 TEXT NOT NULL,
+                subject_fingerprint TEXT NOT NULL,
+                continuity_status TEXT NOT NULL CHECK (
+                    continuity_status IN ('new', 'continued', 'reassess_required')
+                ),
+                bound_at TEXT NOT NULL,
+                UNIQUE (preparation_run_id, review_target_id),
+                UNIQUE (review_target_binding_id, preparation_run_id)
+            )
+            """,
+            """
+            CREATE TABLE interview_reviews (
+                review_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                request_sha256 TEXT NOT NULL,
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                review_target_binding_id TEXT NOT NULL,
+                question_id TEXT NOT NULL,
+                summary TEXT NOT NULL CHECK (length(summary) BETWEEN 1 AND 4000),
+                mastery_level TEXT NOT NULL CHECK (
+                    mastery_level IN ('unfamiliar', 'developing', 'solid', 'mastered')
+                ),
+                weak_points TEXT NOT NULL,
+                next_review_at TEXT CHECK (
+                    next_review_at IS NULL OR (
+                        length(next_review_at) = 10
+                        AND substr(next_review_at, 5, 1) = '-'
+                        AND substr(next_review_at, 8, 1) = '-'
+                    )
+                ),
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (review_target_binding_id, preparation_run_id)
+                    REFERENCES review_target_bindings(
+                        review_target_binding_id, preparation_run_id
+                    )
+            )
+            """,
+            """
+            CREATE INDEX review_target_bindings_lineage_idx
+            ON review_target_bindings(
+                review_target_id, subject_fingerprint, preparation_run_id
+            )
+            """,
+            """
+            CREATE INDEX interview_reviews_projection_idx
+            ON interview_reviews(review_target_binding_id, created_at)
+            """,
+        ),
+    ),
+    Migration(
+        version=9,
+        name="review_causal_order",
+        statements=(
+            """
+            ALTER TABLE preparation_runs
+            ADD COLUMN review_lineage_sequence INTEGER NOT NULL DEFAULT 0
+                CHECK (review_lineage_sequence >= 0)
+            """,
+            """
+            UPDATE preparation_runs
+            SET review_lineage_sequence = rowid
+            """,
+            """
+            CREATE UNIQUE INDEX preparation_runs_review_lineage_idx
+            ON preparation_runs(review_lineage_sequence)
+            """,
+            """
+            ALTER TABLE preparation_runs
+            ADD COLUMN review_cutoff_sequence INTEGER NOT NULL DEFAULT 0
+                CHECK (review_cutoff_sequence >= 0)
+            """,
+            """
+            ALTER TABLE interview_reviews
+            ADD COLUMN review_sequence INTEGER
+                CHECK (review_sequence IS NULL OR review_sequence > 0)
+            """,
+            """
+            UPDATE interview_reviews
+            SET review_sequence = rowid
+            """,
+            """
+            CREATE UNIQUE INDEX interview_reviews_sequence_idx
+            ON interview_reviews(review_sequence)
+            """,
+            """
+            CREATE TRIGGER preparation_runs_require_review_lineage_sequence
+            BEFORE INSERT ON preparation_runs
+            WHEN NEW.review_lineage_sequence IS NULL
+              OR NEW.review_lineage_sequence != COALESCE(
+                    (SELECT MAX(review_lineage_sequence) FROM preparation_runs), 0
+                 ) + 1
+              OR NEW.review_cutoff_sequence != COALESCE(
+                    (SELECT MAX(review_sequence) FROM interview_reviews), 0
+                 )
+            BEGIN
+                SELECT RAISE(ABORT, 'review_lineage_sequence or review cutoff is invalid');
+            END
+            """,
+            """
+            CREATE TRIGGER interview_reviews_require_review_sequence
+            BEFORE INSERT ON interview_reviews
+            WHEN NEW.review_sequence IS NULL
+              OR NEW.review_sequence != COALESCE(
+                    (SELECT MAX(review_sequence) FROM interview_reviews), 0
+                 ) + 1
+            BEGIN
+                SELECT RAISE(ABORT, 'review_sequence must be the next sequence');
+            END
+            """,
+            """
+            UPDATE preparation_runs
+            SET review_cutoff_sequence = COALESCE(
+                (
+                    SELECT MAX(ir.review_sequence)
+                    FROM interview_reviews AS ir
+                    WHERE ir.created_at < preparation_runs.started_at
+                ),
+                0
+            )
+            """,
+        ),
+    ),
 )
 
 

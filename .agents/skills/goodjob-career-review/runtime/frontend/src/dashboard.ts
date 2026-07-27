@@ -155,8 +155,20 @@ interface ReviewBinding {
   review_target_binding_id: string;
   review_target_id?: string;
   continuity_status: string;
+  summary: string | null;
   mastery_level: string | null;
+  weak_points: string[];
   next_review_at: string | null;
+  reviewed_at: string | null;
+  historical_review: HistoricalReview | null;
+}
+
+interface HistoricalReview {
+  summary: string;
+  mastery_level: string;
+  weak_points: string[];
+  next_review_at: string | null;
+  reviewed_at: string;
 }
 
 interface ReportBundle {
@@ -201,6 +213,17 @@ const NAV_ITEMS = [
   ["gaps", "知识缺口", "#/v1/gaps"],
   ["interview", "面试与复习", "#/v1/interview"],
 ] as const;
+
+const MASTERY_LABELS: Record<string, string> = {
+  unfamiliar: "不熟悉",
+  developing: "正在掌握",
+  solid: "较扎实",
+  mastered: "已掌握",
+};
+
+function masteryLabel(value: string | null): string {
+  return value === null ? "未评估" : (MASTERY_LABELS[value] ?? value);
+}
 
 const ICON_PATHS: Record<string, string[]> = {
   overview: ["M3 3h7v7H3z", "M14 3h7v4h-7z", "M14 11h7v10h-7z", "M3 14h7v7H3z"],
@@ -1197,7 +1220,7 @@ class Dashboard {
     }
     const masteryCounts = new Map<string, number>();
     for (const binding of bindings) {
-      const level = binding.mastery_level ?? "未评估";
+      const level = masteryLabel(binding.mastery_level);
       masteryCounts.set(level, (masteryCounts.get(level) ?? 0) + 1);
     }
     if (masteryCounts.size) {
@@ -1211,21 +1234,52 @@ class Dashboard {
     }
     review.append(element("p", "result-count", `${bindings.length} 个复习目标`));
     for (const binding of bindings) {
-      const row = element("p", "review-binding");
+      const row = element("div", "review-binding");
       row.dataset.continuity = binding.continuity_status;
+      const heading = element("p", "review-binding-heading");
       if (binding.review_target_id) {
         const target = element("a", "review-target-link", "复习目标") as HTMLAnchorElement;
         target.href = `#/v1/interview/target/${encodeURIComponent(binding.review_target_id)}`;
-        row.append(target);
+        heading.append(target);
       }
-      row.append(
+      heading.append(
         statusTag(binding.continuity_status),
         document.createTextNode(
           displayText(
-            ` ${binding.mastery_level ?? "未评估"} · ${binding.next_review_at ?? "未设置复习日期"}`,
+            ` 当前掌握度：${masteryLabel(binding.mastery_level)} · ${binding.next_review_at ?? "未设置复习日期"}`,
           ),
         ),
       );
+      row.append(heading);
+      if (binding.summary) {
+        row.append(element("p", "review-summary", binding.summary));
+      }
+      if (binding.weak_points.length) {
+        row.append(element("p", "review-weak-points", `薄弱点：${binding.weak_points.join("；")}`));
+      }
+      if (binding.historical_review) {
+        const historical = binding.historical_review;
+        const history = element("div", "review-history");
+        history.append(
+          element("p", "review-history-heading", "上次复盘（仅供历史参考，不代表当前掌握度）"),
+          element(
+            "p",
+            "review-history-meta",
+            `${masteryLabel(historical.mastery_level)} · ${historical.reviewed_at} · ${historical.next_review_at ?? "未设置复习日期"}`,
+          ),
+          element("p", "review-history-summary", historical.summary),
+        );
+        if (historical.weak_points.length) {
+          history.append(
+            element(
+              "p",
+              "review-history-weak-points",
+              `历史薄弱点：${historical.weak_points.join("；")}`,
+            ),
+          );
+        }
+        row.append(history);
+      }
       review.append(row);
     }
     const copyStatus = element("p", "copy-status");

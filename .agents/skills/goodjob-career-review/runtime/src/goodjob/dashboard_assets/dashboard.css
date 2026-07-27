@@ -739,6 +739,43 @@ details[open] > .gap-summary::after {
   padding: 8px 10px;
 }
 
+.review-binding-heading,
+.review-summary,
+.review-weak-points {
+  margin: 0;
+}
+
+.review-summary,
+.review-weak-points {
+  margin-top: 6px;
+  color: var(--ink-soft);
+}
+
+.review-history {
+  margin-top: 10px;
+  padding: 8px 0 0 12px;
+  border-top: 1px solid var(--rule);
+  border-left: 2px solid var(--warning);
+}
+
+.review-history-heading,
+.review-history-meta,
+.review-history-summary,
+.review-history-weak-points {
+  margin: 0;
+}
+
+.review-history-heading {
+  font-weight: 700;
+}
+
+.review-history-meta,
+.review-history-summary,
+.review-history-weak-points {
+  margin-top: 5px;
+  color: var(--ink-soft);
+}
+
 .review-binding[data-continuity="new"] {
   border-left: 2px solid var(--rule-strong);
 }

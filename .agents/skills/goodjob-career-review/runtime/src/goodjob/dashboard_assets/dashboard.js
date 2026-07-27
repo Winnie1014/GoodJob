@@ -118,6 +118,15 @@
     ["gaps", "\u77E5\u8BC6\u7F3A\u53E3", "#/v1/gaps"],
     ["interview", "\u9762\u8BD5\u4E0E\u590D\u4E60", "#/v1/interview"]
   ];
+  var MASTERY_LABELS = {
+    unfamiliar: "\u4E0D\u719F\u6089",
+    developing: "\u6B63\u5728\u638C\u63E1",
+    solid: "\u8F83\u624E\u5B9E",
+    mastered: "\u5DF2\u638C\u63E1"
+  };
+  function masteryLabel(value) {
+    return value === null ? "\u672A\u8BC4\u4F30" : MASTERY_LABELS[value] ?? value;
+  }
   var ICON_PATHS = {
     overview: ["M3 3h7v7H3z", "M14 3h7v4h-7z", "M14 11h7v10h-7z", "M3 14h7v7H3z"],
     project: ["M3 6h18", "M3 12h18", "M3 18h18", "M7 3v6", "M17 9v6", "M7 15v6"],
@@ -1046,7 +1055,7 @@
       }
       const masteryCounts = /* @__PURE__ */ new Map();
       for (const binding of bindings) {
-        const level = binding.mastery_level ?? "\u672A\u8BC4\u4F30";
+        const level = masteryLabel(binding.mastery_level);
         masteryCounts.set(level, (masteryCounts.get(level) ?? 0) + 1);
       }
       if (masteryCounts.size) {
@@ -1060,21 +1069,52 @@
       }
       review.append(element("p", "result-count", `${bindings.length} \u4E2A\u590D\u4E60\u76EE\u6807`));
       for (const binding of bindings) {
-        const row = element("p", "review-binding");
+        const row = element("div", "review-binding");
         row.dataset.continuity = binding.continuity_status;
+        const heading = element("p", "review-binding-heading");
         if (binding.review_target_id) {
           const target = element("a", "review-target-link", "\u590D\u4E60\u76EE\u6807");
           target.href = `#/v1/interview/target/${encodeURIComponent(binding.review_target_id)}`;
-          row.append(target);
+          heading.append(target);
         }
-        row.append(
+        heading.append(
           statusTag(binding.continuity_status),
           document.createTextNode(
             displayText(
-              ` ${binding.mastery_level ?? "\u672A\u8BC4\u4F30"} \xB7 ${binding.next_review_at ?? "\u672A\u8BBE\u7F6E\u590D\u4E60\u65E5\u671F"}`
+              ` \u5F53\u524D\u638C\u63E1\u5EA6\uFF1A${masteryLabel(binding.mastery_level)} \xB7 ${binding.next_review_at ?? "\u672A\u8BBE\u7F6E\u590D\u4E60\u65E5\u671F"}`
             )
           )
         );
+        row.append(heading);
+        if (binding.summary) {
+          row.append(element("p", "review-summary", binding.summary));
+        }
+        if (binding.weak_points.length) {
+          row.append(element("p", "review-weak-points", `\u8584\u5F31\u70B9\uFF1A${binding.weak_points.join("\uFF1B")}`));
+        }
+        if (binding.historical_review) {
+          const historical = binding.historical_review;
+          const history2 = element("div", "review-history");
+          history2.append(
+            element("p", "review-history-heading", "\u4E0A\u6B21\u590D\u76D8\uFF08\u4EC5\u4F9B\u5386\u53F2\u53C2\u8003\uFF0C\u4E0D\u4EE3\u8868\u5F53\u524D\u638C\u63E1\u5EA6\uFF09"),
+            element(
+              "p",
+              "review-history-meta",
+              `${masteryLabel(historical.mastery_level)} \xB7 ${historical.reviewed_at} \xB7 ${historical.next_review_at ?? "\u672A\u8BBE\u7F6E\u590D\u4E60\u65E5\u671F"}`
+            ),
+            element("p", "review-history-summary", historical.summary)
+          );
+          if (historical.weak_points.length) {
+            history2.append(
+              element(
+                "p",
+                "review-history-weak-points",
+                `\u5386\u53F2\u8584\u5F31\u70B9\uFF1A${historical.weak_points.join("\uFF1B")}`
+              )
+            );
+          }
+          row.append(history2);
+        }
         review.append(row);
       }
       const copyStatus = element("p", "copy-status");

@@ -1220,14 +1220,31 @@ class PreparationService:
                 run_status = "analyzing"
                 reason = None
             finished_at = timestamp if run_status in {"failed", "refresh_required"} else None
+            next_lineage_sequence = int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(review_lineage_sequence), 0) + 1
+                    FROM preparation_runs
+                    """
+                ).fetchone()[0]
+            )
+            review_cutoff_sequence = int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(review_sequence), 0)
+                    FROM interview_reviews
+                    """
+                ).fetchone()[0]
+            )
             connection.execute(
                 """
                 INSERT INTO preparation_runs(
                     preparation_run_id, request_id, request_sha256, workspace_id, scan_run_id,
                     role_lens_id, authorization_receipt_id, config_revision, requested_exports,
                     evidence_limit_per_project, status, status_reason, started_at,
-                    last_transition_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_transition_at, finished_at, review_lineage_sequence,
+                    review_cutoff_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     preparation_run_id,
@@ -1245,6 +1262,8 @@ class PreparationService:
                     timestamp,
                     timestamp,
                     finished_at,
+                    next_lineage_sequence,
+                    review_cutoff_sequence,
                 ),
             )
             connection.executemany(

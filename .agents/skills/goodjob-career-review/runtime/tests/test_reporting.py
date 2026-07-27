@@ -24,6 +24,7 @@ from goodjob.reporting import (
     render_dashboard_html,
     render_report_markdown,
 )
+from goodjob.review import ReviewService
 from goodjob.scanner import WorkspaceScanner
 
 
@@ -108,6 +109,8 @@ def _prepare_and_analyze(
     scan_run_id: str | None = None,
     role_name: str = "应用软件工程师 </script><img onerror=alert(1)> \u2028\u2029\u202e",
     knowledge_gap_severity: str | None = None,
+    claim_statement_prefix: str | None = None,
+    verified_semantic_key: str | None = None,
 ) -> tuple[str, str]:
     if scan_run_id is None:
         scan = WorkspaceScanner(database).scan(
@@ -155,7 +158,8 @@ def _prepare_and_analyze(
     statement_tokens = [
         {
             "kind": "text",
-            "value": "我可以解释该项目如何通过可测试的 Python 函数边界实现核心流程，并安全展示 ",
+            "value": claim_statement_prefix
+            or "我可以解释该项目如何通过可测试的 Python 函数边界实现核心流程，并安全展示 ",
         },
         {
             "kind": "text",
@@ -163,6 +167,24 @@ def _prepare_and_analyze(
         },
         {"kind": "inert_url", "value": "javascript:alert(1)"},
     ]
+    review_semantic_projection: dict[str, object]
+    if verified_semantic_key is None:
+        review_semantic_projection = {
+            "concept_keys": ["calculation-boundary"],
+            "mechanism_keys": ["function-call"],
+            "behavior_contract_keys": ["input-to-output"],
+            "tradeoff_keys": [],
+            "technology_identifiers": ["python"],
+        }
+    else:
+        review_semantic_projection = {
+            "concept_keys": [verified_semantic_key],
+            "mechanism_keys": [],
+            "behavior_contract_keys": [],
+            "tradeoff_keys": [],
+            "technology_identifiers": [],
+            "verification_anchors": {verified_semantic_key: [implementation_id]},
+        }
     gap_drafts: list[dict[str, object]] = []
     gap_refs: list[str] = []
     if knowledge_gap_severity is not None:
@@ -202,13 +224,7 @@ def _prepare_and_analyze(
                     "facets": ["implemented", "test_defined"],
                     "support_level": "cross_checked",
                     "personal_attribution": "capability",
-                    "review_semantic_projection": {
-                        "concept_keys": ["calculation-boundary"],
-                        "mechanism_keys": ["function-call"],
-                        "behavior_contract_keys": ["input-to-output"],
-                        "tradeoff_keys": [],
-                        "technology_identifiers": ["python"],
-                    },
+                    "review_semantic_projection": review_semantic_projection,
                     "evidence_relations": [
                         {
                             "evidence_ref": implementation_id,
@@ -322,6 +338,348 @@ def test_report_bundle_and_snapshot_are_deterministic_safe_and_idempotent(
         "capability",
     )
     connection.close()
+
+
+def test_review_lineage_projects_only_equivalent_subjects_into_new_snapshots(
+    tmp_path: Path,
+    data_paths: DataPaths,
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id = _authorize(database, workspace)
+    first_run, scan_run_id = _prepare_and_analyze(
+        database,
+        workspace,
+        receipt_id,
+        knowledge_gap_severity="medium",
+        claim_statement_prefix="我可以解释 Python 的同一可测试函数边界，换一种措辞并安全展示 ",
+        verified_semantic_key="python",
+    )
+    review_service = ReviewService(database)
+    target_request = {
+        "contract_version": "interview-input-v1",
+        "mode": "mock_review",
+        "action": "list_targets",
+        "preparation_run_id": first_run,
+    }
+    with pytest.raises(InvalidInputError, match="published ArtifactSnapshot"):
+        review_service.interview(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=target_request,
+        )
+    snapshot_service = ArtifactSnapshotService(database)
+    first_snapshot = _dict(snapshot_service.render(first_run)["artifact_snapshot"])
+    first_html = Path(cast(str, first_snapshot["html_path"]))
+    first_html_bytes = first_html.read_bytes()
+    first_bundle = ReportBundleBuilder(database).build(first_run)
+    first_bundle_hash = first_bundle["bundle_sha256"]
+    first_claim_revision_id = _dict(_list(first_bundle["claims"])[0])["claim_revision_id"]
+
+    listed = review_service.interview(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=target_request,
+    )
+    mock_review = _dict(listed["mock_review"])
+    questions = [_dict(value) for value in _list(mock_review["questions"])]
+    assert len(questions) == 2
+    claim_question = next(question for question in questions if "claim_id" in question)
+    gap_question = next(question for question in questions if "gap_id" in question)
+    assert claim_question["continuity_status"] == "new"
+    assert gap_question["continuity_status"] == "new"
+    with database.read_connection() as connection:
+        subject_projections = [
+            str(row["subject_projection"])
+            for row in connection.execute(
+                """
+                SELECT subject_projection FROM review_target_bindings
+                WHERE preparation_run_id = ?
+                """,
+                (first_run,),
+            ).fetchall()
+        ]
+    assert all("claim_revision_id" not in value for value in subject_projections)
+    assert all("gap_id" not in value and "statement" not in value for value in subject_projections)
+
+    claim_request_id = str(uuid.uuid4())
+    claim_request = {
+        "contract_version": "interview-input-v1",
+        "request_id": claim_request_id,
+        "mode": "mock_review",
+        "action": "record_review",
+        "preparation_run_id": first_run,
+        "review_target_binding_id": claim_question["review_target_binding_id"],
+        "question_id": claim_question["question_id"],
+        "review": {
+            "summary": "能够讲清主流程，但异常路径还需要再练习。",
+            "mastery_level": "solid",
+            "weak_points": ["异常路径", "替代方案"],
+            "next_review_at": "2026-08-15",
+        },
+    }
+    first_review = review_service.interview(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=claim_request,
+    )
+    assert (
+        review_service.interview(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=claim_request,
+        )
+        == first_review
+    )
+    changed_retry = cast(dict[str, object], json.loads(json.dumps(claim_request)))
+    changed_review = _dict(changed_retry["review"])
+    changed_review["summary"] = "同一 request_id 的不同内容"
+    with pytest.raises(InvalidInputError, match="another InterviewReview"):
+        review_service.interview(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=changed_retry,
+        )
+    gap_review = review_service.interview(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value={
+            "contract_version": "interview-input-v1",
+            "request_id": str(uuid.uuid4()),
+            "mode": "mock_review",
+            "action": "record_review",
+            "preparation_run_id": first_run,
+            "review_target_binding_id": gap_question["review_target_binding_id"],
+            "question_id": gap_question["question_id"],
+            "review": {
+                "summary": "知道缺口是什么，但还没有补充角色上下文。",
+                "mastery_level": "developing",
+                "weak_points": ["角色上下文"],
+                "next_review_at": None,
+            },
+        },
+    )
+    assert _dict(gap_review["interview_review"])["mastery_level"] == "developing"
+    with pytest.raises(InvalidInputError, match="unsupported fields: transcript"):
+        review_service.interview(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value={
+                **claim_request,
+                "request_id": str(uuid.uuid4()),
+                "review": {**_dict(claim_request["review"]), "transcript": "不得落库"},
+            },
+        )
+    assert _latest(data_paths)["artifact_snapshot_id"] == first_snapshot["artifact_snapshot_id"]
+
+    second_run, _ = _prepare_and_analyze(
+        database,
+        workspace,
+        receipt_id,
+        scan_run_id=scan_run_id,
+        knowledge_gap_severity="medium",
+        claim_statement_prefix="换一种纯展示措辞，仍然解释 Python 的同一机制，并安全展示 ",
+        verified_semantic_key="python",
+    )
+    second_bundle = ReportBundleBuilder(database).build(second_run)
+    second_claim_revision_id = _dict(_list(second_bundle["claims"])[0])["claim_revision_id"]
+    assert second_claim_revision_id != first_claim_revision_id
+    second_bindings = [_dict(value) for value in _list(_dict(second_bundle["review"])["bindings"])]
+    assert {binding["continuity_status"] for binding in second_bindings} == {"continued"}
+    assert {binding["mastery_level"] for binding in second_bindings} == {
+        "solid",
+        "developing",
+    }
+    assert any(binding["weak_points"] == ["异常路径", "替代方案"] for binding in second_bindings)
+    second_snapshot = _dict(snapshot_service.render(second_run)["artifact_snapshot"])
+    assert second_snapshot["artifact_snapshot_id"] != first_snapshot["artifact_snapshot_id"]
+    assert first_html.read_bytes() == first_html_bytes
+    assert ReportBundleBuilder(database).build(first_run)["bundle_sha256"] == first_bundle_hash
+
+    third_run, _ = _prepare_and_analyze(
+        database,
+        workspace,
+        receipt_id,
+        scan_run_id=scan_run_id,
+        knowledge_gap_severity="high",
+        claim_statement_prefix="这次改为解释 Python3 的另一套语义机制，并安全展示 ",
+        verified_semantic_key="python3",
+    )
+    third_bundle = ReportBundleBuilder(database).build(third_run)
+    third_bindings = [_dict(value) for value in _list(_dict(third_bundle["review"])["bindings"])]
+    assert {binding["continuity_status"] for binding in third_bindings} == {"reassess_required"}
+    assert all(binding["mastery_level"] is None for binding in third_bindings)
+    historical_reviews = [_dict(binding["historical_review"]) for binding in third_bindings]
+    assert {history["mastery_level"] for history in historical_reviews} == {
+        "solid",
+        "developing",
+    }
+    assert {history["summary"] for history in historical_reviews} == {
+        "能够讲清主流程，但异常路径还需要再练习。",
+        "知道缺口是什么，但还没有补充角色上下文。",
+    }
+    assert any(history["weak_points"] == ["异常路径", "替代方案"] for history in historical_reviews)
+    assert _dict(third_bundle["review"])["status"] == "reassessment_required"
+    third_snapshot = _dict(snapshot_service.render(third_run)["artifact_snapshot"])
+    third_markdown = Path(cast(str, third_snapshot["report_markdown_path"])).read_text(
+        encoding="utf-8"
+    )
+    third_html = Path(cast(str, third_snapshot["html_path"])).read_text(encoding="utf-8")
+    assert "需要重评 · 当前掌握度：未评估" in third_markdown
+    assert "上次复盘（仅供历史参考，不代表当前掌握度）" in third_markdown
+    assert "历史薄弱点" in third_markdown
+    assert '"historical_review"' in third_html
+    assert "\\u4e0a\\u6b21\\u590d\\u76d8" in third_html.lower()
+
+
+@pytest.mark.parametrize("damage", ["missing", "tampered", "linked"])
+def test_mock_review_rejects_invalid_artifact_snapshot(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    damage: str,
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id = _authorize(database, workspace)
+    run_id, _ = _prepare_and_analyze(database, workspace, receipt_id)
+    snapshot = _dict(ArtifactSnapshotService(database).render(run_id)["artifact_snapshot"])
+    review_service = ReviewService(database)
+    list_request = {
+        "contract_version": "interview-input-v1",
+        "mode": "mock_review",
+        "action": "list_targets",
+        "preparation_run_id": run_id,
+    }
+    listed = review_service.interview(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=list_request,
+    )
+    question = _dict(_list(_dict(listed["mock_review"])["questions"])[0])
+    record_request = {
+        "contract_version": "interview-input-v1",
+        "request_id": str(uuid.uuid4()),
+        "mode": "mock_review",
+        "action": "record_review",
+        "preparation_run_id": run_id,
+        "review_target_binding_id": question["review_target_binding_id"],
+        "question_id": question["question_id"],
+        "review": {
+            "summary": "损坏快照不得接受这条复盘。",
+            "mastery_level": "developing",
+            "weak_points": [],
+            "next_review_at": None,
+        },
+    }
+    html_path = Path(cast(str, snapshot["html_path"]))
+    html_path.parent.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    if damage == "missing":
+        html_path.unlink()
+    elif damage == "tampered":
+        html_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        html_path.write_text("tampered", encoding="utf-8")
+    else:
+        outside = tmp_path / "outside.html"
+        outside.write_text("outside", encoding="utf-8")
+        html_path.unlink()
+        html_path.symlink_to(outside)
+
+    for request in (list_request, record_request):
+        with pytest.raises(InvalidInputError):
+            review_service.interview(
+                workspace_path=workspace,
+                authorization_receipt_id=receipt_id,
+                request_value=request,
+            )
+    with database.read_connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM interview_reviews").fetchone()[0] == 0
+
+
+def test_review_sequence_breaks_equal_timestamp_ties_and_freezes_run_cutoff(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id = _authorize(database, workspace)
+    first_run, scan_run_id = _prepare_and_analyze(database, workspace, receipt_id)
+    ArtifactSnapshotService(database).render(first_run)
+    review_service = ReviewService(database)
+    listed = review_service.interview(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value={
+            "contract_version": "interview-input-v1",
+            "mode": "mock_review",
+            "action": "list_targets",
+            "preparation_run_id": first_run,
+        },
+    )
+    question = _dict(_list(_dict(listed["mock_review"])["questions"])[0])
+    tied_at = "2026-07-27T12:00:00.123400Z"
+    monkeypatch.setattr("goodjob.review._now", lambda: tied_at)
+
+    def record(summary: str, mastery_level: str) -> None:
+        review_service.interview(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value={
+                "contract_version": "interview-input-v1",
+                "request_id": str(uuid.uuid4()),
+                "mode": "mock_review",
+                "action": "record_review",
+                "preparation_run_id": first_run,
+                "review_target_binding_id": question["review_target_binding_id"],
+                "question_id": question["question_id"],
+                "review": {
+                    "summary": summary,
+                    "mastery_level": mastery_level,
+                    "weak_points": [],
+                    "next_review_at": None,
+                },
+            },
+        )
+
+    record("同一微秒内的第一条复盘。", "developing")
+    record("同一微秒内的第二条复盘。", "solid")
+    monkeypatch.setattr("goodjob.preparation._now", lambda: tied_at)
+    second_run, _ = _prepare_and_analyze(
+        database,
+        workspace,
+        receipt_id,
+        scan_run_id=scan_run_id,
+    )
+    second_bundle = ReportBundleBuilder(database).build(second_run)
+    second_binding = _dict(_list(_dict(second_bundle["review"])["bindings"])[0])
+    assert second_binding["summary"] == "同一微秒内的第二条复盘。"
+    assert second_binding["mastery_level"] == "solid"
+    frozen_hash = second_bundle["bundle_sha256"]
+
+    record("PreparationRun 冻结后写入的同时间复盘。", "mastered")
+    repeated_bundle = ReportBundleBuilder(database).build(second_run)
+    repeated_binding = _dict(_list(_dict(repeated_bundle["review"])["bindings"])[0])
+    assert repeated_binding["summary"] == "同一微秒内的第二条复盘。"
+    assert repeated_bundle["bundle_sha256"] == frozen_hash
+    with database.read_connection() as connection:
+        sequences = [
+            (int(row["review_sequence"]), str(row["created_at"]))
+            for row in connection.execute(
+                """
+                SELECT review_sequence, created_at
+                FROM interview_reviews ORDER BY review_sequence
+                """
+            ).fetchall()
+        ]
+        cutoff = connection.execute(
+            """
+            SELECT review_cutoff_sequence FROM preparation_runs
+            WHERE preparation_run_id = ?
+            """,
+            (second_run,),
+        ).fetchone()[0]
+    assert sequences == [(1, tied_at), (2, tied_at), (3, tied_at)]
+    assert cutoff == 2
 
 
 @pytest.mark.parametrize("fault_at", ["after_temp", "after_publish"])

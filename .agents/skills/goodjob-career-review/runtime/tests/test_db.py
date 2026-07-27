@@ -25,7 +25,7 @@ def test_data_paths_canonicalize_a_directly_constructed_root(tmp_path: Path) -> 
 def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     version = Database(data_paths).migrate()
 
-    assert version == 7
+    assert version == 9
     assert data_paths.config_file.read_text(encoding="utf-8") == "[goodjob]\nconfig_version = 1\n"
     assert data_paths.artifacts_dir.is_dir()
     assert data_paths.export_tmp_dir.is_dir()
@@ -39,6 +39,12 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     }
     source_revision_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(source_revisions)")
+    }
+    preparation_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(preparation_runs)")
+    }
+    interview_review_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(interview_reviews)")
     }
     connection.close()
     assert {
@@ -65,6 +71,9 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
         "project_assessments",
         "render_attempts",
         "artifact_snapshots",
+        "review_targets",
+        "review_target_bindings",
+        "interview_reviews",
     } <= tables
     assert {
         "history_basis",
@@ -78,7 +87,9 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
         "config_revision",
         "analysis_diagnostics",
     } <= source_revision_columns
-    assert Database(data_paths).migrate() == 7
+    assert {"review_lineage_sequence", "review_cutoff_sequence"} <= preparation_columns
+    assert "review_sequence" in interview_review_columns
+    assert Database(data_paths).migrate() == 9
 
 
 def test_writer_lock_never_steals_an_active_lock(data_paths: DataPaths) -> None:
@@ -101,6 +112,119 @@ def test_writer_busy_performs_no_personal_data_initialization(data_paths: DataPa
     assert not data_paths.config_file.exists()
     assert not data_paths.artifacts_dir.exists()
     assert not data_paths.database_file.exists()
+
+
+def test_v9_migration_conservatively_backfills_review_order_and_cutoffs(
+    data_paths: DataPaths,
+) -> None:
+    data_paths.ensure_layout()
+    connection = sqlite3.connect(data_paths.database_file)
+    connection.execute(
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO schema_migrations(version, name, applied_at)
+        VALUES (8, 'review_state_lineage', '2026-07-27T00:00:00.000000Z')
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE preparation_runs (
+            preparation_run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE interview_reviews (
+            review_id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO interview_reviews(review_id, created_at)
+        VALUES ('review-1', '2026-07-27T12:00:00.123001Z')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO preparation_runs(preparation_run_id, started_at)
+        VALUES ('run-1', '2026-07-27T12:00:00.123100Z')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO interview_reviews(review_id, created_at)
+        VALUES ('review-2', '2026-07-27T12:00:00.123200Z')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO preparation_runs(preparation_run_id, started_at)
+        VALUES ('run-2', '2026-07-27T12:00:00.123400Z')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO interview_reviews(review_id, created_at)
+        VALUES ('review-3', '2026-07-27T12:00:00.123400Z')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO preparation_runs(preparation_run_id, started_at)
+        VALUES ('run-3', '2026-07-27T12:00:00.123400Z')
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    assert Database(data_paths).migrate() == 9
+    upgraded = sqlite3.connect(data_paths.database_file)
+    runs = upgraded.execute(
+        """
+        SELECT preparation_run_id, review_lineage_sequence, review_cutoff_sequence
+        FROM preparation_runs ORDER BY review_lineage_sequence
+        """
+    ).fetchall()
+    reviews = upgraded.execute(
+        """
+        SELECT review_id, review_sequence
+        FROM interview_reviews ORDER BY review_sequence
+        """
+    ).fetchall()
+    with pytest.raises(sqlite3.IntegrityError, match="review_lineage_sequence"):
+        upgraded.execute(
+            """
+            INSERT INTO preparation_runs(preparation_run_id, started_at)
+            VALUES ('missing-sequence', '2026-07-27T13:00:00.000000Z')
+            """
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="review_sequence"):
+        upgraded.execute(
+            """
+            INSERT INTO interview_reviews(review_id, created_at)
+            VALUES ('missing-sequence', '2026-07-27T13:00:00.000000Z')
+            """
+        )
+    upgraded.close()
+
+    assert runs == [
+        ("run-1", 1, 1),
+        ("run-2", 2, 2),
+        ("run-3", 3, 2),
+    ]
+    assert reviews == [("review-1", 1), ("review-2", 2), ("review-3", 3)]
 
 
 def test_v7_migration_marks_populated_v6_claim_attribution_unknown(
@@ -160,7 +284,7 @@ def test_v7_migration_marks_populated_v6_claim_attribution_unknown(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 7
+    assert Database(data_paths).migrate() == 9
     upgraded = sqlite3.connect(data_paths.database_file)
     attribution = upgraded.execute(
         "SELECT personal_attribution FROM claim_revisions WHERE claim_revision_id = ?",
@@ -205,7 +329,7 @@ def test_migration_upgrades_v4_without_rewriting_existing_scan_schema(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 7
+    assert Database(data_paths).migrate() == 9
     upgraded = sqlite3.connect(data_paths.database_file)
     receipt = upgraded.execute(
         "SELECT authorization_receipt_id FROM authorization_receipts"
@@ -403,7 +527,7 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     connection.close()
 
-    assert Database(data_paths).migrate() == 7
+    assert Database(data_paths).migrate() == 9
     upgraded = sqlite3.connect(data_paths.database_file)
     preparation = upgraded.execute(
         "SELECT preparation_run_id, status FROM preparation_runs"
@@ -424,9 +548,15 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
     assert evidence == ("evidence-v5", "revision-v5", None, None)
     assert source_check == ("check-v5", "passed")
     assert foreign_key_failures == []
-    assert Database(data_paths).migrate() == 7
+    assert Database(data_paths).migrate() == 9
     final = sqlite3.connect(data_paths.database_file)
-    assert final.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (7,)
+    assert final.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (9,)
     assert final.execute("SELECT COUNT(*) FROM preparation_runs").fetchone() == (1,)
     assert final.execute("SELECT COUNT(*) FROM evidence").fetchone() == (1,)
+    assert final.execute(
+        """
+        SELECT review_lineage_sequence, review_cutoff_sequence
+        FROM preparation_runs
+        """
+    ).fetchone() == (1, 0)
     final.close()

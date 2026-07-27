@@ -27,6 +27,7 @@ def test_isolated_installed_copy_does_not_create_a_skill_venv(tmp_path: Path) ->
     )
     assert (installed_runtime / "src/goodjob/dashboard_assets/dashboard.js").is_file()
     assert (installed_runtime / "src/goodjob/dashboard_assets/dashboard.css").is_file()
+    assert (installed_runtime / "src/goodjob/review.py").is_file()
     assert not (installed_runtime / "frontend/node_modules").exists()
     data_dir = tmp_path / "owner-data"
     workspace = tmp_path / "workspace"

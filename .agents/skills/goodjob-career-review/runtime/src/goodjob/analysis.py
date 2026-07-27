@@ -36,6 +36,7 @@ from goodjob.preparation import (
     _workspace_source_locator,
     score_project_assessments,
 )
+from goodjob.review import ReviewService
 from goodjob.source_io import open_regular_file, read_open_file
 
 ANALYSIS_COMMIT_VERSION = "analysis-commit-v1"
@@ -3136,6 +3137,11 @@ class AnalysisService:
                     assessment.rank,
                 ),
             )
+        ReviewService.ensure_bindings_in_connection(
+            connection,
+            request.preparation_run_id,
+            bound_at=timestamp,
+        )
         analysis_commit_id = _new_id()
         connection.execute(
             """

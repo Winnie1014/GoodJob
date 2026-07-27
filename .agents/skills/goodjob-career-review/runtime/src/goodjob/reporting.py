@@ -24,6 +24,7 @@ from goodjob.db import Database
 from goodjob.errors import InvalidInputError
 from goodjob.preparation import _now, _stored_json
 from goodjob.process_identity import owner_process_stopped, process_identity
+from goodjob.review import ReviewService
 
 REPORT_BUNDLE_CONTRACT_VERSION = "report-bundle-v1"
 REPORT_CONTRACT_VERSION = "goodjob-report-v1"
@@ -153,8 +154,8 @@ class ReportBundleBuilder:
         self._database = database
 
     def build(self, preparation_run_id: str) -> JSONObject:
-        self._database.migrate()
-        with self._database.read_connection() as connection:
+        with self._database.write_transaction() as connection:
+            ReviewService.ensure_bindings_in_connection(connection, preparation_run_id)
             return self._build_from_connection(connection, preparation_run_id)
 
     def _build_from_connection(
@@ -201,6 +202,11 @@ class ReportBundleBuilder:
         package_status = self._package_status(str(run["scan_status"]), limitations)
         export_items = self._export_projection(claims, evidence_by_id, str(run["role_lens_id"]))
         search_index = self._search_index(projects, claims, evidence, gaps)
+        review = ReviewService.report_projection_from_connection(
+            connection,
+            preparation_run_id,
+            cutoff_at=str(run["preparation_started_at"]),
+        )
         dimensions = _stored_list(run["dimensions"], "RoleLens dimensions")
         role_lens: JSONObject = {
             "role_lens_id": str(run["role_lens_id"]),
@@ -265,17 +271,8 @@ class ReportBundleBuilder:
             "claims": claims,
             "evidence": evidence,
             "knowledge_gaps": gaps,
-            "review": {
-                "contract_version": "review-projection-v1",
-                "cutoff_at": str(run["analysis_committed_at"]),
-                "bindings": [],
-                "status": "no_reviews_recorded",
-                "skill_invocation": (
-                    "$goodjob-career-review 记录本次模拟面试复盘；"
-                    "复盘将在显式创建的新 PreparationRun 中呈现"
-                ),
-            },
-            "interview": self._interview_projection(claims, gaps),
+            "review": review,
+            "interview": self._interview_projection(claims, gaps, review),
             "export_projection": {
                 "contract_version": "export-projection-v1",
                 "items": export_items,
@@ -292,6 +289,7 @@ class ReportBundleBuilder:
         row = connection.execute(
             """
             SELECT pr.preparation_run_id, pr.status AS preparation_status,
+                   pr.started_at AS preparation_started_at,
                    pr.workspace_id, pr.scan_run_id, pr.role_lens_id,
                    sr.status AS scan_status, ac.analysis_commit_id,
                    ac.contract_version AS analysis_contract_version,
@@ -901,9 +899,24 @@ class ReportBundleBuilder:
         return sorted(items, key=lambda item: str(item["source_item_id"]))
 
     @staticmethod
-    def _interview_projection(claims: list[JSONObject], gaps: list[JSONObject]) -> JSONObject:
+    def _interview_projection(
+        claims: list[JSONObject],
+        gaps: list[JSONObject],
+        review: JSONObject,
+    ) -> JSONObject:
+        raw_bindings = review.get("bindings")
+        if not isinstance(raw_bindings, list):
+            raise InvalidInputError("review projection bindings are invalid")
+        binding_by_subject = {
+            str(binding["stable_subject_id"]): cast(JSONObject, binding)
+            for binding in raw_bindings
+            if isinstance(binding, dict) and "stable_subject_id" in binding
+        }
         questions: list[JSONObject] = []
         for claim in claims:
+            binding = binding_by_subject.get(str(claim["claim_id"]))
+            if binding is None:
+                raise InvalidInputError("Claim is missing its ReviewTargetBinding")
             questions.append(
                 {
                     "question_id": _deterministic_id("question", str(claim["claim_id"])),
@@ -918,11 +931,15 @@ class ReportBundleBuilder:
                     "follow_up_tokens": _text_tokens(
                         "哪些证据支持当前状态？边界、失败路径和替代方案是什么？"
                     ),
+                    **ReportBundleBuilder._question_review_projection(binding),
                 }
             )
         for gap in gaps:
             if gap["status"] != "open":
                 continue
+            binding = binding_by_subject.get(f"gap:{gap['gap_key']}")
+            if binding is None:
+                raise InvalidInputError("KnowledgeGap is missing its ReviewTargetBinding")
             questions.append(
                 {
                     "question_id": _deterministic_id("question", str(gap["gap_id"])),
@@ -937,11 +954,22 @@ class ReportBundleBuilder:
                     "follow_up_tokens": _text_tokens(
                         f"需要哪类证据或上下文才能按 {gap['resolution_kind']} 解决？"
                     ),
+                    **ReportBundleBuilder._question_review_projection(binding),
                 }
             )
         return {
             "two_minute_pitch_claim_ids": [claim["claim_id"] for claim in claims[:4]],
             "questions": questions,
+        }
+
+    @staticmethod
+    def _question_review_projection(binding: JSONObject) -> JSONObject:
+        return {
+            "review_target_binding_id": binding["review_target_binding_id"],
+            "review_target_id": binding["review_target_id"],
+            "continuity_status": binding["continuity_status"],
+            "mastery_level": binding["mastery_level"],
+            "next_review_at": binding["next_review_at"],
         }
 
     @staticmethod
@@ -1093,6 +1121,26 @@ def _markdown_json(value: object) -> str:
 
 def _format_bps(value: int) -> str:
     return f"{value // 100}.{value % 100:02d}%"
+
+
+def _review_mastery_label(value: object) -> str:
+    labels: dict[object, str] = {
+        None: "未评估",
+        "unfamiliar": "不熟悉",
+        "developing": "正在掌握",
+        "solid": "较扎实",
+        "mastered": "已掌握",
+    }
+    return labels.get(value, str(value))
+
+
+def _review_continuity_label(value: object) -> str:
+    labels: dict[object, str] = {
+        "new": "待首次复习",
+        "continued": "状态延续",
+        "reassess_required": "需要重评",
+    }
+    return labels.get(value, str(value))
 
 
 def render_report_markdown(bundle: JSONObject) -> str:
@@ -1392,6 +1440,45 @@ def render_report_markdown(bundle: JSONObject) -> str:
         [
             "",
             f"复习状态截止：`{review['cutoff_at']}`；`{review['status']}`。",
+        ]
+    )
+    for binding in cast(list[JSONObject], review["bindings"]):
+        mastery = _review_mastery_label(binding["mastery_level"])
+        continuity = _review_continuity_label(binding["continuity_status"])
+        next_review = binding["next_review_at"] or "未设置复习日期"
+        lines.append(
+            "- "
+            + _inline_code(str(binding["review_target_id"]))
+            + f" · {continuity} · 当前掌握度：{mastery} · {next_review}"
+        )
+        if binding["summary"]:
+            lines.append("  - 摘要：" + _escape_markdown_text(str(binding["summary"])))
+        weak_points = cast(list[object], binding["weak_points"])
+        if weak_points:
+            lines.append(
+                "  - 薄弱点："
+                + "；".join(_escape_markdown_text(str(value)) for value in weak_points)
+            )
+        historical_value = binding.get("historical_review")
+        if isinstance(historical_value, dict):
+            historical = cast(JSONObject, historical_value)
+            historical_next = historical["next_review_at"] or "未设置复习日期"
+            lines.append(
+                "  - 上次复盘（仅供历史参考，不代表当前掌握度）："
+                + _review_mastery_label(historical["mastery_level"])
+                + f" · {historical['reviewed_at']} · {historical_next}"
+            )
+            lines.append("    - 历史摘要：" + _escape_markdown_text(str(historical["summary"])))
+            historical_weak_points = cast(list[object], historical["weak_points"])
+            if historical_weak_points:
+                lines.append(
+                    "    - 历史薄弱点："
+                    + "；".join(
+                        _escape_markdown_text(str(value)) for value in historical_weak_points
+                    )
+                )
+    lines.extend(
+        [
             "",
             f"更新出口：{_inline_code(str(review['skill_invocation']))}",
             "",
@@ -1694,6 +1781,8 @@ class ArtifactSnapshotService:
         existing = self._snapshot_result(connection, preparation_run_id)
         if existing is not None:
             return existing
+        with _connection_transaction(connection):
+            ReviewService.ensure_bindings_in_connection(connection, preparation_run_id)
         bundle = ReportBundleBuilder(self._database)._build_from_connection(
             connection, preparation_run_id
         )
@@ -2194,6 +2283,17 @@ class ArtifactSnapshotService:
             },
             "latest_path": str(self._paths.latest_artifact_file),
         }
+
+    def require_valid_snapshot_from_connection(
+        self,
+        connection: sqlite3.Connection,
+        preparation_run_id: str,
+    ) -> None:
+        """Reject a missing, linked, tampered, or incomplete published snapshot."""
+        if self._snapshot_result(connection, preparation_run_id) is None:
+            raise InvalidInputError(
+                "mock review requires a successfully published ArtifactSnapshot"
+            )
 
     def _validated_snapshot_files(
         self,

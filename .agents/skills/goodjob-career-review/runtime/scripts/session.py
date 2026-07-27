@@ -868,19 +868,33 @@ class SessionBroker:
         self._require_source_scope(source, workspace)
         request = _required_object(message, "interview_input")
         preparation_run_id = _required_text(request, "preparation_run_id")
-        self._require_preparation_binding(workspace, preparation_run_id)
+        mode = _required_text(request, "mode")
+        if mode == "context":
+            self._require_preparation_binding(workspace, preparation_run_id)
+        elif mode != "mock_review":
+            raise InvalidInputError("interview mode must be context or mock_review")
         response = self._run_protected_child(
             ["interview", "--workspace", workspace, *_receipt_arguments(source)],
             payload=request,
         )
         if response.status != "ok":
             return response
-        batch_value = response.payload.get("context_answer_batch")
-        if not isinstance(batch_value, dict) or not _is_json_value(batch_value):
-            return _protocol_error("GoodJob core returned an invalid context answer batch")
-        batch = cast(JsonObject, batch_value)
-        if batch.get("preparation_run_id") != preparation_run_id:
-            return _protocol_error("GoodJob core returned answers for another PreparationRun")
+        if mode == "context":
+            batch_value = response.payload.get("context_answer_batch")
+            if not isinstance(batch_value, dict) or not _is_json_value(batch_value):
+                return _protocol_error("GoodJob core returned an invalid context answer batch")
+            batch = cast(JsonObject, batch_value)
+            if batch.get("preparation_run_id") != preparation_run_id:
+                return _protocol_error("GoodJob core returned answers for another PreparationRun")
+            return response
+        action = _required_text(request, "action")
+        response_key = "mock_review" if action == "list_targets" else "interview_review"
+        value = response.payload.get(response_key)
+        if not isinstance(value, dict) or not _is_json_value(value):
+            return _protocol_error("GoodJob core returned an invalid mock-review payload")
+        mock_review = cast(JsonObject, value)
+        if mock_review.get("preparation_run_id") != preparation_run_id:
+            return _protocol_error("GoodJob core reviewed another PreparationRun")
         return response
 
     def _list_context_evidence(self, message: JsonObject) -> CoreResponse:
