@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -10,10 +11,21 @@ from goodjob.locks import ExclusiveWriterLock
 from goodjob.paths import DataPaths
 
 
+def test_data_paths_canonicalize_a_directly_constructed_root(tmp_path: Path) -> None:
+    target = tmp_path / "canonical-data"
+    target.mkdir()
+    alias = tmp_path / "data-alias"
+    alias.symlink_to(target, target_is_directory=True)
+
+    paths = DataPaths(alias / "nested")
+
+    assert paths.root == target / "nested"
+
+
 def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     version = Database(data_paths).migrate()
 
-    assert version == 6
+    assert version == 7
     assert data_paths.config_file.read_text(encoding="utf-8") == "[goodjob]\nconfig_version = 1\n"
     assert data_paths.artifacts_dir.is_dir()
     assert data_paths.export_tmp_dir.is_dir()
@@ -51,6 +63,8 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
         "preparation_claims",
         "knowledge_gaps",
         "project_assessments",
+        "render_attempts",
+        "artifact_snapshots",
     } <= tables
     assert {
         "history_basis",
@@ -64,7 +78,7 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
         "config_revision",
         "analysis_diagnostics",
     } <= source_revision_columns
-    assert Database(data_paths).migrate() == 6
+    assert Database(data_paths).migrate() == 7
 
 
 def test_writer_lock_never_steals_an_active_lock(data_paths: DataPaths) -> None:
@@ -87,6 +101,74 @@ def test_writer_busy_performs_no_personal_data_initialization(data_paths: DataPa
     assert not data_paths.config_file.exists()
     assert not data_paths.artifacts_dir.exists()
     assert not data_paths.database_file.exists()
+
+
+def test_v7_migration_marks_populated_v6_claim_attribution_unknown(
+    data_paths: DataPaths,
+) -> None:
+    data_paths.ensure_layout()
+    connection = sqlite3.connect(data_paths.database_file)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    for migration in MIGRATIONS[:6]:
+        for statement in migration.statements:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (migration.version, migration.name, "2026-07-26T00:00:00Z"),
+        )
+    connection.execute(
+        """
+        INSERT INTO projects(
+            project_id, identity_kind, identity_key, display_name, first_seen_at
+        ) VALUES ('legacy-project', 'non_git_root', '/legacy', 'legacy',
+                  '2026-07-26T00:00:00Z')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO claims(
+            claim_id, identity_sha256, claim_key, category, scope_kind,
+            project_id, worktree_id, module_id, created_at
+        ) VALUES ('legacy-claim', ?, 'legacy-contribution', 'contribution', 'project',
+                  'legacy-project', NULL, NULL, '2026-07-26T00:00:00Z')
+        """,
+        ("a" * 64,),
+    )
+    connection.execute(
+        """
+        INSERT INTO claim_revisions(
+            claim_revision_id, claim_id, revision_no, revision_sha256,
+            statement, statement_tokens, facets, support_level,
+            review_semantic_projection, review_semantic_sha256,
+            supersedes_id, created_at
+        ) VALUES ('legacy-revision', 'legacy-claim', 1, ?, '我实现了旧功能',
+                  '[{"kind":"text","value":"我实现了旧功能"}]',
+                  '["implemented"]', 'single_source', '{}', ?, NULL,
+                  '2026-07-26T00:00:00Z')
+        """,
+        ("b" * 64, "c" * 64),
+    )
+    connection.commit()
+    connection.close()
+
+    assert Database(data_paths).migrate() == 7
+    upgraded = sqlite3.connect(data_paths.database_file)
+    attribution = upgraded.execute(
+        "SELECT personal_attribution FROM claim_revisions WHERE claim_revision_id = ?",
+        ("legacy-revision",),
+    ).fetchone()
+    upgraded.close()
+
+    assert attribution == ("legacy_unknown",)
 
 
 def test_migration_upgrades_v4_without_rewriting_existing_scan_schema(
@@ -123,7 +205,7 @@ def test_migration_upgrades_v4_without_rewriting_existing_scan_schema(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 6
+    assert Database(data_paths).migrate() == 7
     upgraded = sqlite3.connect(data_paths.database_file)
     receipt = upgraded.execute(
         "SELECT authorization_receipt_id FROM authorization_receipts"
@@ -321,7 +403,7 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     connection.close()
 
-    assert Database(data_paths).migrate() == 6
+    assert Database(data_paths).migrate() == 7
     upgraded = sqlite3.connect(data_paths.database_file)
     preparation = upgraded.execute(
         "SELECT preparation_run_id, status FROM preparation_runs"
@@ -342,9 +424,9 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
     assert evidence == ("evidence-v5", "revision-v5", None, None)
     assert source_check == ("check-v5", "passed")
     assert foreign_key_failures == []
-    assert Database(data_paths).migrate() == 6
+    assert Database(data_paths).migrate() == 7
     final = sqlite3.connect(data_paths.database_file)
-    assert final.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (6,)
+    assert final.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (7,)
     assert final.execute("SELECT COUNT(*) FROM preparation_runs").fetchone() == (1,)
     assert final.execute("SELECT COUNT(*) FROM evidence").fetchone() == (1,)
     final.close()

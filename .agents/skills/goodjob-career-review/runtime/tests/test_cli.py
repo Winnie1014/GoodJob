@@ -1101,9 +1101,35 @@ def test_record_analysis_is_private_task_bound_and_idempotent(tmp_path: Path) ->
     )
     assert first == repeated
     assert first["run_status"] == "ready"
+    rendered = _send_json(
+        broker,
+        {
+            "op": "render",
+            "preparation_run_id": preparation_run["preparation_run_id"],
+        },
+    )
+    repeated_render = _send_json(
+        broker,
+        {
+            "op": "render",
+            "preparation_run_id": preparation_run["preparation_run_id"],
+        },
+    )
+    snapshot = rendered["artifact_snapshot"]
+    assert isinstance(snapshot, dict)
+    assert snapshot["preparation_run_id"] == preparation_run["preparation_run_id"]
+    assert repeated_render == rendered
     _stop_broker(broker)
 
     fresh_broker = _start_broker(data_dir)
+    fresh_render = _send_json(
+        fresh_broker,
+        {
+            "op": "render",
+            "preparation_run_id": preparation_run["preparation_run_id"],
+        },
+    )
+    assert fresh_render == rendered
     fresh_authorized = _send_json(
         fresh_broker,
         {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},

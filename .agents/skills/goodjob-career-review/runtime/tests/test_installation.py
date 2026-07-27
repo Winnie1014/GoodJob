@@ -17,9 +17,17 @@ def test_isolated_installed_copy_does_not_create_a_skill_venv(tmp_path: Path) ->
         RUNTIME_DIR,
         installed_runtime,
         ignore=shutil.ignore_patterns(
-            ".venv", "__pycache__", "*.pyc", ".mypy_cache", ".pytest_cache"
+            ".venv",
+            "node_modules",
+            "__pycache__",
+            "*.pyc",
+            ".mypy_cache",
+            ".pytest_cache",
         ),
     )
+    assert (installed_runtime / "src/goodjob/dashboard_assets/dashboard.js").is_file()
+    assert (installed_runtime / "src/goodjob/dashboard_assets/dashboard.css").is_file()
+    assert not (installed_runtime / "frontend/node_modules").exists()
     data_dir = tmp_path / "owner-data"
     workspace = tmp_path / "workspace"
     workspace.mkdir()

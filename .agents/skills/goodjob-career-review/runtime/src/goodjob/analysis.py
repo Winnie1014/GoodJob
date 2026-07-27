@@ -2344,6 +2344,7 @@ class AnalysisService:
                 "statement_tokens": cast(list[JsonValue], statement_tokens),
                 "facets": list(draft.facets),
                 "support_level": draft.support_level,
+                "personal_attribution": draft.personal_attribution,
                 "review_semantic_sha256": review_semantic_sha256,
                 "relations": [
                     {
@@ -3015,9 +3016,10 @@ class AnalysisService:
                     INSERT INTO claim_revisions(
                         claim_revision_id, claim_id, revision_no, revision_sha256,
                         statement, statement_tokens, facets, support_level,
-                        review_semantic_projection, review_semantic_sha256,
+                        personal_attribution, review_semantic_projection,
+                        review_semantic_sha256,
                         supersedes_id, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         claim.claim_revision_id,
@@ -3028,6 +3030,7 @@ class AnalysisService:
                         claim.statement_tokens_json,
                         _canonical_json(list(draft.facets), "Claim facets"),
                         draft.support_level,
+                        draft.personal_attribution,
                         claim.review_projection_json,
                         claim.review_semantic_sha256,
                         claim.supersedes_id,

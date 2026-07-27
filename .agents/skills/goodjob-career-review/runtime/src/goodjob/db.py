@@ -720,6 +720,61 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=7,
+        name="immutable_artifact_rendering",
+        statements=(
+            """
+            ALTER TABLE claim_revisions ADD COLUMN personal_attribution TEXT NOT NULL
+            DEFAULT 'legacy_unknown' CHECK (
+                personal_attribution IN (
+                    'legacy_unknown', 'none', 'capability', 'personal_learning', 'implemented',
+                    'responsible', 'led', 'personal_outcome'
+                )
+            )
+            """,
+            """
+            CREATE TABLE render_attempts (
+                render_attempt_id TEXT PRIMARY KEY,
+                preparation_run_id TEXT NOT NULL REFERENCES
+                    preparation_runs(preparation_run_id),
+                owner_process_identity TEXT NOT NULL,
+                report_bundle_sha256 TEXT NOT NULL,
+                generator_version TEXT NOT NULL,
+                temp_relative_path TEXT NOT NULL UNIQUE,
+                latest_temp_relative_path TEXT NOT NULL UNIQUE,
+                final_relative_path TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL CHECK (
+                    status IN ('running', 'succeeded', 'failed', 'interrupted')
+                ),
+                error_summary TEXT
+            )
+            """,
+            """
+            CREATE TABLE artifact_snapshots (
+                artifact_snapshot_id TEXT PRIMARY KEY,
+                preparation_run_id TEXT NOT NULL UNIQUE REFERENCES
+                    preparation_runs(preparation_run_id),
+                render_attempt_id TEXT NOT NULL UNIQUE REFERENCES
+                    render_attempts(render_attempt_id),
+                report_contract_version TEXT NOT NULL,
+                report_bundle_sha256 TEXT NOT NULL,
+                manifest_sha256 TEXT NOT NULL,
+                report_markdown_path TEXT NOT NULL UNIQUE,
+                resume_markdown_path TEXT NOT NULL UNIQUE,
+                html_path TEXT NOT NULL UNIQUE,
+                primary_language TEXT NOT NULL CHECK (primary_language = 'zh-CN'),
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX render_attempts_run_status_idx
+            ON render_attempts(preparation_run_id, status, started_at)
+            """,
+        ),
+    ),
 )
 
 
@@ -790,6 +845,19 @@ class Database:
                 connection.rollback()
                 raise
             finally:
+                connection.close()
+
+    @contextmanager
+    def exclusive_writer_connection(self) -> Generator[sqlite3.Connection, None, None]:
+        """Hold the single writer lock across a multi-transaction publication session."""
+        self.migrate()
+        with ExclusiveWriterLock(self.paths.writer_lock_file):
+            connection = self._connect()
+            try:
+                yield connection
+            finally:
+                if connection.in_transaction:
+                    connection.rollback()
                 connection.close()
 
     @contextmanager

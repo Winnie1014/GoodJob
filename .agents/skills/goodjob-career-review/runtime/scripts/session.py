@@ -425,6 +425,8 @@ class SessionBroker:
             return self._list_context_evidence(message).payload
         if operation == "record_analysis":
             return self._record_analysis(message).payload
+        if operation == "render":
+            return self._render(message).payload
         if operation == "query_history_candidates":
             return self._query_history_candidates(message).payload
         if operation == "read_history_candidate":
@@ -999,6 +1001,21 @@ class SessionBroker:
             return _protocol_error("GoodJob core committed analysis for another run")
         return response
 
+    def _render(self, message: JsonObject) -> CoreResponse:
+        preparation_run_id = _required_text(message, "preparation_run_id")
+        response = self._run_unprotected_child(
+            ["render", "--preparation-run-id", preparation_run_id]
+        )
+        if response.status != "ok":
+            return response
+        snapshot_value = response.payload.get("artifact_snapshot")
+        if not isinstance(snapshot_value, dict) or not _is_json_value(snapshot_value):
+            return _protocol_error("GoodJob core returned an invalid artifact snapshot")
+        snapshot = cast(JsonObject, snapshot_value)
+        if snapshot.get("preparation_run_id") != preparation_run_id:
+            return _protocol_error("GoodJob core rendered another PreparationRun")
+        return response
+
     def _require_preparation_binding(
         self,
         workspace: str,
@@ -1376,6 +1393,24 @@ class SessionBroker:
         return CoreResponse.from_process(
             subprocess.CompletedProcess(full_command, process.returncode, stdout, stderr)
         )
+
+    def _run_unprotected_child(self, arguments: list[str]) -> CoreResponse:
+        command = [sys.executable, "-I", "-B", "-c", CORE_BOOTSTRAP]
+        if self._data_dir:
+            command.extend(["--data-dir", self._data_dir])
+        full_command = [*command, *arguments]
+        child_environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("PYTHON")
+        }
+        completed = subprocess.run(
+            full_command,
+            cwd=RUNTIME_DIR,
+            env=child_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return CoreResponse.from_process(completed)
 
 
 def main() -> None:

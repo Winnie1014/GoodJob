@@ -15,10 +15,13 @@ class DataPaths:
 
     root: Path
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "root", self.root.expanduser().resolve(strict=False))
+
     @classmethod
     def from_argument(cls, raw_path: str | None) -> DataPaths:
         path = Path(raw_path).expanduser() if raw_path else DEFAULT_DATA_DIR
-        return cls(path.resolve(strict=False))
+        return cls(path)
 
     @property
     def config_file(self) -> Path:
@@ -31,6 +34,14 @@ class DataPaths:
     @property
     def artifacts_dir(self) -> Path:
         return self.root / "artifacts"
+
+    @property
+    def artifact_tmp_dir(self) -> Path:
+        return self.artifacts_dir / ".tmp"
+
+    @property
+    def latest_artifact_file(self) -> Path:
+        return self.artifacts_dir / "latest.json"
 
     @property
     def exports_dir(self) -> Path:
@@ -57,6 +68,7 @@ class DataPaths:
         for directory in (
             self.root,
             self.artifacts_dir,
+            self.artifact_tmp_dir,
             self.exports_dir,
             self.export_tmp_dir,
             self.drafts_dir,

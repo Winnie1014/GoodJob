@@ -32,6 +32,7 @@ from goodjob.adapters import (
 )
 from goodjob.db import Database
 from goodjob.errors import InvalidInputError
+from goodjob.process_identity import owner_process_stopped, process_identity
 from goodjob.source_io import (
     MAX_SOURCE_FILE_BYTES,
     open_regular_file,
@@ -361,46 +362,6 @@ def _symlink_may_escape(directory_relative: str, target: str) -> bool:
         else:
             components.append(part)
     return False
-
-
-def _process_identity() -> str:
-    pid = os.getpid()
-    started = _process_start_marker(pid)
-    return f"pid:{pid};started:{started}" if started is not None else f"pid:{pid};started:unknown"
-
-
-def _process_start_marker(pid: int) -> str | None:
-    result = subprocess.run(
-        ["ps", "-o", "lstart=", "-p", str(pid)],
-        check=False,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-        env={"PATH": GIT_ENV["PATH"], "LC_ALL": "C"},
-        text=True,
-    )
-    marker = result.stdout.strip()
-    return marker if result.returncode == 0 and marker else None
-
-
-def _owner_process_stopped(identity: str) -> bool:
-    prefix, separator, started = identity.partition(";started:")
-    if not separator or not prefix.startswith("pid:") or started == "unknown":
-        return False
-    try:
-        pid = int(prefix.removeprefix("pid:"))
-    except ValueError:
-        return False
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
-    current_start = _process_start_marker(pid)
-    return current_start is not None and current_start != started
 
 
 @dataclass(frozen=True)
@@ -1162,7 +1123,7 @@ class WorkspaceScanner:
                     scan_run_id,
                     workspace_id,
                     authorization_receipt_id,
-                    _process_identity(),
+                    process_identity(),
                     mode,
                     change_detection_mode,
                     config_revision,
@@ -1181,7 +1142,7 @@ class WorkspaceScanner:
             """
         ).fetchall()
         for row in rows:
-            if not _owner_process_stopped(str(row["owner_process_identity"])):
+            if not owner_process_stopped(str(row["owner_process_identity"])):
                 continue
             connection.execute(
                 """

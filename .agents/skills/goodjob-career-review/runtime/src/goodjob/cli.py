@@ -29,6 +29,7 @@ from goodjob.preparation import (
     PreparationService,
     validate_job_input,
 )
+from goodjob.reporting import ArtifactSnapshotService
 from goodjob.scanner import (
     ExternalGitGrant,
     WorkspaceScanner,
@@ -190,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
     analysis.add_argument("--workspace", required=True)
     _add_payload_argument(analysis)
     _add_authorization_arguments(analysis, needs_receipt_id=True, needs_confirmation=False)
+
+    render = subparsers.add_parser(
+        "render",
+        help="atomically render one frozen analysis into an immutable offline snapshot",
+    )
+    render.add_argument("--preparation-run-id", required=True)
 
     candidate_inspection = subparsers.add_parser(
         "inspect-external-git-candidate",
@@ -619,6 +626,10 @@ def _handle_record_analysis(args: argparse.Namespace, paths: DataPaths) -> dict[
     )
 
 
+def _handle_render(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    return ArtifactSnapshotService(Database(paths)).render(args.preparation_run_id)
+
+
 def _history_paths(raw_paths: str) -> tuple[str, ...]:
     try:
         values = json.loads(raw_paths)
@@ -752,6 +763,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             payload = _handle_context_evidence(args, paths)
         elif args.command == "record-analysis":
             payload = _handle_record_analysis(args, paths)
+        elif args.command == "render":
+            payload = _handle_render(args, paths)
         elif args.command == "query-history-candidates":
             payload = _handle_history_query(args, paths)
         elif args.command == "read-history-candidate":
