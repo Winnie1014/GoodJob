@@ -29,7 +29,7 @@ GoodJob 不会仅凭 Git 作者信息把整个项目归为你的个人贡献。�
 ## 环境要求
 
 - Codex，支持本地 Skill；
-- Python 3.12 或更高版本，已安装在本机；
+- Python 3.12.x，已安装在本机；当前隔离启动器固定选择 `--python 3.12`，只有更高版本不能替代；
 - [`uv`](https://docs.astral.sh/uv/)；
 - 待分析工作区对当前用户可读。
 
@@ -49,15 +49,33 @@ GoodJob 不会仅凭 Git 作者信息把整个项目归为你的个人贡献。�
 ~/.codex/skills/goodjob-career-review/
 ```
 
-可从 GoodJob 仓库根目录安装或更新。这个命令只把 Git 跟踪文件展开到明确的用户级目录，不会复制本地缓存和构建产物：
+用户级安装属于发布操作，只能使用已经通过[发布条件](docs/40-delivery/acceptance-baseline.md#6-发布条件)的 tag 或完整 commit SHA，不能直接把任意工作分支的 `HEAD` 当作发布版本。下面的流程先在不参与 Skill 发现的备份区完整展开 Git 跟踪文件，校验入口存在后再切换；旧安装也移入备份区，不会留下已从新版本删除的文件：
 
 ```bash
-mkdir -p "$HOME/.codex/skills/goodjob-career-review"
-git archive HEAD:.agents/skills/goodjob-career-review \
-  | tar -x -C "$HOME/.codex/skills/goodjob-career-review"
+set -euo pipefail
+
+goodjob_release_ref="<已通过发布门禁的-tag-或完整-commit-SHA>"
+goodjob_skill_root="$HOME/.codex/skills"
+goodjob_target="$goodjob_skill_root/goodjob-career-review"
+goodjob_backup_root="$HOME/.codex/skill-backups"
+
+mkdir -p "$goodjob_skill_root" "$goodjob_backup_root"
+goodjob_stage="$(mktemp -d "$goodjob_backup_root/.goodjob-stage.XXXXXX")"
+git rev-parse --verify "$goodjob_release_ref^{commit}" >/dev/null
+git archive "$goodjob_release_ref":.agents/skills/goodjob-career-review \
+  | tar -x -C "$goodjob_stage"
+test -f "$goodjob_stage/SKILL.md"
+test -f "$goodjob_stage/runtime/scripts/session.py"
+
+if [[ -e "$goodjob_target" || -L "$goodjob_target" ]]; then
+  goodjob_backup="$goodjob_backup_root/goodjob-career-review.$(date +%Y%m%d%H%M%S)"
+  test ! -e "$goodjob_backup"
+  mv "$goodjob_target" "$goodjob_backup"
+fi
+mv "$goodjob_stage" "$goodjob_target"
 ```
 
-个人数据库和历史产物不在 Skill 目录中，因此更新 Skill 不会覆盖它们。
+首次安装时目标目录不存在，流程会直接启用新目录。更新时若最后一步失败，可把刚才创建的备份目录移回 `goodjob_target`。个人数据库和历史产物位于 `~/.codex/goodjob-career-review/`，不在 Skill 或备份目录中，因此安装切换不会覆盖它们。
 
 安装或更新后新开一个 Codex 会话，确认可用 Skill 中出现 `goodjob-career-review`。
 
