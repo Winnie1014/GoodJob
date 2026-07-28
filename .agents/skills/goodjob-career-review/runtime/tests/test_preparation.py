@@ -11,6 +11,7 @@ from typing import cast
 
 import pytest
 
+import goodjob.preparation as preparation_module
 from goodjob.auth import AuthorizationRepository, AuthorizationRequest, generate_capability
 from goodjob.db import Database
 from goodjob.errors import CapabilityError, InvalidInputError
@@ -253,6 +254,243 @@ def test_prepare_start_freezes_dynamic_lenses_and_is_idempotent(
         != _dict(system_result["role_lens"])["role_lens_id"]
     )
     assert _business_counts(data_paths) == (2, 2, 2)
+
+
+def test_evidence_bundle_balances_dimensions_before_repeating_one_source(
+    tmp_path: Path, data_paths: DataPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path)
+    (workspace / "async_ops.py").write_text(
+        "\n\n".join(
+            f"async def operation_{index}() -> int:\n    return {index}" for index in range(12)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (workspace / "settings.yaml").write_text("mode: strict\n", encoding="utf-8")
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    scan = _scan(database, workspace, receipt_id)
+    request = _request(
+        scan.scan_run_id,
+        lens=_lens(
+            [
+                ("dominant_async", 6000, ["capability_boundary"]),
+                ("verification", 2500, ["test_definition"]),
+                ("delivery_config", 1500, ["configuration"]),
+            ]
+        ),
+    )
+    request["evidence_limit_per_project"] = 6
+
+    query_count = 0
+    query_candidates = preparation_module._query_evidence_candidates
+
+    def counted_query(
+        connection: sqlite3.Connection,
+        *,
+        scan_run_id: str,
+        preparation_run_id: str,
+        project_id: str,
+        evidence_kind_limits: tuple[tuple[str, int], ...],
+        fallback_limit: int,
+    ) -> list[sqlite3.Row]:
+        nonlocal query_count
+        query_count += 1
+        return query_candidates(
+            connection,
+            scan_run_id=scan_run_id,
+            preparation_run_id=preparation_run_id,
+            project_id=project_id,
+            evidence_kind_limits=evidence_kind_limits,
+            fallback_limit=fallback_limit,
+        )
+
+    monkeypatch.setattr(preparation_module, "_query_evidence_candidates", counted_query)
+    service = PreparationService(database)
+    result = service.start(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+
+    bundle = _dict(result["evidence_bundle"])
+    items = [_dict(item) for item in _list(bundle["evidence_items"])]
+    suggestions = [_dict(item) for item in _list(bundle["deep_read_suggestions"])]
+    assert len(items) == 6
+    assert {
+        cast(str, key) for item in items[:3] for key in _list(item["priority_dimension_keys"])
+    } == {"dominant_async", "verification", "delivery_config"}
+    assert {cast(str, suggestion["workspace_relative_path"]) for suggestion in suggestions} >= {
+        "async_ops.py",
+        "tests/test_app.py",
+        "settings.yaml",
+    }
+    first_source_revision_ids = [item["source_revision_id"] for item in items[:3]]
+    assert all(
+        isinstance(source_revision_id, str) for source_revision_id in first_source_revision_ids
+    )
+    assert len(set(first_source_revision_ids)) == 3
+    assert query_count == 1
+
+    repeated = service.start(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+    assert repeated["evidence_bundle"] == result["evidence_bundle"]
+    assert query_count == 2
+
+
+def test_evidence_candidate_limits_follow_dimension_quotas() -> None:
+    dimensions = [("dominant", 8100, ["dominant_kind"])]
+    dimensions.extend(
+        (f"minor_{index:02d}", 100, [f"minor_kind_{index:02d}"]) for index in range(19)
+    )
+    role_lens = RoleLensDraft.from_value(_lens(dimensions), has_jd=False)
+
+    limits = preparation_module._evidence_kind_candidate_limits(role_lens.dimensions, 200)
+
+    assert limits["dominant_kind"] == 147
+    assert limits["minor_kind_18"] == 200
+    assert max(limits.values()) == 200
+
+
+def test_evidence_candidate_limits_cover_shared_kinds_and_small_budgets() -> None:
+    shared_lens = RoleLensDraft.from_value(
+        _lens(
+            [
+                ("first", 5000, ["shared"]),
+                ("second", 5000, ["shared"]),
+            ]
+        ),
+        has_jd=False,
+    )
+    limited_lens = RoleLensDraft.from_value(
+        _lens(
+            [
+                ("high", 6000, ["high_kind"]),
+                ("medium", 3000, ["medium_kind"]),
+                ("low", 1000, ["low_kind"]),
+                ("ignored", 0, ["ignored_kind"]),
+            ]
+        ),
+        has_jd=False,
+    )
+
+    assert preparation_module._evidence_kind_candidate_limits(shared_lens.dimensions, 6) == {
+        "shared": 6
+    }
+    assert preparation_module._evidence_kind_candidate_limits(limited_lens.dimensions, 2) == {
+        "high_kind": 1,
+        "medium_kind": 2,
+        "low_kind": 2,
+    }
+
+
+def test_evidence_bundle_uses_next_weighted_dimension_when_top_candidate_is_missing(
+    tmp_path: Path, data_paths: DataPaths
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    scan = _scan(database, workspace, receipt_id)
+    request = _request(
+        scan.scan_run_id,
+        lens=_lens(
+            [
+                ("missing_top", 6000, ["missing_kind"]),
+                ("verification", 3000, ["test_definition"]),
+                ("delivery", 1000, ["configuration"]),
+            ]
+        ),
+    )
+    request["evidence_limit_per_project"] = 1
+
+    result = PreparationService(database).start(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+
+    bundle = _dict(result["evidence_bundle"])
+    items = [_dict(item) for item in _list(bundle["evidence_items"])]
+    assert len(items) == 1
+    assert items[0]["evidence_kind"] == "test_definition"
+    assert items[0]["priority_dimension_keys"] == ["verification"]
+
+
+def test_evidence_bundle_reassigns_unfilled_quota_by_dimension_weight(
+    tmp_path: Path, data_paths: DataPaths
+) -> None:
+    workspace = _workspace(tmp_path)
+    (workspace / "single_async.py").write_text(
+        "async def only_boundary() -> None:\n    return None\n",
+        encoding="utf-8",
+    )
+    (workspace / "settings.yaml").write_text("mode: strict\n", encoding="utf-8")
+    for index in range(6):
+        (workspace / "tests" / f"test_case_{index}.py").write_text(
+            f"def test_case_{index}():\n    assert {index} == {index}\n",
+            encoding="utf-8",
+        )
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    scan = _scan(database, workspace, receipt_id)
+    request = _request(
+        scan.scan_run_id,
+        lens=_lens(
+            [
+                ("async_depth", 6000, ["capability_boundary"]),
+                ("verification", 3000, ["test_definition"]),
+                ("delivery", 1000, ["configuration"]),
+            ]
+        ),
+    )
+    request["evidence_limit_per_project"] = 6
+
+    result = PreparationService(database).start(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+
+    bundle = _dict(result["evidence_bundle"])
+    items = [_dict(item) for item in _list(bundle["evidence_items"])]
+    evidence_kinds = [item["evidence_kind"] for item in items]
+    assert evidence_kinds.count("capability_boundary") == 1
+    assert evidence_kinds.count("test_definition") == 4
+    assert evidence_kinds.count("configuration") == 1
+
+
+def test_evidence_bundle_accepts_maximum_role_lens_kind_matrix(
+    tmp_path: Path, data_paths: DataPaths
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    scan = _scan(database, workspace, receipt_id)
+    dimensions = [
+        (
+            f"dimension_{dimension_index:02d}",
+            500,
+            [f"kind_{dimension_index:02d}_{kind_index:02d}" for kind_index in range(32)],
+        )
+        for dimension_index in range(20)
+    ]
+    request = _request(scan.scan_run_id, lens=_lens(dimensions))
+    request["evidence_limit_per_project"] = 200
+
+    result = PreparationService(database).start(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+
+    bundle = _dict(result["evidence_bundle"])
+    preparation_run = _dict(result["preparation_run"])
+    assert preparation_run["status"] == "analyzing"
+    assert len(_list(bundle["evidence_items"])) > 0
 
 
 def test_unknown_fields_cannot_bypass_request_idempotency(

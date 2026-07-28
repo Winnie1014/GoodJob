@@ -786,6 +786,250 @@ def _directory_usage(path: Path) -> int:
     return total
 
 
+def _query_evidence_candidates(
+    connection: sqlite3.Connection,
+    *,
+    scan_run_id: str,
+    preparation_run_id: str,
+    project_id: str,
+    evidence_kind_limits: tuple[tuple[str, int], ...],
+    fallback_limit: int,
+) -> list[sqlite3.Row]:
+    if evidence_kind_limits:
+        relevant_kinds_query = "VALUES " + ", ".join(
+            f"(?, {candidate_limit})" for _, candidate_limit in evidence_kind_limits
+        )
+    else:
+        relevant_kinds_query = "SELECT NULL, NULL WHERE FALSE"
+    parameters: list[object] = [
+        *(evidence_kind for evidence_kind, _ in evidence_kind_limits),
+        scan_run_id,
+        preparation_run_id,
+        project_id,
+        fallback_limit,
+    ]
+    return connection.execute(
+        f"""
+        WITH relevant_kinds(evidence_kind, candidate_limit) AS (
+            {relevant_kinds_query}
+        ),
+        ranked AS (
+            SELECT e.evidence_id, e.project_id, e.project_snapshot_id,
+                   e.acquisition_scope, e.origin_kind, e.module_id,
+                   e.source_revision_id, e.evidence_kind, e.locator, e.summary,
+                   e.commit_state, e.content_equivalence_key, sa.worktree_id,
+                   wt.canonical_root AS worktree_root, sa.relative_path,
+                   sr.content_sha256, sr.analysis_fingerprint,
+                   COALESCE(ev.validity, 'current') AS validity,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY e.evidence_kind,
+                                    COALESCE(e.source_revision_id, e.evidence_id)
+                       ORDER BY e.evidence_id
+                   ) AS source_rank,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY e.evidence_kind, COALESCE(e.module_id, '')
+                       ORDER BY COALESCE(sa.relative_path, ''),
+                                e.evidence_kind, e.evidence_id
+                   ) AS module_rank,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(e.source_revision_id, e.evidence_id)
+                       ORDER BY e.evidence_kind, e.evidence_id
+                   ) AS fallback_source_rank,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY COALESCE(e.module_id, '')
+                       ORDER BY COALESCE(sa.relative_path, ''),
+                                e.evidence_kind, e.evidence_id
+                   ) AS fallback_module_rank
+            FROM preparation_run_projects AS prp
+            JOIN project_snapshot_evidence AS pse
+              ON pse.project_snapshot_id = prp.project_snapshot_id
+            JOIN evidence AS e ON e.evidence_id = pse.evidence_id
+            LEFT JOIN source_revisions AS sr
+              ON sr.source_revision_id = e.source_revision_id
+            LEFT JOIN source_artifacts AS sa ON sa.artifact_id = sr.artifact_id
+            LEFT JOIN worktrees AS wt ON wt.worktree_id = sa.worktree_id
+            LEFT JOIN evidence_validities AS ev
+              ON ev.scan_run_id = ? AND ev.evidence_id = e.evidence_id
+            WHERE prp.preparation_run_id = ? AND prp.project_id = ?
+        ),
+        bounded AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY evidence_kind
+                       ORDER BY source_rank, module_rank,
+                                COALESCE(module_id, ''),
+                                COALESCE(relative_path, ''), evidence_id
+                   ) AS kind_rank,
+                   ROW_NUMBER() OVER (
+                       ORDER BY fallback_source_rank, fallback_module_rank,
+                                COALESCE(module_id, ''),
+                                COALESCE(relative_path, ''),
+                                evidence_kind, evidence_id
+                   ) AS fallback_rank
+            FROM ranked
+        )
+        SELECT * FROM bounded
+        WHERE fallback_rank <= ?
+           OR kind_rank <= COALESCE(
+               (
+                   SELECT candidate_limit FROM relevant_kinds
+                   WHERE relevant_kinds.evidence_kind = bounded.evidence_kind
+               ),
+               0
+           )
+        ORDER BY kind_rank, fallback_rank, source_rank, module_rank,
+                 COALESCE(module_id, ''), COALESCE(relative_path, ''),
+                 evidence_kind, evidence_id
+        """,
+        tuple(parameters),
+    ).fetchall()
+
+
+def _dimension_quotas(
+    dimensions: tuple[RoleDimension, ...],
+    evidence_limit: int,
+) -> tuple[tuple[RoleDimension, ...], dict[str, int]]:
+    ordered = tuple(
+        sorted(
+            (dimension for dimension in dimensions if dimension.weight_bps > 0),
+            key=lambda item: (-item.weight_bps, item.key),
+        )
+    )
+    quotas = {dimension.key: 0 for dimension in ordered}
+    guaranteed = min(evidence_limit, len(ordered))
+    for dimension in ordered[:guaranteed]:
+        quotas[dimension.key] = 1
+    remaining = evidence_limit - guaranteed
+    if remaining <= 0:
+        return ordered, quotas
+
+    allocated = 0
+    remainders: list[tuple[int, int, str]] = []
+    for dimension in ordered:
+        numerator = remaining * dimension.weight_bps
+        share, remainder_bps = divmod(numerator, 10000)
+        quotas[dimension.key] += share
+        allocated += share
+        remainders.append((remainder_bps, dimension.weight_bps, dimension.key))
+    for _, _, key in sorted(remainders, reverse=True)[: remaining - allocated]:
+        quotas[key] += 1
+    return ordered, quotas
+
+
+def _evidence_kind_candidate_limits(
+    dimensions: tuple[RoleDimension, ...],
+    evidence_limit: int,
+) -> dict[str, int]:
+    dimension_order, quotas = _dimension_quotas(dimensions, evidence_limit)
+    limits: dict[str, int] = {}
+    cumulative_quota = 0
+    for dimension in dimension_order:
+        cumulative_quota += quotas[dimension.key]
+        for evidence_kind in dimension.required_evidence_kinds:
+            limits[evidence_kind] = max(
+                limits.get(evidence_kind, 0),
+                cumulative_quota,
+            )
+    return limits
+
+
+def _select_evidence_candidates(
+    candidates: list[sqlite3.Row],
+    dimensions: tuple[RoleDimension, ...],
+    evidence_limit: int,
+) -> list[sqlite3.Row]:
+    dimension_order, quotas = _dimension_quotas(dimensions, evidence_limit)
+    kind_weights: dict[str, int] = {}
+    for dimension in dimension_order:
+        for evidence_kind in dimension.required_evidence_kinds:
+            kind_weights[evidence_kind] = max(
+                kind_weights.get(evidence_kind, 0), dimension.weight_bps
+            )
+    selected_rows: list[sqlite3.Row] = []
+    selected_ids: set[str] = set()
+    seen_sources: set[str] = set()
+    seen_modules: set[str] = set()
+
+    def choose_candidate(dimension: RoleDimension | None) -> sqlite3.Row | None:
+        kind_order = (
+            {kind: index for index, kind in enumerate(dimension.required_evidence_kinds)}
+            if dimension is not None
+            else {}
+        )
+        available = [
+            candidate
+            for candidate in candidates
+            if str(candidate["evidence_id"]) not in selected_ids
+            and (
+                dimension is None
+                or str(candidate["evidence_kind"]) in dimension.required_evidence_kinds
+            )
+        ]
+        if not available:
+            return None
+
+        def preference(candidate: sqlite3.Row) -> tuple[object, ...]:
+            source_revision = candidate["source_revision_id"]
+            module_id = candidate["module_id"]
+            source_key = str(source_revision) if source_revision is not None else None
+            module_key = str(module_id) if module_id is not None else None
+            evidence_kind = str(candidate["evidence_kind"])
+            diversity = (
+                source_key is None or source_key in seen_sources,
+                module_key is None or module_key in seen_modules,
+                int(candidate["source_rank"]),
+                int(candidate["module_rank"]),
+                str(candidate["relative_path"] or ""),
+                str(candidate["evidence_id"]),
+            )
+            if dimension is None:
+                return (
+                    evidence_kind not in kind_weights,
+                    -kind_weights.get(evidence_kind, 0),
+                    *diversity,
+                )
+            return (
+                *diversity[:2],
+                kind_order.get(evidence_kind, len(kind_order)),
+                -kind_weights.get(evidence_kind, 0),
+                *diversity[2:],
+            )
+
+        return min(available, key=preference)
+
+    def select(candidate: sqlite3.Row) -> None:
+        selected_rows.append(candidate)
+        selected_ids.add(str(candidate["evidence_id"]))
+        if candidate["source_revision_id"] is not None:
+            seen_sources.add(str(candidate["source_revision_id"]))
+        if candidate["module_id"] is not None:
+            seen_modules.add(str(candidate["module_id"]))
+
+    used_by_dimension = {dimension.key: 0 for dimension in dimension_order}
+    while len(selected_rows) < evidence_limit:
+        progressed = False
+        for dimension in dimension_order:
+            if used_by_dimension[dimension.key] >= quotas[dimension.key]:
+                continue
+            chosen = choose_candidate(dimension)
+            if chosen is None:
+                used_by_dimension[dimension.key] = quotas[dimension.key]
+                continue
+            select(chosen)
+            used_by_dimension[dimension.key] += 1
+            progressed = True
+            if len(selected_rows) >= evidence_limit:
+                break
+        if not progressed:
+            break
+    while len(selected_rows) < evidence_limit:
+        chosen = choose_candidate(None)
+        if chosen is None:
+            break
+        select(chosen)
+    return selected_rows
+
+
 class PreparationService:
     """Freeze one scan and dynamic RoleLens before model-driven analysis."""
 
@@ -1600,46 +1844,23 @@ class PreparationService:
             if remaining <= 0 or effective_limit <= 0:
                 break
             project_limit = min(effective_limit, remaining)
-            priority_expression = "0 DESC"
-            query_parameters: list[object] = [
-                scan_run_id,
-                preparation_run_id,
-                str(project["project_id"]),
-            ]
-            if kind_weights:
-                priority_expression = (
-                    "CASE e.evidence_kind "
-                    + " ".join("WHEN ? THEN ?" for _ in kind_weights)
-                    + " ELSE 0 END DESC"
-                )
-                for evidence_kind, weight in sorted(kind_weights.items()):
-                    query_parameters.extend((evidence_kind, weight))
-            query_parameters.append(project_limit)
-            evidence_rows = connection.execute(
-                f"""
-                SELECT e.evidence_id, e.project_id, e.project_snapshot_id,
-                       e.acquisition_scope, e.origin_kind, e.module_id,
-                       e.source_revision_id, e.evidence_kind, e.locator, e.summary,
-                       e.commit_state, e.content_equivalence_key, sa.worktree_id,
-                       wt.canonical_root AS worktree_root, sa.relative_path,
-                       sr.content_sha256, sr.analysis_fingerprint,
-                       COALESCE(ev.validity, 'current') AS validity
-                FROM preparation_run_projects AS prp
-                JOIN project_snapshot_evidence AS pse
-                  ON pse.project_snapshot_id = prp.project_snapshot_id
-                JOIN evidence AS e ON e.evidence_id = pse.evidence_id
-                LEFT JOIN source_revisions AS sr
-                  ON sr.source_revision_id = e.source_revision_id
-                LEFT JOIN source_artifacts AS sa ON sa.artifact_id = sr.artifact_id
-                LEFT JOIN worktrees AS wt ON wt.worktree_id = sa.worktree_id
-                LEFT JOIN evidence_validities AS ev
-                  ON ev.scan_run_id = ? AND ev.evidence_id = e.evidence_id
-                WHERE prp.preparation_run_id = ? AND prp.project_id = ?
-                ORDER BY {priority_expression}, e.evidence_kind, e.evidence_id
-                LIMIT ?
-                """,
-                tuple(query_parameters),
-            ).fetchall()
+            project_id = str(project["project_id"])
+            kind_candidate_limits = _evidence_kind_candidate_limits(dimensions, project_limit)
+            fallback_limit = min(MAX_BUNDLE_EVIDENCE, max(project_limit * 4, project_limit))
+            candidates = _query_evidence_candidates(
+                connection,
+                scan_run_id=scan_run_id,
+                preparation_run_id=preparation_run_id,
+                project_id=project_id,
+                evidence_kind_limits=tuple(
+                    sorted(
+                        kind_candidate_limits.items(),
+                        key=lambda item: (-kind_weights[item[0]], item[0]),
+                    )
+                ),
+                fallback_limit=fallback_limit,
+            )
+            evidence_rows = _select_evidence_candidates(candidates, dimensions, project_limit)
             for evidence in evidence_rows:
                 evidence_kind = str(evidence["evidence_kind"])
                 worktree_relative_root: str | None = None
