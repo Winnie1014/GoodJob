@@ -34,6 +34,22 @@ MAX_BUNDLE_ISSUES = 200
 MAX_SOURCE_REVISION_BATCH = 200
 MAX_PRIVATE_PAYLOAD_BYTES = 12 * 1024 * 1024
 ALLOWED_EXPORTS = frozenset({"english_resume", "english_interview_qa"})
+GENERATED_PATH_PARTS = frozenset({"ephemeral", "generated", "third_party", "vendor"})
+AUXILIARY_PATH_PARTS = frozenset(
+    {
+        "example",
+        "examples",
+        "exercise",
+        "exercises",
+        "fixture",
+        "fixtures",
+        "sample",
+        "samples",
+        "spike",
+        "spikes",
+        "starter",
+    }
+)
 PUBLIC_SOURCE_CHECK_PHASE = "before_read"
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
@@ -786,6 +802,20 @@ def _directory_usage(path: Path) -> int:
     return total
 
 
+def _evidence_path_tier(relative_path: object) -> int:
+    if not isinstance(relative_path, str) or not relative_path:
+        return 0
+    path = PurePosixPath(relative_path)
+    directory_parts = tuple(part.casefold() for part in path.parts[:-1])
+    if any(part in GENERATED_PATH_PARTS or "generated" in part for part in directory_parts):
+        return 2
+    if any(part in AUXILIARY_PATH_PARTS for part in directory_parts):
+        return 1
+    if path.stem.casefold() in AUXILIARY_PATH_PARTS:
+        return 1
+    return 0
+
+
 def _query_evidence_candidates(
     connection: sqlite3.Connection,
     *,
@@ -795,6 +825,12 @@ def _query_evidence_candidates(
     evidence_kind_limits: tuple[tuple[str, int], ...],
     fallback_limit: int,
 ) -> list[sqlite3.Row]:
+    connection.create_function(
+        "goodjob_evidence_path_tier",
+        1,
+        _evidence_path_tier,
+        deterministic=True,
+    )
     if evidence_kind_limits:
         relevant_kinds_query = "VALUES " + ", ".join(
             f"(?, {candidate_limit})" for _, candidate_limit in evidence_kind_limits
@@ -821,6 +857,7 @@ def _query_evidence_candidates(
                    wt.canonical_root AS worktree_root, sa.relative_path,
                    sr.content_sha256, sr.analysis_fingerprint,
                    COALESCE(ev.validity, 'current') AS validity,
+                   goodjob_evidence_path_tier(sa.relative_path) AS path_tier,
                    ROW_NUMBER() OVER (
                        PARTITION BY e.evidence_kind,
                                     COALESCE(e.source_revision_id, e.evidence_id)
@@ -828,7 +865,8 @@ def _query_evidence_candidates(
                    ) AS source_rank,
                    ROW_NUMBER() OVER (
                        PARTITION BY e.evidence_kind, COALESCE(e.module_id, '')
-                       ORDER BY COALESCE(sa.relative_path, ''),
+                       ORDER BY goodjob_evidence_path_tier(sa.relative_path),
+                                COALESCE(sa.relative_path, ''),
                                 e.evidence_kind, e.evidence_id
                    ) AS module_rank,
                    ROW_NUMBER() OVER (
@@ -837,7 +875,8 @@ def _query_evidence_candidates(
                    ) AS fallback_source_rank,
                    ROW_NUMBER() OVER (
                        PARTITION BY COALESCE(e.module_id, '')
-                       ORDER BY COALESCE(sa.relative_path, ''),
+                       ORDER BY goodjob_evidence_path_tier(sa.relative_path),
+                                COALESCE(sa.relative_path, ''),
                                 e.evidence_kind, e.evidence_id
                    ) AS fallback_module_rank
             FROM preparation_run_projects AS prp
@@ -856,12 +895,13 @@ def _query_evidence_candidates(
             SELECT *,
                    ROW_NUMBER() OVER (
                        PARTITION BY evidence_kind
-                       ORDER BY source_rank, module_rank,
+                       ORDER BY path_tier, source_rank, module_rank,
                                 COALESCE(module_id, ''),
                                 COALESCE(relative_path, ''), evidence_id
                    ) AS kind_rank,
                    ROW_NUMBER() OVER (
-                       ORDER BY fallback_source_rank, fallback_module_rank,
+                       ORDER BY path_tier, fallback_source_rank,
+                                fallback_module_rank,
                                 COALESCE(module_id, ''),
                                 COALESCE(relative_path, ''),
                                 evidence_kind, evidence_id
@@ -975,6 +1015,7 @@ def _select_evidence_candidates(
             module_key = str(module_id) if module_id is not None else None
             evidence_kind = str(candidate["evidence_kind"])
             diversity = (
+                int(candidate["path_tier"]),
                 source_key is None or source_key in seen_sources,
                 module_key is None or module_key in seen_modules,
                 int(candidate["source_rank"]),
@@ -989,10 +1030,10 @@ def _select_evidence_candidates(
                     *diversity,
                 )
             return (
-                *diversity[:2],
+                *diversity[:3],
                 kind_order.get(evidence_kind, len(kind_order)),
                 -kind_weights.get(evidence_kind, 0),
-                *diversity[2:],
+                *diversity[3:],
             )
 
         return min(available, key=preference)

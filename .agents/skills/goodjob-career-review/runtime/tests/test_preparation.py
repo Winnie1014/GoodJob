@@ -463,6 +463,52 @@ def test_evidence_bundle_reassigns_unfilled_quota_by_dimension_weight(
     assert evidence_kinds.count("configuration") == 1
 
 
+def test_evidence_bundle_prefers_primary_source_over_generated_and_auxiliary_paths(
+    tmp_path: Path, data_paths: DataPaths
+) -> None:
+    assert preparation_module._evidence_path_tier("src/product.py") == 0
+    assert preparation_module._evidence_path_tier("scripts/spikes/probe.py") == 1
+    assert preparation_module._evidence_path_tier("apps/generated/ephemeral/helper.py") == 2
+    workspace = _workspace(tmp_path)
+    (workspace / "app.py").unlink()
+    (workspace / "src").mkdir()
+    (workspace / "src" / "product.py").write_text(
+        "def run_product() -> bool:\n    return True\n",
+        encoding="utf-8",
+    )
+    generated = workspace / "apps" / "generated" / "ephemeral"
+    generated.mkdir(parents=True)
+    (generated / "helper.py").write_text(
+        "def generated_helper() -> bool:\n    return True\n",
+        encoding="utf-8",
+    )
+    spikes = workspace / "scripts" / "spikes"
+    spikes.mkdir(parents=True)
+    (spikes / "probe.py").write_text(
+        "def probe() -> bool:\n    return True\n",
+        encoding="utf-8",
+    )
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    scan = _scan(database, workspace, receipt_id)
+    request = _request(
+        scan.scan_run_id,
+        lens=_lens([("implementation_depth", 10000, ["implementation"])]),
+    )
+    request["evidence_limit_per_project"] = 1
+
+    result = PreparationService(database).start(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+
+    bundle = _dict(result["evidence_bundle"])
+    items = [_dict(item) for item in _list(bundle["evidence_items"])]
+    assert len(items) == 1
+    assert items[0]["workspace_relative_path"] == "src/product.py"
+
+
 def test_evidence_bundle_accepts_maximum_role_lens_kind_matrix(
     tmp_path: Path, data_paths: DataPaths
 ) -> None:
