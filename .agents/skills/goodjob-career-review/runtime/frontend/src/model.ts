@@ -50,6 +50,11 @@ export interface FilterClaim {
   evidence_relations: FilterEvidenceRelation[];
 }
 
+export interface ProjectLimitation {
+  project_id: string | null;
+  kind: string;
+}
+
 const VISIBLE_CONTROLS: Record<string, string> = {
   "\u2028": "[U+2028]",
   "\u2029": "[U+2029]",
@@ -118,6 +123,16 @@ export function searchEntries(
     return [...entries];
   }
   return entries.filter((entry) => entry.search_text.includes(query));
+}
+
+export function projectScanLimitations<T extends ProjectLimitation>(
+  limitations: readonly T[],
+  projectId: string,
+): T[] {
+  return limitations.filter(
+    (limitation) =>
+      limitation.project_id === projectId && limitation.kind.startsWith("scan_issue:"),
+  );
 }
 
 export function claimMatchesFilters(

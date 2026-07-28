@@ -951,6 +951,75 @@ def test_open_context_gap_is_visible_and_downgrades_the_package(
     assert _latest(data_paths)["package_status"] == "partial"
 
 
+def test_scan_issue_limitation_retains_its_affected_path(
+    tmp_path: Path,
+    data_paths: DataPaths,
+) -> None:
+    workspace = _workspace(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text("print('outside')\n", encoding="utf-8")
+    (workspace / "outside.py").symlink_to(outside)
+    (workspace / "app-icon.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00binary-image")
+    database = Database(data_paths)
+    receipt_id = _authorize(database, workspace)
+    run_id, _ = _prepare_and_analyze(database, workspace, receipt_id)
+
+    bundle = ReportBundleBuilder(database).build(run_id)
+    coverage = _dict(bundle["coverage"])
+    limitations = [_dict(value) for value in _list(coverage["limitations"])]
+    limitation = next(
+        value
+        for value in limitations
+        if value["kind"] == "scan_issue:symlink_outside_authorized_root"
+    )
+    message = "".join(
+        cast(str, _dict(token)["value"]) for token in _list(limitation["message_tokens"])
+    )
+    excluded = _dict(coverage["excluded_by_category"])
+    markdown = render_report_markdown(bundle)
+    project = _dict(_list(bundle["projects"])[0])
+    project_section = markdown.split(f"- Project ID：`{project['project_id']}`", 1)[1]
+    snapshot = _dict(ArtifactSnapshotService(database).render(run_id)["artifact_snapshot"])
+    manifest = _dict(json.loads(Path(cast(str, snapshot["manifest_path"])).read_text("utf-8")))
+    manifest_coverage = _dict(manifest["coverage_summary"])
+
+    assert "outside.py" in message
+    assert limitation["project_id"] == project["project_id"]
+    assert coverage["excluded_by_category_available"] is True
+    assert excluded["binary_or_undecodable"] == 1
+    assert _dict(manifest_coverage["excluded_by_category"])["binary_or_undecodable"] == 1
+    assert "binary_or_undecodable" in markdown
+    assert "outside.py" in project_section
+
+
+def test_issue_path_mapping_uses_every_frozen_worktree_and_prefers_deepest_project() -> None:
+    projects: list[dict[str, object]] = [
+        {"project_id": "multi-worktree", "workspace_relative_location": "linked"},
+        {"project_id": "nested", "workspace_relative_location": "primary/nested"},
+    ]
+    locations = {
+        "multi-worktree": ("linked", "primary"),
+        "nested": ("primary/nested",),
+    }
+
+    assert (
+        ReportBundleBuilder._project_for_issue_path(
+            projects,
+            "primary/outside.py",
+            locations,
+        )
+        == "multi-worktree"
+    )
+    assert (
+        ReportBundleBuilder._project_for_issue_path(
+            projects,
+            "primary/nested/outside.py",
+            locations,
+        )
+        == "nested"
+    )
+
+
 def test_dead_render_owner_is_interrupted_and_only_registered_paths_are_cleaned(
     tmp_path: Path,
     data_paths: DataPaths,

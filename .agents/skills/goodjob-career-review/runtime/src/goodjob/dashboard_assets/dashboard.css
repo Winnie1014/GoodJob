@@ -330,6 +330,10 @@ select:hover {
   list-style: none;
 }
 
+.coverage-exclusions {
+  margin-top: 18px;
+}
+
 .view {
   padding-top: 28px;
 }

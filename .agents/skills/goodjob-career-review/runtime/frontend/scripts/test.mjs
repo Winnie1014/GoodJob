@@ -105,6 +105,17 @@ try {
     ),
     false,
   );
+  assert.deepEqual(
+    model.projectScanLimitations(
+      [
+        { limitation_id: "scan", project_id: "p1", kind: "scan_issue:file_unreadable" },
+        { limitation_id: "gap", project_id: "p1", kind: "knowledge_gap" },
+        { limitation_id: "other", project_id: "p2", kind: "scan_issue:file_unreadable" },
+      ],
+      "p1",
+    ).map((item) => item.limitation_id),
+    ["scan"],
+  );
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }

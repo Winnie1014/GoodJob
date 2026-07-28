@@ -3,6 +3,7 @@ import {
   displayText,
   formatBps,
   parseRoute,
+  projectScanLimitations,
   searchEntries,
   statusLabel,
   statusSymbol,
@@ -184,6 +185,8 @@ interface ReportBundle {
     projects_total: number;
     eligible_projects: number;
     disposition_counts: Record<string, number>;
+    excluded_by_category: Record<string, number>;
+    excluded_by_category_available: boolean;
     limitations: Limitation[];
   };
   projects: ProjectItem[];
@@ -547,6 +550,22 @@ class Dashboard {
       legend.append(item);
     }
     block.append(band, legend);
+    const exclusions = element("div", "coverage-exclusions");
+    exclusions.append(element("p", "section-kicker", "NORMAL EXCLUSIONS / 扫描排除统计"));
+    if (this.bundle.coverage.excluded_by_category_available) {
+      const exclusionList = element("ul", "coverage-legend");
+      const entries = Object.entries(this.bundle.coverage.excluded_by_category).filter(
+        ([, count]) => count > 0,
+      );
+      for (const [kind, count] of entries) {
+        exclusionList.append(element("li", undefined, `${kind} ${count}`));
+      }
+      if (!entries.length) exclusionList.append(element("li", undefined, "无"));
+      exclusions.append(exclusionList);
+    } else {
+      exclusions.append(element("p", "remediation", "该旧扫描快照未记录分类计数。"));
+    }
+    block.append(exclusions);
     return block;
   }
 
@@ -696,6 +715,13 @@ class Dashboard {
         item.append(element("p", "remediation", "本次未识别独立模块边界，材料保持项目级作用域。"));
       }
       if (selected) {
+        const scanLimitations = projectScanLimitations(
+          this.bundle.coverage.limitations,
+          project.project_id,
+        );
+        if (scanLimitations.length) {
+          item.append(this.renderProjectScanLimitations(scanLimitations));
+        }
         const claims = this.bundle.claims.filter(
           (claim) => claim.project_id === project.project_id && (!route.moduleId || claim.module_id === route.moduleId),
         );
@@ -736,6 +762,32 @@ class Dashboard {
     }
     view.append(list);
     return view;
+  }
+
+  private renderProjectScanLimitations(limitations: Limitation[]): HTMLElement {
+    const section = element("section", "project-claim-section");
+    section.append(element("h4", "subsection-title", "扫描限制"));
+    const list = element("ul", "degradation-list");
+    for (const limitation of limitations) {
+      const item = element("li", "degradation-item");
+      item.dataset.severity = limitation.severity;
+      const label = element("div", "hanging-label");
+      label.append(statusTag(limitation.severity), element("span", undefined, limitation.kind));
+      const copy = element("div", "degradation-copy");
+      const message = element("p");
+      appendTokens(message, limitation.message_tokens);
+      const impact = element("p", "remediation");
+      impact.append(document.createTextNode("影响："));
+      appendTokens(impact, limitation.impact_tokens);
+      const remedy = element("p", "remediation");
+      remedy.append(document.createTextNode("补救："));
+      appendTokens(remedy, limitation.remediation_tokens);
+      copy.append(message, impact, remedy);
+      item.append(label, copy);
+      list.append(item);
+    }
+    section.append(list);
+    return section;
   }
 
   private renderProjectClaimSection(

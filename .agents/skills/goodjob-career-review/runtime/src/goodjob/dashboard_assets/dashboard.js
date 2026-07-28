@@ -49,6 +49,11 @@
     }
     return entries.filter((entry) => entry.search_text.includes(query));
   }
+  function projectScanLimitations(limitations, projectId) {
+    return limitations.filter(
+      (limitation) => limitation.project_id === projectId && limitation.kind.startsWith("scan_issue:")
+    );
+  }
   function claimMatchesFilters(claim, relatedEvidence, query, projectDisposition, dimensionEvidenceKinds) {
     const selectedFacet = query.facet;
     if (query.project && claim.project_id !== query.project) return false;
@@ -424,6 +429,22 @@
         legend.append(item);
       }
       block.append(band, legend);
+      const exclusions = element("div", "coverage-exclusions");
+      exclusions.append(element("p", "section-kicker", "NORMAL EXCLUSIONS / \u626B\u63CF\u6392\u9664\u7EDF\u8BA1"));
+      if (this.bundle.coverage.excluded_by_category_available) {
+        const exclusionList = element("ul", "coverage-legend");
+        const entries = Object.entries(this.bundle.coverage.excluded_by_category).filter(
+          ([, count]) => count > 0
+        );
+        for (const [kind, count] of entries) {
+          exclusionList.append(element("li", void 0, `${kind} ${count}`));
+        }
+        if (!entries.length) exclusionList.append(element("li", void 0, "\u65E0"));
+        exclusions.append(exclusionList);
+      } else {
+        exclusions.append(element("p", "remediation", "\u8BE5\u65E7\u626B\u63CF\u5FEB\u7167\u672A\u8BB0\u5F55\u5206\u7C7B\u8BA1\u6570\u3002"));
+      }
+      block.append(exclusions);
       return block;
     }
     renderOverview() {
@@ -569,6 +590,13 @@
           item.append(element("p", "remediation", "\u672C\u6B21\u672A\u8BC6\u522B\u72EC\u7ACB\u6A21\u5757\u8FB9\u754C\uFF0C\u6750\u6599\u4FDD\u6301\u9879\u76EE\u7EA7\u4F5C\u7528\u57DF\u3002"));
         }
         if (selected) {
+          const scanLimitations = projectScanLimitations(
+            this.bundle.coverage.limitations,
+            project.project_id
+          );
+          if (scanLimitations.length) {
+            item.append(this.renderProjectScanLimitations(scanLimitations));
+          }
           const claims = this.bundle.claims.filter(
             (claim) => claim.project_id === project.project_id && (!route.moduleId || claim.module_id === route.moduleId)
           );
@@ -601,6 +629,31 @@
       }
       view.append(list);
       return view;
+    }
+    renderProjectScanLimitations(limitations) {
+      const section = element("section", "project-claim-section");
+      section.append(element("h4", "subsection-title", "\u626B\u63CF\u9650\u5236"));
+      const list = element("ul", "degradation-list");
+      for (const limitation of limitations) {
+        const item = element("li", "degradation-item");
+        item.dataset.severity = limitation.severity;
+        const label = element("div", "hanging-label");
+        label.append(statusTag(limitation.severity), element("span", void 0, limitation.kind));
+        const copy = element("div", "degradation-copy");
+        const message = element("p");
+        appendTokens(message, limitation.message_tokens);
+        const impact = element("p", "remediation");
+        impact.append(document.createTextNode("\u5F71\u54CD\uFF1A"));
+        appendTokens(impact, limitation.impact_tokens);
+        const remedy = element("p", "remediation");
+        remedy.append(document.createTextNode("\u8865\u6551\uFF1A"));
+        appendTokens(remedy, limitation.remediation_tokens);
+        copy.append(message, impact, remedy);
+        item.append(label, copy);
+        list.append(item);
+      }
+      section.append(list);
+      return section;
     }
     renderProjectClaimSection(title, claims, note) {
       const section = element("section", "project-claim-section");

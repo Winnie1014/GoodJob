@@ -155,6 +155,30 @@ def _direct_scanner(data_dir: Path, workspace: Path) -> tuple[WorkspaceScanner, 
     return WorkspaceScanner(database), receipt.authorization_receipt_id
 
 
+def test_known_binary_assets_are_normal_exclusions_but_invalid_source_is_reported(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "project"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='binary-assets'\n", encoding="utf-8")
+    (project / "app-icon.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00binary-image")
+    (project / "broken.py").write_bytes(b"def broken():\n    return '\xff'\n")
+
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="binary-assets-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    undecodable = [issue for issue in result.issues if issue.kind == "file_not_utf8"]
+    assert [issue.relative_path for issue in undecodable] == ["broken.py"]
+    assert result.coverage["excluded_by_category"] == {
+        "binary_or_undecodable": 2,
+    }
+
+
 def test_scan_discovers_isolated_projects_and_keeps_sensitive_bytes_out_of_sqlite(
     tmp_path: Path,
 ) -> None:

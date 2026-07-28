@@ -182,6 +182,14 @@ class ReportBundleBuilder:
             planned_evidence_ids=planned_evidence_ids,
         )
         issues = self._issues(connection, str(run["scan_run_id"]))
+        project_worktree_locations = self._project_worktree_locations(
+            connection,
+            str(run["scan_run_id"]),
+        )
+        excluded_by_category, excluded_by_category_available = self._scan_exclusions(
+            connection,
+            str(run["scan_run_id"]),
+        )
 
         evidence_by_id = {str(item["evidence_id"]): item for item in evidence}
         gap_by_id = {str(item["gap_id"]): item for item in gaps}
@@ -201,7 +209,13 @@ class ReportBundleBuilder:
                 cast(list[object], project["gap_ids"]).append(gap["gap_id"])
 
         self._validate_token_references(claims, projects, gaps, evidence_by_id, gap_by_id)
-        limitations = self._limitations(projects, evidence, issues, gaps)
+        limitations = self._limitations(
+            projects,
+            evidence,
+            issues,
+            gaps,
+            project_worktree_locations,
+        )
         package_status = self._package_status(str(run["scan_status"]), limitations)
         export_items = self._export_projection(claims, evidence_by_id, str(run["role_lens_id"]))
         search_index = self._search_index(projects, claims, evidence, gaps)
@@ -268,6 +282,8 @@ class ReportBundleBuilder:
                 "projects_total": len(projects),
                 "eligible_projects": counts["fresh"] + counts["carried_forward"],
                 "disposition_counts": counts,
+                "excluded_by_category": excluded_by_category,
+                "excluded_by_category_available": excluded_by_category_available,
                 "limitations": limitations,
             },
             "projects": projects,
@@ -725,11 +741,79 @@ class ReportBundleBuilder:
         ]
 
     @staticmethod
+    def _scan_exclusions(
+        connection: sqlite3.Connection,
+        scan_run_id: str,
+    ) -> tuple[dict[str, int], bool]:
+        row = connection.execute(
+            "SELECT coverage_json FROM scan_run_overviews WHERE scan_run_id = ?",
+            (scan_run_id,),
+        ).fetchone()
+        if row is None or row["coverage_json"] is None:
+            return {}, False
+        coverage = _stored_object(row["coverage_json"], "scan overview coverage")
+        raw_exclusions = coverage.get("excluded_by_category")
+        raw_available = coverage.get(
+            "excluded_by_category_available",
+            raw_exclusions is not None,
+        )
+        if not isinstance(raw_available, bool):
+            raise InvalidInputError("scan exclusion availability must be boolean")
+        if not raw_available:
+            return {}, False
+        if not isinstance(raw_exclusions, dict):
+            raise InvalidInputError("scan exclusion summary must be an object")
+        exclusions: dict[str, int] = {}
+        for raw_kind, raw_count in raw_exclusions.items():
+            if (
+                not isinstance(raw_kind, str)
+                or not raw_kind
+                or not isinstance(raw_count, int)
+                or isinstance(raw_count, bool)
+                or raw_count < 0
+            ):
+                raise InvalidInputError("scan exclusion summary contains an invalid entry")
+            exclusions[raw_kind] = raw_count
+        return dict(sorted(exclusions.items())), True
+
+    @staticmethod
+    def _project_worktree_locations(
+        connection: sqlite3.Connection,
+        scan_run_id: str,
+    ) -> dict[str, tuple[str, ...]]:
+        locations: dict[str, set[str]] = {}
+        rows = connection.execute(
+            """
+            SELECT wt.project_id, wt.canonical_root AS worktree_root,
+                   ws.canonical_root AS workspace_root
+            FROM worktree_observations AS wo
+            JOIN worktrees AS wt ON wt.worktree_id = wo.worktree_id
+            JOIN scan_runs AS sr ON sr.scan_run_id = wo.scan_run_id
+            JOIN workspaces AS ws ON ws.workspace_id = sr.workspace_id
+            WHERE wo.scan_run_id = ?
+            ORDER BY wt.project_id, wt.canonical_root, wt.worktree_id
+            """,
+            (scan_run_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                relative = Path(str(row["worktree_root"])).relative_to(
+                    Path(str(row["workspace_root"]))
+                )
+            except ValueError:
+                continue
+            locations.setdefault(str(row["project_id"]), set()).add(relative.as_posix())
+        return {
+            project_id: tuple(sorted(values)) for project_id, values in sorted(locations.items())
+        }
+
+    @staticmethod
     def _limitations(
         projects: list[JSONObject],
         evidence: list[JSONObject],
         issues: list[JSONObject],
         gaps: list[JSONObject],
+        project_worktree_locations: dict[str, tuple[str, ...]],
     ) -> list[JSONObject]:
         limitations: list[JSONObject] = []
         for project in projects:
@@ -767,19 +851,31 @@ class ReportBundleBuilder:
                 }
             )
         for issue in issues:
+            message_tokens = list(cast(list[TokenValue], issue["message_tokens"]))
+            relative_path = issue.get("relative_path")
+            if relative_path is not None:
+                message_tokens.extend(
+                    [
+                        {"kind": "text", "value": " 受影响路径："},
+                        {"kind": "code", "value": str(relative_path)},
+                    ]
+                )
+            project_id = issue["project_id"] or ReportBundleBuilder._project_for_issue_path(
+                projects,
+                relative_path,
+                project_worktree_locations,
+            )
             limitations.append(
                 {
                     "limitation_id": str(issue["issue_id"]),
                     "kind": f"scan_issue:{issue['kind']}",
                     "severity": issue["severity"],
-                    "project_id": issue["project_id"],
-                    "message_tokens": issue["message_tokens"],
+                    "project_id": project_id,
+                    "message_tokens": message_tokens,
                     "impact_tokens": _text_tokens("相关路径的证据覆盖可能不完整。"),
                     "remediation_tokens": issue["remediation_tokens"],
                     "filter_route": (
-                        f"#/v1/project/{issue['project_id']}"
-                        if issue["project_id"] is not None
-                        else "#/v1/overview"
+                        f"#/v1/project/{project_id}" if project_id is not None else "#/v1/overview"
                     ),
                 }
             )
@@ -827,6 +923,31 @@ class ReportBundleBuilder:
                 }
             )
         return limitations
+
+    @staticmethod
+    def _project_for_issue_path(
+        projects: list[JSONObject],
+        relative_path: object,
+        project_worktree_locations: dict[str, tuple[str, ...]],
+    ) -> str | None:
+        if not isinstance(relative_path, str) or not relative_path:
+            return None
+        matches: list[tuple[int, str]] = []
+        for project in projects:
+            project_id = str(project["project_id"])
+            raw_locations = list(project_worktree_locations.get(project_id, ()))
+            fallback_location = project.get("workspace_relative_location")
+            if isinstance(fallback_location, str) and fallback_location:
+                raw_locations.append(fallback_location)
+            for raw_location in set(raw_locations):
+                location = raw_location.rstrip("/") or "."
+                if location == ".":
+                    matches.append((0, project_id))
+                elif relative_path == location or relative_path.startswith(f"{location}/"):
+                    matches.append((len(PurePosixPath(location).parts), project_id))
+        if not matches:
+            return None
+        return min(matches, key=lambda item: (-item[0], item[1]))[1]
 
     @staticmethod
     def _package_status(scan_status: str, limitations: list[JSONObject]) -> str:
@@ -1213,9 +1334,19 @@ def render_report_markdown(bundle: JSONObject) -> str:
                 f"`{coverage['eligible_projects']}` 个参与评分。"
             ),
             f"Disposition：{_markdown_json(coverage['disposition_counts'])}",
-            "",
         ]
     )
+    excluded_by_category = cast(dict[str, int], coverage["excluded_by_category"])
+    if coverage["excluded_by_category_available"]:
+        exclusions = "、".join(
+            f"{_inline_code(kind)}={_inline_code(str(count))}"
+            for kind, count in excluded_by_category.items()
+            if count > 0
+        )
+        lines.append(f"扫描排除统计（不等同于 ScanIssue）：{exclusions or '无'}")
+    else:
+        lines.append("扫描排除统计：该旧扫描快照未记录分类计数。")
+    lines.append("")
     limitations = cast(list[JSONObject], coverage["limitations"])
     if limitations:
         for limitation in limitations:
@@ -1275,6 +1406,27 @@ def render_report_markdown(bundle: JSONObject) -> str:
                 f"- Disposition：`{project['snapshot_disposition']}`",
             ]
         )
+        project_scan_limitations = [
+            limitation
+            for limitation in limitations
+            if limitation["project_id"] == project_id
+            and str(limitation["kind"]).startswith("scan_issue:")
+        ]
+        if project_scan_limitations:
+            lines.extend(["", "#### 扫描限制", ""])
+            for limitation in project_scan_limitations:
+                message = _markdown_tokens(cast(list[TokenValue], limitation["message_tokens"]))
+                impact = _markdown_tokens(cast(list[TokenValue], limitation["impact_tokens"]))
+                remediation = _markdown_tokens(
+                    cast(list[TokenValue], limitation["remediation_tokens"])
+                )
+                lines.extend(
+                    [
+                        f"- **{limitation['severity']} · {limitation['kind']}**：{message}",
+                        f"  - 影响：{impact}",
+                        f"  - 补救：{remediation}",
+                    ]
+                )
         project_claims = claims_by_project.get(project_id, [])
         if not project_claims:
             lines.append("- 本次无可发布 Claim。")
@@ -1712,6 +1864,8 @@ def _snapshot_manifest(
             "projects_total": coverage["projects_total"],
             "eligible_projects": coverage["eligible_projects"],
             "disposition_counts": coverage["disposition_counts"],
+            "excluded_by_category": coverage["excluded_by_category"],
+            "excluded_by_category_available": coverage["excluded_by_category_available"],
             "limitation_count": len(cast(list[JSONObject], coverage["limitations"])),
         },
         "review_projection": {

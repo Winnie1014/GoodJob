@@ -147,6 +147,54 @@ SOURCE_EXTENSIONS = {
     ".tsx": "typescript",
 }
 CONFIG_EXTENSIONS = frozenset({".json", ".toml", ".yaml", ".yml"})
+BINARY_ASSET_EXTENSIONS = frozenset(
+    {
+        ".7z",
+        ".a",
+        ".avi",
+        ".bin",
+        ".bmp",
+        ".bz2",
+        ".class",
+        ".db",
+        ".dll",
+        ".dylib",
+        ".exe",
+        ".flac",
+        ".gif",
+        ".gz",
+        ".icns",
+        ".ico",
+        ".jar",
+        ".jpeg",
+        ".jpg",
+        ".m4a",
+        ".mov",
+        ".mp3",
+        ".mp4",
+        ".o",
+        ".ogg",
+        ".otf",
+        ".pdf",
+        ".png",
+        ".rar",
+        ".so",
+        ".sqlite",
+        ".sqlite3",
+        ".tar",
+        ".tif",
+        ".tiff",
+        ".ttf",
+        ".wav",
+        ".wasm",
+        ".webm",
+        ".webp",
+        ".woff",
+        ".woff2",
+        ".xz",
+        ".zip",
+    }
+)
 
 
 def _now() -> str:
@@ -2517,6 +2565,9 @@ class WorkspaceScanner:
                 continue
             if matcher.matches(relative):
                 excluded["gitignore"] += 1
+                continue
+            if path.suffix.lower() in BINARY_ASSET_EXTENSIONS:
+                excluded["binary_or_undecodable"] += 1
                 continue
             try:
                 file_fd, file_stat = _open_regular_file(worktree.root, relative)
