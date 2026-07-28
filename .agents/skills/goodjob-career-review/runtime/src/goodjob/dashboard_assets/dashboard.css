@@ -407,6 +407,22 @@ select:hover {
   font-size: 13.5px;
 }
 
+.scope-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 32px;
+  margin-top: 2px;
+  color: var(--data);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.scope-link:hover {
+  color: var(--ink);
+}
+
 .lens-section,
 .rank-section,
 .project-section,

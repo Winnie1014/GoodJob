@@ -593,7 +593,7 @@ class Dashboard {
         const remedy = element("p", "remediation");
         remedy.append(document.createTextNode("补救："));
         appendTokens(remedy, limitation.remediation_tokens);
-        const route = element("a", "nav-link", "查看受影响范围") as HTMLAnchorElement;
+        const route = element("a", "scope-link", "查看受影响范围") as HTMLAnchorElement;
         route.href = limitation.filter_route;
         copy.append(message, impact, remedy, route);
         item.append(label, copy);

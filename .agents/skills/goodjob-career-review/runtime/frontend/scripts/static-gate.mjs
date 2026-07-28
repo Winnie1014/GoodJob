@@ -33,10 +33,17 @@ for (const [label, pattern] of [
   ["RoleLens assumption rendering", /role_lens\.assumptions/],
   ["deferred search focus", /pendingSearchFocus/],
   ["focused project activation", /link\.click\(\)/],
+  [
+    "coverage limitation scope link",
+    /element\("a", "scope-link", "查看受影响范围"\)/,
+  ],
 ]) {
   if (!pattern.test(dashboardSource)) {
     throw new Error(`${label} is required in the dashboard source`);
   }
+}
+if (/element\("a", "nav-link", "查看受影响范围"\)/.test(dashboardSource)) {
+  throw new Error("coverage limitation action must not reuse the sidebar nav-link grid");
 }
 
 const cssPath = resolve(root, "../src/goodjob/dashboard_assets/dashboard.css");
@@ -55,6 +62,10 @@ for (const [label, pattern] of [
   ["forced-colors support", /@media\s*\(forced-colors:\s*active\)/],
   ["print expansion", /@media\s+print/],
   ["long-token wrapping", /overflow-wrap:\s*anywhere/],
+  [
+    "single-line coverage limitation action",
+    /\.scope-link\s*\{[^}]*display:\s*inline-flex[^}]*white-space:\s*nowrap/s,
+  ],
   [
     "native select width containment",
     /\.filter-select,\s*\.mobile-nav-select\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*100%/s,

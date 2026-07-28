@@ -471,7 +471,7 @@
           const remedy = element("p", "remediation");
           remedy.append(document.createTextNode("\u8865\u6551\uFF1A"));
           appendTokens(remedy, limitation.remediation_tokens);
-          const route = element("a", "nav-link", "\u67E5\u770B\u53D7\u5F71\u54CD\u8303\u56F4");
+          const route = element("a", "scope-link", "\u67E5\u770B\u53D7\u5F71\u54CD\u8303\u56F4");
           route.href = limitation.filter_route;
           copy.append(message, impact, remedy, route);
           item.append(label, copy);
