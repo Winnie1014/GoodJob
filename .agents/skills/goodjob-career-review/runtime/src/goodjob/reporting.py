@@ -2263,7 +2263,7 @@ class ArtifactSnapshotService:
         ).fetchone()
         if row is None:
             return None
-        paths, manifest_path = self._validated_snapshot_files(row)
+        paths, manifest_path, _ = self._validated_snapshot_files(row)
         return {
             "status": "ok",
             "run_status": str(row["package_status"]),
@@ -2295,10 +2295,53 @@ class ArtifactSnapshotService:
                 "mock review requires a successfully published ArtifactSnapshot"
             )
 
+    def read_verified_html_from_connection(
+        self,
+        connection: sqlite3.Connection,
+        artifact_snapshot_id: str,
+    ) -> tuple[JSONObject, bytes]:
+        """Return one fully verified frozen dashboard and its export identity."""
+        row = connection.execute(
+            """
+            SELECT a.artifact_snapshot_id, a.preparation_run_id,
+                   a.render_attempt_id, a.report_contract_version,
+                   a.report_bundle_sha256, a.manifest_sha256,
+                   a.report_markdown_path, a.resume_markdown_path,
+                   a.html_path, a.primary_language, a.created_at,
+                   pr.status AS package_status, w.canonical_root,
+                   ra.status AS render_status
+            FROM artifact_snapshots AS a
+            JOIN preparation_runs AS pr
+              ON pr.preparation_run_id = a.preparation_run_id
+            JOIN workspaces AS w ON w.workspace_id = pr.workspace_id
+            JOIN render_attempts AS ra ON ra.render_attempt_id = a.render_attempt_id
+            WHERE a.artifact_snapshot_id = ?
+            """,
+            (artifact_snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise InvalidInputError("source ArtifactSnapshot does not exist")
+        if str(row["render_status"]) != "succeeded" or str(row["package_status"]) not in {
+            "completed",
+            "partial",
+        }:
+            raise InvalidInputError("source ArtifactSnapshot is not successfully published")
+        paths, _, verified_contents = self._validated_snapshot_files(row)
+        payload: JSONObject = {
+            "artifact_snapshot_id": str(row["artifact_snapshot_id"]),
+            "preparation_run_id": str(row["preparation_run_id"]),
+            "report_bundle_sha256": str(row["report_bundle_sha256"]),
+            "report_contract_version": str(row["report_contract_version"]),
+            "canonical_workspace_root": str(row["canonical_root"]),
+            "html_path": str(paths["html"]),
+            "created_at": str(row["created_at"]),
+        }
+        return payload, verified_contents["html"]
+
     def _validated_snapshot_files(
         self,
         row: sqlite3.Row,
-    ) -> tuple[dict[str, Path], Path]:
+    ) -> tuple[dict[str, Path], Path, dict[str, bytes]]:
         snapshot_id = str(row["artifact_snapshot_id"])
         base = f"artifacts/{snapshot_id}"
         relative_paths = {
@@ -2358,17 +2401,21 @@ class ArtifactSnapshotService:
         expected_names = {REPORT_FILENAME, RESUME_FILENAME, HTML_FILENAME}
         if set(expected_hashes) != expected_names:
             raise InvalidInputError("ArtifactSnapshot manifest file set is incomplete")
+        verified_contents: dict[str, bytes] = {}
         for key, relative in relative_paths.items():
             name = {
                 "report_markdown": REPORT_FILENAME,
                 "resume_markdown": RESUME_FILENAME,
                 "html": HTML_FILENAME,
             }[key]
-            if _sha256_bytes(self._read_regular_relative(relative)) != expected_hashes[name]:
+            content = self._read_regular_relative(relative)
+            if _sha256_bytes(content) != expected_hashes[name]:
                 raise InvalidInputError(f"ArtifactSnapshot {name} digest does not match")
+            verified_contents[key] = content
         return (
             {key: self._safe_data_path(relative) for key, relative in relative_paths.items()},
             self._safe_data_path(manifest_relative),
+            verified_contents,
         )
 
     def _attempt_relative(self, attempt: _RenderAttempt, kind: str) -> str:

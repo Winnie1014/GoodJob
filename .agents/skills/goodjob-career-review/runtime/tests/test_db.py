@@ -25,7 +25,7 @@ def test_data_paths_canonicalize_a_directly_constructed_root(tmp_path: Path) -> 
 def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     version = Database(data_paths).migrate()
 
-    assert version == 9
+    assert version == 10
     assert data_paths.config_file.read_text(encoding="utf-8") == "[goodjob]\nconfig_version = 1\n"
     assert data_paths.artifacts_dir.is_dir()
     assert data_paths.export_tmp_dir.is_dir()
@@ -74,6 +74,8 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
         "review_targets",
         "review_target_bindings",
         "interview_reviews",
+        "export_attempts",
+        "derived_exports",
     } <= tables
     assert {
         "history_basis",
@@ -89,7 +91,7 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     } <= source_revision_columns
     assert {"review_lineage_sequence", "review_cutoff_sequence"} <= preparation_columns
     assert "review_sequence" in interview_review_columns
-    assert Database(data_paths).migrate() == 9
+    assert Database(data_paths).migrate() == 10
 
 
 def test_writer_lock_never_steals_an_active_lock(data_paths: DataPaths) -> None:
@@ -189,7 +191,7 @@ def test_v9_migration_conservatively_backfills_review_order_and_cutoffs(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 9
+    assert Database(data_paths).migrate() == 10
     upgraded = sqlite3.connect(data_paths.database_file)
     runs = upgraded.execute(
         """
@@ -284,7 +286,7 @@ def test_v7_migration_marks_populated_v6_claim_attribution_unknown(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 9
+    assert Database(data_paths).migrate() == 10
     upgraded = sqlite3.connect(data_paths.database_file)
     attribution = upgraded.execute(
         "SELECT personal_attribution FROM claim_revisions WHERE claim_revision_id = ?",
@@ -329,7 +331,7 @@ def test_migration_upgrades_v4_without_rewriting_existing_scan_schema(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 9
+    assert Database(data_paths).migrate() == 10
     upgraded = sqlite3.connect(data_paths.database_file)
     receipt = upgraded.execute(
         "SELECT authorization_receipt_id FROM authorization_receipts"
@@ -527,7 +529,7 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     connection.close()
 
-    assert Database(data_paths).migrate() == 9
+    assert Database(data_paths).migrate() == 10
     upgraded = sqlite3.connect(data_paths.database_file)
     preparation = upgraded.execute(
         "SELECT preparation_run_id, status FROM preparation_runs"
@@ -548,9 +550,9 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
     assert evidence == ("evidence-v5", "revision-v5", None, None)
     assert source_check == ("check-v5", "passed")
     assert foreign_key_failures == []
-    assert Database(data_paths).migrate() == 9
+    assert Database(data_paths).migrate() == 10
     final = sqlite3.connect(data_paths.database_file)
-    assert final.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (9,)
+    assert final.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (10,)
     assert final.execute("SELECT COUNT(*) FROM preparation_runs").fetchone() == (1,)
     assert final.execute("SELECT COUNT(*) FROM evidence").fetchone() == (1,)
     assert final.execute(

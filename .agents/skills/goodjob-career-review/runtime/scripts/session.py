@@ -345,6 +345,15 @@ class PreparationBinding:
     role_lens_id: str
 
 
+@dataclass(frozen=True)
+class TranslationProjectionBinding:
+    workspace_path: str
+    authorization_receipt_id: str
+    source_artifact_snapshot_id: str
+    source_report_bundle_sha256: str
+    source_projection_sha256: str
+
+
 def _receipt_arguments(receipt: ReceiptEnvelope) -> list[str]:
     return [
         "--authorization-receipt-id",
@@ -390,6 +399,7 @@ class SessionBroker:
         self._history_candidate_reads: dict[tuple[str, str], HistoryCandidateReadBinding] = {}
         self._preparation_runs: dict[str, PreparationBinding] = {}
         self._validated_job_inputs: dict[str, str] = {}
+        self._translation_projections: dict[str, TranslationProjectionBinding] = {}
 
     def dispatch(self, message: JsonObject) -> JsonObject:
         operation = _required_text(message, "op")
@@ -427,6 +437,8 @@ class SessionBroker:
             return self._record_analysis(message).payload
         if operation == "render":
             return self._render(message).payload
+        if operation == "translate_export":
+            return self._translate_export(message).payload
         if operation == "query_history_candidates":
             return self._query_history_candidates(message).payload
         if operation == "read_history_candidate":
@@ -1028,6 +1040,101 @@ class SessionBroker:
         snapshot = cast(JsonObject, snapshot_value)
         if snapshot.get("preparation_run_id") != preparation_run_id:
             return _protocol_error("GoodJob core rendered another PreparationRun")
+        return response
+
+    def _translate_export(self, message: JsonObject) -> CoreResponse:
+        workspace = _required_text(message, "workspace")
+        source_receipt = self._source_receipt(message)
+        self._require_source_scope(source_receipt, workspace)
+        request = _required_object(message, "translation_export_request")
+        action = _required_text(request, "action")
+        source_snapshot_id = _required_text(request, "source_artifact_snapshot_id")
+        canonical_workspace = str(_workspace_path(workspace))
+        if action == "prepare":
+            response = self._run_protected_child(
+                [
+                    "translate-export",
+                    "--workspace",
+                    workspace,
+                    *_receipt_arguments(source_receipt),
+                ],
+                payload=request,
+            )
+            if response.status != "ok":
+                return response
+            source_value = response.payload.get("translation_source")
+            if not isinstance(source_value, dict) or not _is_json_value(source_value):
+                return _protocol_error("GoodJob core returned an invalid translation source")
+            translation_source = cast(JsonObject, source_value)
+            try:
+                returned_snapshot_id = _required_text(
+                    translation_source, "source_artifact_snapshot_id"
+                )
+                report_bundle_sha256 = _required_text(
+                    translation_source, "source_report_bundle_sha256"
+                )
+                projection_sha256 = _required_text(translation_source, "source_projection_sha256")
+            except InvalidInputError:
+                return _protocol_error("GoodJob core returned an incomplete translation source")
+            if returned_snapshot_id != source_snapshot_id:
+                return _protocol_error("GoodJob core prepared another ArtifactSnapshot")
+            items = translation_source.get("items")
+            if not isinstance(items, list) or not _is_json_value(items):
+                return _protocol_error("GoodJob core returned malformed translation source items")
+            prepared_binding = TranslationProjectionBinding(
+                workspace_path=canonical_workspace,
+                authorization_receipt_id=source_receipt.authorization_receipt_id,
+                source_artifact_snapshot_id=source_snapshot_id,
+                source_report_bundle_sha256=report_bundle_sha256,
+                source_projection_sha256=projection_sha256,
+            )
+            existing = self._translation_projections.get(source_snapshot_id)
+            if existing is not None and existing != prepared_binding:
+                return _protocol_error("GoodJob core returned a changed translation projection")
+            self._translation_projections[source_snapshot_id] = prepared_binding
+            return response
+        if action != "publish":
+            raise InvalidInputError("translation export action must be prepare or publish")
+        publication_binding = self._translation_projections.get(source_snapshot_id)
+        if publication_binding is None:
+            raise InvalidInputError(
+                "prepare this ArtifactSnapshot translation in the current task before publishing"
+            )
+        projection_sha256 = _required_text(request, "source_projection_sha256")
+        if (
+            publication_binding.workspace_path != canonical_workspace
+            or publication_binding.authorization_receipt_id
+            != source_receipt.authorization_receipt_id
+            or not hmac.compare_digest(
+                publication_binding.source_projection_sha256, projection_sha256
+            )
+        ):
+            raise InvalidInputError(
+                "translation publication does not match its task-scoped source projection"
+            )
+        response = self._run_protected_child(
+            [
+                "translate-export",
+                "--workspace",
+                workspace,
+                *_receipt_arguments(source_receipt),
+            ],
+            payload=request,
+        )
+        if response.status != "ok":
+            return response
+        export_value = response.payload.get("derived_export")
+        if not isinstance(export_value, dict) or not _is_json_value(export_value):
+            return _protocol_error("GoodJob core returned an invalid DerivedExport")
+        derived_export = cast(JsonObject, export_value)
+        if (
+            derived_export.get("source_artifact_snapshot_id") != source_snapshot_id
+            or derived_export.get("source_report_bundle_sha256")
+            != publication_binding.source_report_bundle_sha256
+            or derived_export.get("source_projection_sha256")
+            != publication_binding.source_projection_sha256
+        ):
+            return _protocol_error("GoodJob core published another translation source")
         return response
 
     def _require_preparation_binding(

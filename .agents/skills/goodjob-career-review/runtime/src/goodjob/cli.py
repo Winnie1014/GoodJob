@@ -22,6 +22,7 @@ from goodjob.auth import (
 from goodjob.context import ContextInterviewService
 from goodjob.db import Database
 from goodjob.errors import GoodJobError, InvalidInputError
+from goodjob.exporting import ExportService
 from goodjob.history import MAX_HISTORY_QUERY_CANDIDATES, HistoryQueryService
 from goodjob.paths import DataPaths
 from goodjob.preparation import (
@@ -198,6 +199,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="atomically render one frozen analysis into an immutable offline snapshot",
     )
     render.add_argument("--preparation-run-id", required=True)
+
+    translate_export = subparsers.add_parser(
+        "translate-export",
+        help="prepare or atomically publish one English export from a frozen snapshot",
+    )
+    translate_export.add_argument("--workspace", required=True)
+    _add_payload_argument(translate_export)
+    _add_authorization_arguments(
+        translate_export,
+        needs_receipt_id=True,
+        needs_confirmation=False,
+    )
 
     candidate_inspection = subparsers.add_parser(
         "inspect-external-git-candidate",
@@ -637,6 +650,17 @@ def _handle_render(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]
     return ArtifactSnapshotService(Database(paths)).render(args.preparation_run_id)
 
 
+def _handle_translate_export(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve(strict=False)
+    _verify_scan_authorization(args, paths, workspace)
+    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    return ExportService(Database(paths)).translate_export(
+        workspace_path=workspace,
+        authorization_receipt_id=args.authorization_receipt_id,
+        request_value=payload,
+    )
+
+
 def _history_paths(raw_paths: str) -> tuple[str, ...]:
     try:
         values = json.loads(raw_paths)
@@ -772,6 +796,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             payload = _handle_record_analysis(args, paths)
         elif args.command == "render":
             payload = _handle_render(args, paths)
+        elif args.command == "translate-export":
+            payload = _handle_translate_export(args, paths)
         elif args.command == "query-history-candidates":
             payload = _handle_history_query(args, paths)
         elif args.command == "read-history-candidate":

@@ -920,6 +920,55 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=10,
+        name="atomic_english_exports",
+        statements=(
+            """
+            CREATE TABLE export_attempts (
+                export_attempt_id TEXT PRIMARY KEY,
+                derived_export_id TEXT NOT NULL UNIQUE,
+                source_artifact_snapshot_id TEXT NOT NULL REFERENCES
+                    artifact_snapshots(artifact_snapshot_id),
+                source_projection_sha256 TEXT NOT NULL,
+                generator_version TEXT NOT NULL,
+                owner_process_identity TEXT NOT NULL,
+                temp_relative_path TEXT NOT NULL UNIQUE,
+                final_relative_path TEXT NOT NULL UNIQUE,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL CHECK (
+                    status IN ('running', 'succeeded', 'failed', 'interrupted')
+                ),
+                error_summary TEXT
+            )
+            """,
+            """
+            CREATE TABLE derived_exports (
+                derived_export_id TEXT PRIMARY KEY,
+                export_attempt_id TEXT NOT NULL UNIQUE REFERENCES
+                    export_attempts(export_attempt_id),
+                source_artifact_snapshot_id TEXT NOT NULL REFERENCES
+                    artifact_snapshots(artifact_snapshot_id),
+                source_report_bundle_sha256 TEXT NOT NULL,
+                source_projection_sha256 TEXT NOT NULL,
+                language TEXT NOT NULL CHECK (language = 'en'),
+                export_kinds TEXT NOT NULL,
+                manifest_sha256 TEXT NOT NULL,
+                output_path TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX export_attempts_source_status_idx
+            ON export_attempts(source_artifact_snapshot_id, status, started_at)
+            """,
+            """
+            CREATE INDEX derived_exports_source_idx
+            ON derived_exports(source_artifact_snapshot_id, created_at)
+            """,
+        ),
+    ),
 )
 
 

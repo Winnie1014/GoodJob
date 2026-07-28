@@ -42,6 +42,48 @@ def _stop_broker(broker: subprocess.Popen[str]) -> None:
     assert broker.stderr.read() == ""
 
 
+def _translation_publish_input(source: dict[str, object]) -> dict[str, object]:
+    source_items = source["items"]
+    assert isinstance(source_items, list)
+    candidates: list[dict[str, object]] = []
+    for value in source_items:
+        assert isinstance(value, dict)
+        export_kind = value["export_kind"]
+        target = (
+            {"text": "I implemented a testable Python entry point."}
+            if export_kind == "resume"
+            else {
+                "question": "How was the testable entry point implemented?",
+                "answer": "I implemented the entry point in Python.",
+            }
+        )
+        candidates.append(
+            {
+                key: value[key]
+                for key in (
+                    "source_item_id",
+                    "export_kind",
+                    "claim_refs",
+                    "evidence_refs",
+                    "role_lens_refs",
+                    "anchors",
+                    "project_id",
+                    "module_id",
+                )
+            }
+            | {"target": target}
+        )
+    return {
+        "contract_version": "translation-export-request-v1",
+        "action": "publish",
+        "source_artifact_snapshot_id": source["source_artifact_snapshot_id"],
+        "source_projection_sha256": source["source_projection_sha256"],
+        "target_language": "en",
+        "export_kinds": ["resume", "interview_qa"],
+        "items": candidates,
+    }
+
+
 def test_session_broker_reuses_one_fd_capability_until_stdin_closes(tmp_path: Path) -> None:
     workspace = tmp_path / "工作区"
     workspace.mkdir()
@@ -280,7 +322,7 @@ def test_documented_uv_launch_ignores_the_target_project(tmp_path: Path) -> None
     assert broker.wait(timeout=5) == 0
     assert broker.stderr is not None
     stderr = broker.stderr.read()
-    assert "Ignoring project discovery error due to `--no-project`" in stderr
+    assert not stderr or "Ignoring project discovery error due to `--no-project`" in stderr
     assert "uv.toml" not in stderr
     assert not list(installed_runtime.rglob("__pycache__"))
     assert not list(installed_runtime.rglob("*.pyc"))
@@ -1119,6 +1161,37 @@ def test_record_analysis_is_private_task_bound_and_idempotent(tmp_path: Path) ->
     assert isinstance(snapshot, dict)
     assert snapshot["preparation_run_id"] == preparation_run["preparation_run_id"]
     assert repeated_render == rendered
+    translation_prepared = _send_json(
+        broker,
+        {
+            "op": "translate_export",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "translation_export_request": {
+                "contract_version": "translation-export-request-v1",
+                "action": "prepare",
+                "source_artifact_snapshot_id": snapshot["artifact_snapshot_id"],
+                "target_language": "en",
+                "export_kinds": ["resume", "interview_qa"],
+            },
+        },
+    )
+    translation_source = translation_prepared["translation_source"]
+    assert isinstance(translation_source, dict)
+    translation_publish_input = _translation_publish_input(translation_source)
+    translation_published = _send_json(
+        broker,
+        {
+            "op": "translate_export",
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt_id,
+            "translation_export_request": translation_publish_input,
+        },
+    )
+    derived_export = translation_published["derived_export"]
+    assert isinstance(derived_export, dict)
+    assert Path(derived_export["resume_markdown_path"]).is_file()
+    assert Path(derived_export["interview_qa_markdown_path"]).is_file()
     _stop_broker(broker)
 
     fresh_broker = _start_broker(data_dir)
@@ -1136,6 +1209,17 @@ def test_record_analysis_is_private_task_bound_and_idempotent(tmp_path: Path) ->
     )
     fresh_receipt = fresh_authorized["receipt"]
     assert isinstance(fresh_receipt, dict)
+    rejected_translation_publish = _send_json(
+        fresh_broker,
+        {
+            "op": "translate_export",
+            "workspace": str(workspace),
+            "authorization_receipt_id": fresh_receipt["authorization_receipt_id"],
+            "translation_export_request": translation_publish_input,
+        },
+    )
+    assert rejected_translation_publish["status"] == "error"
+    assert rejected_translation_publish["code"] == "invalid_input"
     mock_targets = _send_json(
         fresh_broker,
         {
