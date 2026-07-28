@@ -3,7 +3,7 @@
 > 状态：待 Owner 核对  
 > 权威范围：定义首版系统边界、运行时组件、组件职责、稳定接口、数据流与部署形态  
 > 上游：[产品目标](../00-product/vision-and-goals.md)、[产品需求](../10-product/product-requirements.md)、[决策账本](../30-decisions/decision-log.md)  
-> 下游：[证据模型](evidence-model.md)、[扫描与分析](scanning-and-analysis.md)、[产物与学习闭环](artifacts-and-learning.md)、[验收基线](../40-delivery/acceptance-baseline.md)
+> 下游：[证据模型](evidence-model.md)、[扫描与分析](scanning-and-analysis.md)、[产物与学习闭环](artifacts-and-learning.md)、[看板呈现契约](dashboard-design.md)、[验收基线](../40-delivery/acceptance-baseline.md)
 
 ## 1. 设计摘要
 
@@ -106,7 +106,7 @@ JD 用于细化岗位与推断职级；显式职级覆盖自动推断。无 JD �
 
 ### 3.4 `ARCH-C05/C06`：产物与前端
 
-Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表结构。前端源码使用 TypeScript，构建后的静态资源随 Skill 分发；产出时报告数据内嵌在入口 HTML，所需静态资源可内联或放在同一不可变产物目录中。无论采用哪种打包方式，入口 HTML 都必须可在断网且无本地服务时直接打开。Markdown 和 HTML 必须来自同一冻结快照，且对同一 Claim 呈现相同证据状态与缺口（FR-11、FR-12、NFR-03）。具体章节和学习闭环见[产物与学习闭环](artifacts-and-learning.md)。
+Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表结构；`ReportBundle` 的富文本只使用 `ReportInlineToken` 封闭集合，前端不含 Markdown 或 HTML 解析器。前端源码使用 TypeScript，构建产物随 Skill 分发；产出时报告数据与前端代码全部内联在单个入口 HTML 文件中，字体只用系统字体栈，双击即可在断网且无本地服务时打开（ADR-0002、ADR-0008）。Markdown 和 HTML 必须来自同一冻结快照，且对同一 Claim 呈现相同证据状态与缺口（FR-11、FR-12、NFR-03）。章节与学习闭环见[产物与学习闭环](artifacts-and-learning.md)；信息架构、状态编码、布局与交互见[看板呈现契约](dashboard-design.md)。
 
 ## 4. 稳定接口
 

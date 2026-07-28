@@ -1,0 +1,625 @@
+{
+  "contract_version": 1,
+  "preparation_run_id": "prun_7f3a91c2be514d08",
+  "scan_run_id": "srun_1c4e77a0",
+  "role_lens_id": "rl_5b2d9e01",
+  "generator_version": "goodjob-render/0.1.0-prototype",
+  "generated_at": "2026-07-25T09:14:33Z",
+  "primary_language": "zh-CN",
+  "snapshot_status": "partial",
+  "review_frozen_at": "2026-07-24T21:02:10Z",
+  "role_lens": {
+    "target_role": "后端平台工程师",
+    "level": "P7",
+    "level_source": "owner_override",
+    "jd_source": "local_file",
+    "assumptions": [
+      {
+        "kind": "text",
+        "value": "JD 未写明服务规模，按 "
+      },
+      {
+        "kind": "code",
+        "value": "10k rps"
+      },
+      {
+        "kind": "text",
+        "value": " 量级的平台服务假设维度权重；该假设未被证据支持。"
+      }
+    ],
+    "dimensions": [
+      {
+        "key": "distributed",
+        "label": "分布式系统",
+        "weight_bps": 2600
+      },
+      {
+        "key": "server",
+        "label": "服务端工程",
+        "weight_bps": 2200
+      },
+      {
+        "key": "storage",
+        "label": "数据存储",
+        "weight_bps": 1800
+      },
+      {
+        "key": "observability",
+        "label": "可观测性",
+        "weight_bps": 1400
+      },
+      {
+        "key": "modeling",
+        "label": "领域建模",
+        "weight_bps": 1200
+      },
+      {
+        "key": "delivery",
+        "label": "交付工程",
+        "weight_bps": 800
+      }
+    ]
+  },
+  "degradations": [
+    {
+      "id": "dg_carried",
+      "severity": "warning",
+      "kind": "carried_forward",
+      "headline": "1 个项目沿用上次快照",
+      "impact": [
+        {
+          "kind": "text",
+          "value": "该项目的结论时效未知，可能已与当前工作树不一致。"
+        }
+      ],
+      "remediation": [
+        {
+          "kind": "text",
+          "value": "对该项目执行显式 refresh 后重新准备。"
+        }
+      ],
+      "target": "#/v1/evidence?disposition=carried_forward"
+    },
+    {
+      "id": "dg_nobaseline",
+      "severity": "critical",
+      "kind": "failed_no_baseline",
+      "headline": "1 个项目无可用基线",
+      "impact": [
+        {
+          "kind": "text",
+          "value": "该项目只进入覆盖范围，不参与评分与排序。"
+        }
+      ],
+      "remediation": [
+        {
+          "kind": "text",
+          "value": "修复目录权限后重扫；权限问题详见 "
+        },
+        {
+          "kind": "code",
+          "value": "ScanIssue(kind=permission_denied)"
+        },
+        {
+          "kind": "text",
+          "value": "。"
+        }
+      ],
+      "target": "#/v1/evidence?disposition=failed_no_baseline"
+    },
+    {
+      "id": "dg_stale",
+      "severity": "warning",
+      "kind": "stale_evidence",
+      "headline": "3 条证据已过期",
+      "impact": [
+        {
+          "kind": "text",
+          "value": "这些证据只能作为历史限制，不能单独支撑当前实现的强结论。"
+        }
+      ],
+      "remediation": [
+        {
+          "kind": "text",
+          "value": "刷新对应项目，或在讲述时明确标注为历史设计。"
+        }
+      ],
+      "target": "#/v1/evidence?freshness=stale"
+    },
+    {
+      "id": "dg_role",
+      "severity": "warning",
+      "kind": "missing_role_context",
+      "headline": "2 个项目缺角色上下文",
+      "impact": [
+        {
+          "kind": "text",
+          "value": "已降级为能力叙事与客观实现说明，不做“我负责/我主导/我取得结果”的个人归因。"
+        }
+      ],
+      "remediation": [
+        {
+          "kind": "text",
+          "value": "在下一次准备的项目级批量访谈中补充角色与责任范围。"
+        }
+      ],
+      "target": "#/v1/gaps"
+    }
+  ],
+  "projects": [
+    {
+      "project_id": "p_coderoute",
+      "name": "coderoute",
+      "snapshot_disposition": "fresh",
+      "eligible": true,
+      "rank": 1,
+      "base_score_milli": 742,
+      "coverage_bps": 9600,
+      "final_score_milli": 712,
+      "rationale": [
+        {
+          "kind": "text",
+          "value": "分片路由与限流实现覆盖了岗位权重最高的两个维度，且有测试证据交叉验证。"
+        }
+      ],
+      "modules": [
+        {
+          "module_id": "m_router",
+          "name": "services/router"
+        },
+        {
+          "module_id": "m_limit",
+          "name": "services/ratelimit"
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c_shard_route",
+          "module_id": "m_router",
+          "narrative_kind": "objective_implementation",
+          "facets": [
+            "implemented",
+            "test_verified"
+          ],
+          "support_level": "cross_checked",
+          "statement": [
+            {
+              "kind": "text",
+              "value": "该服务通过一致性哈希分片路由，把写放大限制在单个分片内。"
+            }
+          ],
+          "evidence": [
+            {
+              "evidence_id": "ev_shard_code",
+              "evidence_kind": "code",
+              "relation": "supports",
+              "worktree": "main",
+              "module": "services/router",
+              "locator": "services/router/shard.go:88-142",
+              "content_hash": "sha256:9c1fa4e0b73d5182",
+              "commit_state": "committed",
+              "freshness": "current",
+              "supported_facets": [
+                "implemented"
+              ],
+              "summary": "一致性哈希环构建与分片选择，写路径只触达单个分片。",
+              "equivalent_sources": [
+                {
+                  "worktree": "t30",
+                  "locator": "services/router/shard.go:88-142"
+                },
+                {
+                  "worktree": "t55",
+                  "locator": "services/router/shard.go:88-142"
+                }
+              ]
+            },
+            {
+              "evidence_id": "ev_shard_test",
+              "evidence_kind": "test",
+              "relation": "supports",
+              "worktree": "main",
+              "module": "services/router",
+              "locator": "services/router/shard_test.go:31-77",
+              "content_hash": "sha256:2ad07bb9c4118f60",
+              "commit_state": "modified",
+              "freshness": "current",
+              "supported_facets": [
+                "test_verified"
+              ],
+              "summary": "覆盖分片再平衡与单分片写入断言；当前工作树已修改未提交。",
+              "equivalent_sources": []
+            },
+            {
+              "evidence_id": "ev_shard_adr",
+              "evidence_kind": "doc",
+              "relation": "contextualizes",
+              "worktree": "main",
+              "module": null,
+              "locator": "docs/adr/0004-sharding.md",
+              "content_hash": "commit:4f21ab9",
+              "commit_state": "historical",
+              "freshness": "stale",
+              "supported_facets": [
+                "documented"
+              ],
+              "summary": "早期分片设计说明，与当前实现的再平衡策略已不一致。",
+              "equivalent_sources": []
+            }
+          ]
+        },
+        {
+          "claim_id": "c_ratelimit",
+          "module_id": "m_limit",
+          "narrative_kind": "capability",
+          "facets": [
+            "implemented"
+          ],
+          "support_level": "conflicted",
+          "statement": [
+            {
+              "kind": "text",
+              "value": "限流采用令牌桶，桶状态保存在进程内存中。"
+            }
+          ],
+          "evidence": [
+            {
+              "evidence_id": "ev_limit_code",
+              "evidence_kind": "code",
+              "relation": "supports",
+              "worktree": "main",
+              "module": "services/ratelimit",
+              "locator": "services/ratelimit/bucket.go:14-96",
+              "content_hash": "sha256:71bc0d4ae9f23a55",
+              "commit_state": "committed",
+              "freshness": "current",
+              "supported_facets": [
+                "implemented"
+              ],
+              "summary": "进程内令牌桶实现，含补充周期与突发上限。",
+              "equivalent_sources": []
+            },
+            {
+              "evidence_id": "ev_limit_conflict",
+              "evidence_kind": "config",
+              "relation": "contradicts",
+              "worktree": "main",
+              "module": "deploy",
+              "locator": "deploy/ratelimit.yaml:5-12",
+              "content_hash": "sha256:0e5527dd81c4b7a9",
+              "commit_state": "committed",
+              "freshness": "current",
+              "supported_facets": [],
+              "summary": "部署配置指向共享 Redis 限流后端，与进程内实现冲突；两者哪个生效未有证据。",
+              "equivalent_sources": []
+            }
+          ]
+        }
+      ],
+      "worktree_divergent": true
+    },
+    {
+      "project_id": "p_goodjob",
+      "name": "goodjob",
+      "snapshot_disposition": "fresh",
+      "eligible": true,
+      "rank": 2,
+      "base_score_milli": 688,
+      "coverage_bps": 9100,
+      "final_score_milli": 626,
+      "rationale": [
+        {
+          "kind": "text",
+          "value": "领域建模与交付工程证据充分，但缺少分布式维度的实现证据。"
+        }
+      ],
+      "modules": [
+        {
+          "module_id": "m_evidence",
+          "name": "runtime/src/goodjob"
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c_evidence_pointer",
+          "module_id": "m_evidence",
+          "narrative_kind": "learning_candidate",
+          "facets": [
+            "implemented",
+            "test_defined"
+          ],
+          "support_level": "single_source",
+          "statement": [
+            {
+              "kind": "text",
+              "value": "证据层只持久化指针与哈希，不保存源码正文；可从这里系统复习“事实源与副本”的边界设计。"
+            }
+          ],
+          "evidence": [
+            {
+              "evidence_id": "ev_db_schema",
+              "evidence_kind": "code",
+              "relation": "supports",
+              "worktree": "codex/scanner-evidence",
+              "module": "runtime/src/goodjob",
+              "locator": "runtime/src/goodjob/db.py:41-118",
+              "content_hash": "sha256:5d93ee1207ab6c34",
+              "commit_state": "untracked",
+              "freshness": "current",
+              "supported_facets": [
+                "implemented"
+              ],
+              "summary": "Evidence 表只含 locator、content_hash、commit_state 与短概述字段。",
+              "equivalent_sources": []
+            }
+          ]
+        },
+        {
+          "claim_id": "c_planned_dashboard",
+          "module_id": null,
+          "narrative_kind": "objective_implementation",
+          "facets": [
+            "planned"
+          ],
+          "support_level": "single_source",
+          "statement": [
+            {
+              "kind": "text",
+              "value": "离线看板已规划为单文件全内联产物，尚无实现证据。"
+            }
+          ],
+          "evidence": [
+            {
+              "evidence_id": "ev_adr8",
+              "evidence_kind": "doc",
+              "relation": "supports",
+              "worktree": "codex/scanner-evidence",
+              "module": null,
+              "locator": "docs/30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md",
+              "content_hash": "sha256:c08a4471be29d5f2",
+              "commit_state": "untracked",
+              "freshness": "plan",
+              "supported_facets": [
+                "planned"
+              ],
+              "summary": "决策已文档化：单文件全内联、meta CSP、结构化 token 嵌入。",
+              "equivalent_sources": []
+            }
+          ]
+        }
+      ],
+      "worktree_divergent": false
+    },
+    {
+      "project_id": "p_legacy_etl",
+      "name": "legacy-etl",
+      "snapshot_disposition": "carried_forward",
+      "eligible": true,
+      "rank": 3,
+      "base_score_milli": 610,
+      "coverage_bps": 7400,
+      "final_score_milli": 451,
+      "rationale": [
+        {
+          "kind": "text",
+          "value": "沿用上一次快照；存储维度有证据，但覆盖度受未解析文件影响。"
+        }
+      ],
+      "modules": [
+        {
+          "module_id": "m_etl",
+          "name": "pipelines"
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c_etl_idempotent",
+          "module_id": "m_etl",
+          "narrative_kind": "capability",
+          "facets": [
+            "implemented"
+          ],
+          "support_level": "single_source",
+          "statement": [
+            {
+              "kind": "text",
+              "value": "增量任务通过写入前的主键去重实现幂等重跑。"
+            }
+          ],
+          "evidence": [
+            {
+              "evidence_id": "ev_etl_code",
+              "evidence_kind": "code",
+              "relation": "supports",
+              "worktree": "main",
+              "module": "pipelines",
+              "locator": "pipelines/upsert.py:22-64",
+              "content_hash": "sha256:aa3f70c1dd82e405",
+              "commit_state": "historical",
+              "freshness": "stale",
+              "supported_facets": [
+                "implemented"
+              ],
+              "summary": "来自 carried-forward 快照的实现指针，当前工作树未重新校验。",
+              "equivalent_sources": []
+            }
+          ]
+        }
+      ],
+      "worktree_divergent": false
+    },
+    {
+      "project_id": "p_infra_scripts",
+      "name": "infra-scripts",
+      "snapshot_disposition": "excluded",
+      "eligible": false,
+      "rank": null,
+      "base_score_milli": null,
+      "coverage_bps": null,
+      "final_score_milli": null,
+      "rationale": [
+        {
+          "kind": "text",
+          "value": "按忽略规则排除（仅含生成物与部署密钥目录）。"
+        }
+      ],
+      "modules": [],
+      "claims": [],
+      "worktree_divergent": false
+    },
+    {
+      "project_id": "p_notes_vault",
+      "name": "notes-vault</script><img src=x onerror=alert(1)>",
+      "snapshot_disposition": "failed_no_baseline",
+      "eligible": false,
+      "rank": null,
+      "base_score_milli": null,
+      "coverage_bps": null,
+      "final_score_milli": null,
+      "rationale": [
+        {
+          "kind": "text",
+          "value": "目录不可读且无历史快照可沿用；项目名本身含注入语料，必须以文本呈现。"
+        },
+        {
+          "kind": "inert_url",
+          "value": "https://example.invalid/exfil?token=abc"
+        },
+        {
+          "kind": "text",
+          "value": " 出现在该项目的 README 中，看板只作文本展示。"
+        }
+      ],
+      "modules": [],
+      "claims": [],
+      "worktree_divergent": false
+    }
+  ],
+  "gaps": [
+    {
+      "gap_key": "gk_role_coderoute",
+      "scope_kind": "project",
+      "scope_label": "coderoute",
+      "dimension": "role",
+      "severity": "serious",
+      "status": "open",
+      "resolution_kind": "needs_owner_context",
+      "description": [
+        {
+          "kind": "text",
+          "value": "缺少 Owner 在该项目中的角色与责任范围，无法支撑个人归因表述。"
+        }
+      ],
+      "follow_ups": [
+        "你在分片路由这块的实际职责是什么（设计、实现、评审、还是接手维护）？",
+        "限流后端的取舍是谁定的，依据是什么？"
+      ]
+    },
+    {
+      "gap_key": "gk_metric_legacy",
+      "scope_kind": "project",
+      "scope_label": "legacy-etl",
+      "dimension": "outcome",
+      "severity": "warning",
+      "status": "open",
+      "resolution_kind": "needs_owner_context",
+      "description": [
+        {
+          "kind": "text",
+          "value": "没有可核验的项目结果或指标证据，不得从代码符号或文档标题虚构数字。"
+        }
+      ],
+      "follow_ups": [
+        "幂等重跑上线后，失败重跑的人工介入量有变化吗？"
+      ]
+    }
+  ],
+  "interview": {
+    "targets": [
+      {
+        "review_target_id": "rt_9a41f0c8",
+        "continuity_status": "continued",
+        "claim_id": "c_shard_route",
+        "project_label": "coderoute",
+        "question": [
+          {
+            "kind": "text",
+            "value": "讲一下这套分片路由的写放大边界，以及再平衡时怎么保证不跨分片写。"
+          }
+        ],
+        "mastery_level": "strong",
+        "weak_points": [],
+        "next_review_at": "2026-08-08",
+        "follow_ups": [
+          "分片数变化时旧键的迁移窗口怎么处理？"
+        ]
+      },
+      {
+        "review_target_id": "rt_2c77b31d",
+        "continuity_status": "reassess_required",
+        "claim_id": "c_ratelimit",
+        "project_label": "coderoute",
+        "question": [
+          {
+            "kind": "text",
+            "value": "限流的状态放在进程内还是共享存储，各自的失效模式是什么？"
+          }
+        ],
+        "mastery_level": "medium",
+        "weak_points": [
+          "实现与部署配置冲突，尚未确认哪个生效"
+        ],
+        "next_review_at": "2026-07-28",
+        "follow_ups": [
+          "如果两套限流同时生效，实际配额是多少？"
+        ]
+      },
+      {
+        "review_target_id": "rt_5e08da42",
+        "continuity_status": "new",
+        "claim_id": "c_evidence_pointer",
+        "project_label": "goodjob",
+        "question": [
+          {
+            "kind": "text",
+            "value": "为什么只存指针和哈希而不存源码快照，代价是什么？"
+          }
+        ],
+        "mastery_level": "unassessed",
+        "weak_points": [],
+        "next_review_at": null,
+        "follow_ups": []
+      }
+    ]
+  },
+  "search_index": {
+    "分片": [
+      "c_shard_route"
+    ],
+    "一致性哈希": [
+      "c_shard_route"
+    ],
+    "写放大": [
+      "c_shard_route"
+    ],
+    "限流": [
+      "c_ratelimit"
+    ],
+    "令牌桶": [
+      "c_ratelimit"
+    ],
+    "幂等": [
+      "c_etl_idempotent"
+    ],
+    "指针": [
+      "c_evidence_pointer"
+    ],
+    "哈希": [
+      "c_shard_route",
+      "c_evidence_pointer"
+    ],
+    "看板": [
+      "c_planned_dashboard"
+    ]
+  }
+}

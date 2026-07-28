@@ -55,6 +55,9 @@
 | D-037 | 个人数据保留 | 首版不自动删除、归档或淘汰 SQLite、快照、导出和工作稿；每次运行显示分类用量，清理作为未来显式能力 | [证据模型](../20-architecture/evidence-model.md) |
 | D-038 | 运行恢复与单写者 | 所有写操作使用 OS 非阻塞排他锁；运行与 ExportAttempt 中断由恢复账本终止并只清理预登记归属路径，不超时偷锁或续跑模型内存 | [系统设计](../20-architecture/system-design.md) |
 | D-039 | 英文派生事实保真 | 英文材料按冻结 source item 一一派生并机检事实锚点；每次导出先建 ExportAttempt，只有成功 attempt 可发布 DerivedExport | [证据模型](../20-architecture/evidence-model.md)、[产物设计](../20-architecture/artifacts-and-learning.md) |
+| D-040 | 看板打包形态 | 看板入口为单个全内联 HTML 文件，字体只用系统字体栈，CSP 以 `<meta>` 按内联哈希施加；同一快照的 Markdown、manifest 与派生导出仍是独立文件 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[看板呈现契约](../20-architecture/dashboard-design.md) |
+| D-041 | 富文本进入呈现层的形态 | `ReportBundle` 只以 `ReportInlineToken` 封闭集合传递富文本，不传 Markdown/HTML 字符串；看板不含解析器，未知 kind 整批拒绝 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[证据模型](../20-architecture/evidence-model.md) |
+| D-042 | 看板呈现顺序与只读出口 | 总览首屏固定 `L0→L4`，覆盖限制与降级先于叙事；看板不提供写状态控件，只给可复制的 Skill 调用出口 | [看板呈现契约](../20-architecture/dashboard-design.md) |
 
 ## 明确的非首版能力
 

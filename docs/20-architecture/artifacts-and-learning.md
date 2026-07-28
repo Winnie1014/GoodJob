@@ -1,9 +1,9 @@
 # GoodJob 产物与学习闭环契约
 
 > 状态：待 Owner 核对  
-> 权威范围：定义岗位准备包、简历材料、离线 HTML、项目级批量访谈、模拟面试、复习记录与不可变产物快照的内容和失败行为；不定义扫描算法或 SQLite 实体字段  
-> 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[扫描与分析](scanning-and-analysis.md)、[ADR-0002](../30-decisions/adrs/ADR-0002-python-and-offline-typescript-dashboard.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0004](../30-decisions/adrs/ADR-0004-dynamic-role-lens.md)、[ADR-0007](../30-decisions/adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md)  
-> 下游：[验收基线](../40-delivery/acceptance-baseline.md)
+> 权威范围：定义岗位准备包、简历材料、离线 HTML 的必需内容、项目级批量访谈、模拟面试、复习记录与不可变产物快照的内容和失败行为；不定义扫描算法、SQLite 实体字段或看板的呈现与交互实现  
+> 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[扫描与分析](scanning-and-analysis.md)、[ADR-0002](../30-decisions/adrs/ADR-0002-python-and-offline-typescript-dashboard.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0004](../30-decisions/adrs/ADR-0004-dynamic-role-lens.md)、[ADR-0007](../30-decisions/adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md)、[ADR-0008](../30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)  
+> 下游：[看板呈现契约](dashboard-design.md)、[验收基线](../40-delivery/acceptance-baseline.md)
 
 ## 1. 产物边界与输入
 
@@ -63,7 +63,7 @@ GoodJob 不按 Git 作者排除项目代码；任何授权项目中的实现都�
 
 ### 5.1 可编辑 Markdown 与不可变快照
 
-每次成功渲染都在独立 `ArtifactSnapshot` 中写入冻结的 `report.zh-CN.md`（完整准备包）、`resume.zh-CN.md`（简历源稿）、入口 HTML、可选本地 assets 和 manifest。GoodJob 对已发布快照只追加、不修改；`latest.json` 只在所有必需文件成功生成并校验 manifest 后原子指向最新中文 `completed` 或带明确缺口的中文 `partial` 主快照。
+每次成功渲染都在独立 `ArtifactSnapshot` 中写入冻结的 `report.zh-CN.md`（完整准备包）、`resume.zh-CN.md`（简历源稿）、单文件入口 HTML 和 manifest。GoodJob 对已发布快照只追加、不修改；`latest.json` 只在所有必需文件成功生成并校验 manifest 后原子指向最新中文 `completed` 或带明确缺口的中文 `partial` 主快照。
 
 两个快照 Markdown 都是普通文本但受快照不可变约束。用户编辑必须发生在从 `resume.zh-CN.md`（或明确选择的报告章节）显式导出的 `drafts/` 工作稿中；目标已存在时默认拒绝覆盖，只有 Owner 明确选择替换/合并才可写入。新的 prepare 只生成新主快照，不自动同步人工工作稿（`FR-12`、`NFR-04`、`NFR-06`）。
 
@@ -79,9 +79,9 @@ GoodJob 不按 Git 作者排除项目代码；任何授权项目中的实现都�
 
 ## 6. 离线 HTML 看板
 
-HTML 是与 Markdown 同源的阅读看板，不是服务端应用。每份报告数据内嵌在入口 HTML 中；脚本、样式、字体和图标可以内联，也可以作为同一不可变产物目录中的本地静态资源。页面不得通过 HTTP、WebSocket、`file://` JSON 请求、CDN、远端字体或分析脚本读取额外数据（`NFR-03`）。
+HTML 是与 Markdown 同源的阅读看板，不是服务端应用。报告数据与前端代码全部内嵌在单个入口 HTML 文件中，字体只使用系统字体栈。页面不得通过 HTTP、WebSocket、`file://` JSON 请求、CDN、远端字体或分析脚本读取额外数据（`NFR-03`、[ADR-0008](../30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)）。
 
-项目名、路径、JD、用户回答、Claim、Evidence 摘要和 Markdown 均是不可信数据。报告 JSON 嵌入 HTML 时必须安全编码 `<` 等可提前结束元素的字符；前端使用文本节点或等价安全 API 渲染，不使用未净化 `innerHTML`，不执行 Markdown 原始 HTML、事件属性或 `javascript:` URL。产物必须配置阻断网络、对象、frame、表单和任意脚本执行的 CSP；只允许按 hash 或本地产物路径加载版本化前端代码，不允许 `eval`（`NFR-08`）。
+项目名、路径、JD、用户回答、Claim 与 Evidence 摘要均是不可信数据。它们只以 `ReportInlineToken` 封闭集合进入呈现层，看板不含 Markdown 或 HTML 解析器；产物必须配置阻断网络、对象、frame、表单和任意脚本执行的 CSP（`NFR-08`）。嵌入转义、CSP 取值、禁用 API 与状态视觉编码等呈现层实现规则由[看板呈现契约](dashboard-design.md)定义，本文件不重复。
 
 离线看板必须提供：
 
@@ -91,7 +91,9 @@ HTML 是与 Markdown 同源的阅读看板，不是服务端应用。每份报�
 - 知识缺口、题库入口与已保存复习状态；
 - 长文本可读、窄窗口无横向遮挡的布局。
 
-看板只读展示 `ReportBundle` 投影，不直接打开 SQLite、不写复习状态、不扫描源码。任何复习状态修改都经 Skill/Python 接口落库后，下一份快照才会反映它。HTML 渲染失败、资源缺失、报告契约版本不匹配或发现远端依赖时，该运行不得发布为成功快照（`FR-12`、`FR-14`、`NFR-03`）。
+看板只读展示 `ReportBundle` 投影，不直接打开 SQLite、不写复习状态、不扫描源码，也不提供任何写状态控件。任何复习状态修改都经 Skill/Python 接口落库后，下一份快照才会反映它。HTML 渲染失败、报告契约版本不匹配、发现远端依赖或 CSP 违规时，该运行不得发布为成功快照（`FR-12`、`FR-14`、`NFR-03`）。
+
+上述清单是产物层的必需能力。它们的信息架构、首屏顺序、状态编码、图表形式、布局断点、交互与呈现层验收由[看板呈现契约](dashboard-design.md)（`DASH-*`）定义。
 
 ## 7. 模拟面试与复习闭环
 

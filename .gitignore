@@ -5,3 +5,8 @@
 **/.ruff_cache/
 **/__pycache__/
 *.py[cod]
+
+# 看板原型构建产物（由 prototypes/dashboard/build.py 生成）
+prototypes/dashboard/out/
+prototypes/dashboard/node_modules/
+prototypes/dashboard/package*.json
