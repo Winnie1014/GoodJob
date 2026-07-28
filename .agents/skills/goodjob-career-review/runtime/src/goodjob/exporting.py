@@ -5,10 +5,8 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import os
 import re
 import sqlite3
-import stat
 import unicodedata
 import uuid
 from collections.abc import Iterator
@@ -24,12 +22,13 @@ from goodjob.analysis import InlineToken
 from goodjob.db import Database
 from goodjob.errors import InvalidInputError
 from goodjob.preparation import PreparationService, _now
-from goodjob.process_identity import owner_process_stopped, process_identity
+from goodjob.process_identity import is_recoverable_process_identity, process_identity
 from goodjob.reporting import (
     ArtifactSnapshotService,
     canonical_report_bundle,
     report_bundle_sha256,
 )
+from goodjob.safe_fs import SafeDataTree
 
 TRANSLATION_EXPORT_REQUEST_CONTRACT_VERSION = "translation-export-request-v1"
 TRANSLATION_EXPORT_SOURCE_CONTRACT_VERSION = "translation-export-source-v1"
@@ -44,14 +43,14 @@ MAX_SOURCE_ITEMS = 4_000
 MAX_SOURCE_TEXT_CHARS = 20_000
 MAX_TARGET_TEXT_CHARS = 20_000
 
-_NUMBER = r"\d+(?:\.\d+)?"
+_NUMBER = r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _UNIT = (
     r"milliseconds?|millisecond|ms|seconds?|second|secs?|sec|s|minutes?|minute|mins?|min|"
     r"hours?|hour|hrs?|hr|days?|day|times?|items?|occurrences?|entries|entry|people|persons?|"
     r"percent(?:age)?|%|秒|分钟|小时|天|倍|个|次|条|人|mb|gb"
 )
 _NUMBER_ANCHOR = re.compile(
-    rf"(?<![\w.])(?P<number>{_NUMBER})(?:\s*(?P<unit>{_UNIT}))?(?![\w.])",
+    rf"(?<![\w.])(?P<number>{_NUMBER})(?:\s*(?P<unit>{_UNIT}))?(?!\w|\.\d)",
     re.IGNORECASE,
 )
 _NUMBER_ANCHOR_FULL = re.compile(
@@ -118,39 +117,6 @@ _TECHNOLOGY_ALIASES = {
     "k8s": "kubernetes",
     "kubernetes": "kubernetes",
 }
-_KNOWN_TECHNOLOGIES = {
-    "python",
-    "java",
-    "kotlin",
-    "swift",
-    "rust",
-    "go",
-    "c++",
-    "c#",
-    "javascript",
-    "typescript",
-    "react",
-    "vue",
-    "angular",
-    "node.js",
-    "spring",
-    "django",
-    "flask",
-    "fastapi",
-    "sqlite",
-    "mysql",
-    "postgresql",
-    "redis",
-    "kafka",
-    "docker",
-    "kubernetes",
-    "aws",
-    "azure",
-    "gcp",
-    "grpc",
-    "graphql",
-}
-
 type JSONObject = dict[str, object]
 
 
@@ -191,7 +157,7 @@ def _exact_fields(value: JSONObject, expected: set[str], field_name: str) -> Non
 
 
 def _text(value: object, field_name: str, *, maximum: int = 512) -> str:
-    if not isinstance(value, str) or not value or len(value) > maximum or "\x00" in value:
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum or "\x00" in value:
         raise InvalidInputError(f"{field_name} must be a bounded non-empty string")
     try:
         value.encode("utf-8")
@@ -362,9 +328,11 @@ def _normalized_string_set(value: object, field_name: str) -> tuple[str, ...]:
 
 def _normalized_decimal(value: str, field_name: str) -> str:
     try:
-        number = Decimal(value)
+        number = Decimal(value.replace(",", ""))
     except InvalidOperation as exc:
         raise InvalidInputError(f"{field_name} contains an invalid number") from exc
+    if number == 0:
+        return "0"
     normalized = format(number.normalize(), "f")
     if "." in normalized:
         normalized = normalized.rstrip("0").rstrip(".")
@@ -418,9 +386,37 @@ def _identifier_present(text: str, identifier: str) -> bool:
     return re.search(f"{prefix}{escaped}{suffix}", normalized_text) is not None
 
 
-def _known_technologies_in_target(text: str) -> set[str]:
-    aliases = set(_TECHNOLOGY_ALIASES) | _KNOWN_TECHNOLOGIES
-    return {_technology_key(value) for value in aliases if _identifier_present(text, value)}
+def _case_sensitive_identifier_present(text: str, identifier: str) -> bool:
+    normalized_text = unicodedata.normalize("NFKC", text)
+    escaped = re.escape(identifier)
+    prefix = r"(?<![\w])" if identifier[:1].isalnum() else ""
+    suffix = r"(?![\w])" if identifier[-1:].isalnum() else ""
+    return re.search(f"{prefix}{escaped}{suffix}", normalized_text) is not None
+
+
+def _technology_present(text: str, canonical: str) -> bool:
+    spellings = {
+        alias for alias, normalized in _TECHNOLOGY_ALIASES.items() if normalized == canonical
+    }
+    spellings.add(canonical)
+    if canonical == "go":
+        spellings.discard("go")
+        return _case_sensitive_identifier_present(text, "Go") or any(
+            _identifier_present(text, spelling) for spelling in spellings
+        )
+    if canonical == "node.js":
+        spellings.discard("node")
+    if canonical == "javascript":
+        spellings.discard("js")
+        return _case_sensitive_identifier_present(text, "JS") or any(
+            _identifier_present(text, spelling) for spelling in spellings
+        )
+    if canonical == "typescript":
+        spellings.discard("ts")
+        return _case_sensitive_identifier_present(text, "TS") or any(
+            _identifier_present(text, spelling) for spelling in spellings
+        )
+    return any(_identifier_present(text, spelling) for spelling in spellings)
 
 
 def _normalized_anchor_projection(value: object, field_name: str) -> JSONObject:
@@ -493,12 +489,10 @@ def _validate_target_facts(target: JSONObject, anchors: JSONObject) -> None:
     expected_numbers = cast(tuple[str, ...], anchors["numbers_and_units"])
     if _numbers_in_target(text) != expected_numbers:
         raise InvalidInputError("translation target changes numeric or unit anchors")
+    # Structured candidate anchors are compared exactly; prose is checked only for omissions.
     expected_technologies = set(cast(tuple[str, ...], anchors["technology_identifiers"]))
-    if any(not _identifier_present(text, technology) for technology in expected_technologies):
+    if any(not _technology_present(text, technology) for technology in expected_technologies):
         raise InvalidInputError("translation target omits a technology anchor")
-    extras = _known_technologies_in_target(text) - expected_technologies
-    if extras:
-        raise InvalidInputError("translation target introduces a technology anchor")
 
 
 def _validated_candidates(
@@ -629,27 +623,17 @@ def _connection_transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.
         raise
 
 
-def _write_new_file_at(directory_fd: int, name: str, content: bytes) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    descriptor = os.open(name, flags, 0o600, dir_fd=directory_fd)
-    try:
-        view = memoryview(content)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise OSError("export write made no progress")
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 class ExportService:
     """Prepare and publish one fact-preserving English export."""
 
     def __init__(self, database: Database) -> None:
         self._database = database
+        self._files = SafeDataTree(
+            database.paths.root,
+            "exports",
+            "export",
+            frozenset({("exports", ".tmp")}),
+        )
 
     def translate_export(
         self,
@@ -721,7 +705,6 @@ class ExportService:
             candidates = _validated_candidates(
                 request["items"], cast(list[JSONObject], source["items"])
             )
-            self._recover_interrupted_attempts(connection)
             return self._publish(
                 connection,
                 source,
@@ -832,6 +815,11 @@ class ExportService:
         connection: sqlite3.Connection,
         source: JSONObject,
     ) -> _ExportAttempt:
+        owner_identity = process_identity()
+        if not is_recoverable_process_identity(owner_identity):
+            raise InvalidInputError(
+                "cannot create a crash-recoverable ExportAttempt without a process start marker"
+            )
         export_attempt_id = str(uuid.uuid4())
         derived_export_id = str(uuid.uuid4())
         attempt = _ExportAttempt(
@@ -862,7 +850,7 @@ class ExportService:
                     attempt.source_artifact_snapshot_id,
                     attempt.source_projection_sha256,
                     GENERATOR_VERSION,
-                    process_identity(),
+                    owner_identity,
                     attempt.temp_relative_path,
                     attempt.final_relative_path,
                     attempt.started_at,
@@ -991,58 +979,6 @@ class ExportService:
                 (_now(), summary, attempt.export_attempt_id),
             )
 
-    def _recover_interrupted_attempts(self, connection: sqlite3.Connection) -> None:
-        recovered: list[_ExportAttempt] = []
-        with _connection_transaction(connection):
-            rows = connection.execute(
-                """
-                SELECT ea.export_attempt_id, ea.derived_export_id,
-                       ea.source_artifact_snapshot_id, a.report_bundle_sha256,
-                       ea.source_projection_sha256, ea.started_at,
-                       ea.temp_relative_path, ea.final_relative_path,
-                       ea.owner_process_identity, ea.status
-                FROM export_attempts AS ea
-                JOIN artifact_snapshots AS a
-                  ON a.artifact_snapshot_id = ea.source_artifact_snapshot_id
-                LEFT JOIN derived_exports AS de
-                  ON de.export_attempt_id = ea.export_attempt_id
-                WHERE ea.status IN ('running', 'failed', 'interrupted')
-                  AND de.derived_export_id IS NULL
-                ORDER BY ea.started_at, ea.export_attempt_id
-                """
-            ).fetchall()
-            for row in rows:
-                status = str(row["status"])
-                if status == "running" and not owner_process_stopped(
-                    str(row["owner_process_identity"])
-                ):
-                    continue
-                attempt = _ExportAttempt(
-                    export_attempt_id=str(row["export_attempt_id"]),
-                    derived_export_id=str(row["derived_export_id"]),
-                    source_artifact_snapshot_id=str(row["source_artifact_snapshot_id"]),
-                    source_report_bundle_sha256=str(row["report_bundle_sha256"]),
-                    source_projection_sha256=str(row["source_projection_sha256"]),
-                    started_at=str(row["started_at"]),
-                    temp_relative_path=str(row["temp_relative_path"]),
-                    final_relative_path=str(row["final_relative_path"]),
-                )
-                self._attempt_relative(attempt, "temp")
-                self._attempt_relative(attempt, "final")
-                recovered.append(attempt)
-                if status == "running":
-                    connection.execute(
-                        """
-                        UPDATE export_attempts
-                        SET status = 'interrupted', finished_at = ?,
-                            error_summary = 'owner process stopped before publication completed'
-                        WHERE export_attempt_id = ? AND status = 'running'
-                        """,
-                        (_now(), attempt.export_attempt_id),
-                    )
-        for attempt in recovered:
-            self._cleanup_failed_attempt(connection, attempt)
-
     def _cleanup_failed_attempt(
         self,
         connection: sqlite3.Connection,
@@ -1068,69 +1004,22 @@ class ExportService:
     ) -> None:
         temp_relative = self._attempt_relative(attempt, "temp")
         final_relative = self._attempt_relative(attempt, "final")
-        with (
-            self._open_export_parent(temp_relative) as (temp_parent_fd, temp_name),
-            self._open_export_parent(final_relative) as (final_parent_fd, final_name),
-        ):
-            for directory_fd, name in (
-                (temp_parent_fd, temp_name),
-                (final_parent_fd, final_name),
-            ):
-                try:
-                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    continue
-                raise InvalidInputError("export attempt path already exists")
-            try:
-                os.mkdir(temp_name, mode=0o700, dir_fd=temp_parent_fd)
-                directory_flags = (
-                    os.O_RDONLY
-                    | getattr(os, "O_DIRECTORY", 0)
-                    | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_CLOEXEC", 0)
+
+        def before_rename() -> None:
+            if _fault_at == "after_temp":
+                raise _InjectedExportInterruption(
+                    "injected export interruption after temporary files"
                 )
-                temp_fd = os.open(temp_name, directory_flags, dir_fd=temp_parent_fd)
-                try:
-                    for name in (RESUME_FILENAME, INTERVIEW_FILENAME, MANIFEST_FILENAME):
-                        _write_new_file_at(temp_fd, name, rendered_files[name])
-                    os.fsync(temp_fd)
-                finally:
-                    os.close(temp_fd)
-                self._verify_rendered_files(temp_relative, manifest)
-                if _fault_at == "after_temp":
-                    raise _InjectedExportInterruption(
-                        "injected export interruption after temporary files"
-                    )
-                if _fault_at == "fail_after_temp":
-                    raise RuntimeError("injected normal export failure after temporary files")
-                os.rename(
-                    temp_name,
-                    final_name,
-                    src_dir_fd=temp_parent_fd,
-                    dst_dir_fd=final_parent_fd,
-                )
-                os.fsync(temp_parent_fd)
-                os.fsync(final_parent_fd)
-                final_fd = os.open(final_name, directory_flags, dir_fd=final_parent_fd)
-                try:
-                    for name in rendered_files:
-                        flags = (
-                            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-                        )
-                        file_fd = os.open(name, flags, dir_fd=final_fd)
-                        try:
-                            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-                                raise InvalidInputError("published export is not a regular file")
-                            os.fchmod(file_fd, stat.S_IRUSR)
-                            os.fsync(file_fd)
-                        finally:
-                            os.close(file_fd)
-                    os.fchmod(final_fd, stat.S_IRUSR | stat.S_IXUSR)
-                    os.fsync(final_fd)
-                finally:
-                    os.close(final_fd)
-            except OSError as exc:
-                raise InvalidInputError("export directory publication failed") from exc
+            if _fault_at == "fail_after_temp":
+                raise RuntimeError("injected normal export failure after temporary files")
+
+        self._files.publish_directory(
+            temp_relative,
+            final_relative,
+            rendered_files,
+            verify=lambda relative: self._verify_rendered_files(relative, manifest),
+            before_rename=before_rename,
+        )
 
     def _verify_rendered_files(self, relative: str, manifest: JSONObject) -> None:
         expected_set = {RESUME_FILENAME, INTERVIEW_FILENAME, MANIFEST_FILENAME}
@@ -1173,108 +1062,14 @@ class ExportService:
             raise InvalidInputError("ExportAttempt path is outside its registered ownership")
         return relative
 
-    @staticmethod
-    def _relative_parts(relative: str) -> tuple[str, ...]:
-        pure = PurePosixPath(relative)
-        if (
-            pure.is_absolute()
-            or not pure.parts
-            or pure.parts[0] != "exports"
-            or any(part in {"", ".", ".."} for part in pure.parts)
-        ):
-            raise InvalidInputError("export path is outside the personal data directory")
-        return pure.parts
-
     def _safe_export_path(self, relative: str) -> Path:
-        return self._database.paths.root.joinpath(*self._relative_parts(relative))
-
-    @contextmanager
-    def _open_export_parent(self, relative: str) -> Iterator[tuple[int, str]]:
-        parts = self._relative_parts(relative)
-        flags = (
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-        )
-        descriptor = -1
-        try:
-            descriptor = os.open(self._database.paths.root, flags)
-            for component in parts[:-1]:
-                next_descriptor = os.open(component, flags, dir_fd=descriptor)
-                os.close(descriptor)
-                descriptor = next_descriptor
-            yield descriptor, parts[-1]
-        except OSError as exc:
-            raise InvalidInputError(
-                "export path contains an unavailable or linked directory"
-            ) from exc
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+        return self._files.path(relative)
 
     def _read_regular_relative(self, relative: str) -> bytes:
-        with self._open_export_parent(relative) as (directory_fd, name):
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-            try:
-                descriptor = os.open(name, flags, dir_fd=directory_fd)
-            except OSError as exc:
-                raise InvalidInputError("export file is unavailable or linked") from exc
-            try:
-                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                    raise InvalidInputError("export file is not a regular file")
-                chunks: list[bytes] = []
-                while chunk := os.read(descriptor, 1024 * 1024):
-                    chunks.append(chunk)
-                return b"".join(chunks)
-            finally:
-                os.close(descriptor)
+        return self._files.read_regular(relative)
 
     def _list_directory_relative(self, relative: str) -> set[str]:
-        with self._open_export_parent(relative) as (directory_fd, name):
-            flags = (
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0)
-            )
-            try:
-                descriptor = os.open(name, flags, dir_fd=directory_fd)
-            except OSError as exc:
-                raise InvalidInputError("export directory is unavailable or linked") from exc
-            try:
-                return set(os.listdir(descriptor))
-            finally:
-                os.close(descriptor)
+        return self._files.list_directory(relative)
 
     def _remove_owned_relative(self, relative: str) -> None:
-        parts = self._relative_parts(relative)
-        if parts in {("exports",), ("exports", ".tmp")}:
-            raise InvalidInputError("refusing to remove a protected export ancestor")
-        with self._open_export_parent(relative) as (directory_fd, name):
-            self._remove_entry_at(directory_fd, name)
-            os.fsync(directory_fd)
-
-    @staticmethod
-    def _remove_entry_at(directory_fd: int, name: str) -> None:
-        try:
-            entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return
-        if not stat.S_ISDIR(entry.st_mode):
-            os.unlink(name, dir_fd=directory_fd)
-            return
-        flags = (
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-        )
-        child_fd = os.open(name, flags, dir_fd=directory_fd)
-        try:
-            os.fchmod(child_fd, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-            for child_name in os.listdir(child_fd):
-                ExportService._remove_entry_at(child_fd, child_name)
-        finally:
-            os.close(child_fd)
-        os.rmdir(name, dir_fd=directory_fd)
+        self._files.remove(relative)

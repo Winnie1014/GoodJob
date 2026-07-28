@@ -111,6 +111,7 @@ def _prepare_and_analyze(
     knowledge_gap_severity: str | None = None,
     claim_statement_prefix: str | None = None,
     verified_semantic_key: str | None = None,
+    technology_identifiers: list[str] | None = None,
 ) -> tuple[str, str]:
     if scan_run_id is None:
         scan = WorkspaceScanner(database).scan(
@@ -174,7 +175,7 @@ def _prepare_and_analyze(
             "mechanism_keys": ["function-call"],
             "behavior_contract_keys": ["input-to-output"],
             "tradeoff_keys": [],
-            "technology_identifiers": ["python"],
+            "technology_identifiers": technology_identifiers or ["python"],
         }
     else:
         review_semantic_projection = {

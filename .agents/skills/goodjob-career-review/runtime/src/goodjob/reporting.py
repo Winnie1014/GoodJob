@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
 import sqlite3
 import stat
@@ -25,6 +24,7 @@ from goodjob.errors import InvalidInputError
 from goodjob.preparation import _now, _stored_json
 from goodjob.process_identity import owner_process_stopped, process_identity
 from goodjob.review import ReviewService
+from goodjob.safe_fs import SafeDataTree
 
 REPORT_BUNDLE_CONTRACT_VERSION = "report-bundle-v1"
 REPORT_CONTRACT_VERSION = "goodjob-report-v1"
@@ -42,7 +42,10 @@ _DISPOSITIONS = ("fresh", "carried_forward", "failed_no_baseline", "excluded")
 _NON_CURRENT_VALIDITIES = frozenset({"stale", "missing", "plan"})
 _URL_SCHEME = re.compile(r"(?i)\b(https?|file|javascript):")
 _NUMERIC_ANCHOR = re.compile(
-    r"(?<![\w.])\d+(?:\.\d+)?(?:\s*(?:%|ms|s|秒|分钟|小时|天|倍|个|次|条|人|MB|GB))?",
+    (
+        r"(?<![\w.])[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+        r"(?:\s*(?:%|ms|s|秒|分钟|小时|天|倍|个|次|条|人|MB|GB))?"
+    ),
     re.IGNORECASE,
 )
 _VISIBLE_CONTROL_LABELS = {
@@ -1725,23 +1728,6 @@ def _snapshot_manifest(
     }
 
 
-def _write_new_file_at(directory_fd: int, name: str, content: bytes, mode: int = 0o600) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(name, flags, mode, dir_fd=directory_fd)
-    try:
-        view = memoryview(content)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise OSError("artifact write made no progress")
-            view = view[written:]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 @contextmanager
 def _connection_transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     connection.execute("BEGIN IMMEDIATE")
@@ -1759,6 +1745,12 @@ class ArtifactSnapshotService:
     def __init__(self, database: Database) -> None:
         self._database = database
         self._paths = database.paths
+        self._files = SafeDataTree(
+            self._paths.root,
+            "artifacts",
+            "artifact",
+            frozenset({("artifacts", ".tmp")}),
+        )
 
     def render(
         self,
@@ -1980,70 +1972,18 @@ class ArtifactSnapshotService:
     ) -> None:
         temp_relative = self._attempt_relative(attempt, "temp")
         final_relative = self._attempt_relative(attempt, "final")
-        with (
-            self._open_data_parent(temp_relative) as (temp_parent_fd, temp_name),
-            self._open_data_parent(final_relative) as (final_parent_fd, final_name),
-        ):
-            for directory_fd, name in (
-                (temp_parent_fd, temp_name),
-                (final_parent_fd, final_name),
-            ):
-                try:
-                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    continue
-                raise InvalidInputError("render attempt path already exists")
-            try:
-                os.mkdir(temp_name, mode=0o700, dir_fd=temp_parent_fd)
-                directory_flags = (
-                    os.O_RDONLY
-                    | getattr(os, "O_DIRECTORY", 0)
-                    | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_CLOEXEC", 0)
-                )
-                temp_fd = os.open(temp_name, directory_flags, dir_fd=temp_parent_fd)
-                try:
-                    for name in (
-                        REPORT_FILENAME,
-                        RESUME_FILENAME,
-                        HTML_FILENAME,
-                        MANIFEST_FILENAME,
-                    ):
-                        _write_new_file_at(temp_fd, name, rendered_files[name])
-                    os.fsync(temp_fd)
-                finally:
-                    os.close(temp_fd)
-                self._verify_rendered_files(temp_relative, manifest)
-                if _fault_at == "after_temp":
-                    raise RuntimeError("injected render interruption after temporary files")
-                os.rename(
-                    temp_name,
-                    final_name,
-                    src_dir_fd=temp_parent_fd,
-                    dst_dir_fd=final_parent_fd,
-                )
-                os.fsync(temp_parent_fd)
-                os.fsync(final_parent_fd)
-                final_fd = os.open(final_name, directory_flags, dir_fd=final_parent_fd)
-                try:
-                    for name in rendered_files:
-                        flags = (
-                            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-                        )
-                        file_fd = os.open(name, flags, dir_fd=final_fd)
-                        try:
-                            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-                                raise InvalidInputError("published artifact is not a regular file")
-                            os.fchmod(file_fd, stat.S_IRUSR)
-                            os.fsync(file_fd)
-                        finally:
-                            os.close(file_fd)
-                    os.fchmod(final_fd, stat.S_IRUSR | stat.S_IXUSR)
-                    os.fsync(final_fd)
-                finally:
-                    os.close(final_fd)
-            except OSError as exc:
-                raise InvalidInputError("artifact directory publication failed") from exc
+
+        def before_rename() -> None:
+            if _fault_at == "after_temp":
+                raise RuntimeError("injected render interruption after temporary files")
+
+        self._files.publish_directory(
+            temp_relative,
+            final_relative,
+            rendered_files,
+            verify=lambda relative: self._verify_rendered_files(relative, manifest),
+            before_rename=before_rename,
+        )
 
     def _verify_rendered_files(self, directory_relative: str, manifest: JSONObject) -> None:
         if self._list_directory_relative(directory_relative) != {
@@ -2441,145 +2381,19 @@ class ArtifactSnapshotService:
         return relative
 
     def _safe_data_path(self, relative: str) -> Path:
-        parts = self._relative_parts(relative)
-        return self._paths.root.joinpath(*parts)
-
-    @staticmethod
-    def _relative_parts(relative: str) -> tuple[str, ...]:
-        pure = PurePosixPath(relative)
-        if (
-            pure.is_absolute()
-            or not pure.parts
-            or pure.parts[0] != "artifacts"
-            or any(part in {"", ".", ".."} for part in pure.parts)
-        ):
-            raise InvalidInputError("artifact path is outside the personal data directory")
-        return pure.parts
-
-    @contextmanager
-    def _open_data_parent(self, relative: str) -> Iterator[tuple[int, str]]:
-        parts = self._relative_parts(relative)
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        flags |= getattr(os, "O_CLOEXEC", 0)
-        descriptor = -1
-        try:
-            descriptor = os.open(self._paths.root, flags)
-            for component in parts[:-1]:
-                next_descriptor = os.open(component, flags, dir_fd=descriptor)
-                os.close(descriptor)
-                descriptor = next_descriptor
-            yield descriptor, parts[-1]
-        except OSError as exc:
-            raise InvalidInputError(
-                "artifact path contains an unavailable or linked directory"
-            ) from exc
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+        return self._files.path(relative)
 
     def _read_regular_relative(self, relative: str) -> bytes:
-        with self._open_data_parent(relative) as (directory_fd, name):
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-            try:
-                descriptor = os.open(name, flags, dir_fd=directory_fd)
-            except OSError as exc:
-                raise InvalidInputError("artifact file is unavailable or linked") from exc
-            try:
-                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                    raise InvalidInputError("artifact file is not a regular file")
-                chunks: list[bytes] = []
-                while chunk := os.read(descriptor, 1024 * 1024):
-                    chunks.append(chunk)
-                return b"".join(chunks)
-            finally:
-                os.close(descriptor)
+        return self._files.read_regular(relative)
 
     def _list_directory_relative(self, relative: str) -> set[str]:
-        with self._open_data_parent(relative) as (directory_fd, name):
-            flags = (
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0)
-            )
-            try:
-                descriptor = os.open(name, flags, dir_fd=directory_fd)
-            except OSError as exc:
-                raise InvalidInputError("artifact directory is unavailable or linked") from exc
-            try:
-                return set(os.listdir(descriptor))
-            finally:
-                os.close(descriptor)
+        return self._files.list_directory(relative)
 
     def _write_new_relative(self, relative: str, content: bytes) -> None:
-        with self._open_data_parent(relative) as (directory_fd, name):
-            try:
-                _write_new_file_at(directory_fd, name, content)
-                os.fsync(directory_fd)
-            except OSError as exc:
-                raise InvalidInputError("artifact temporary file could not be created") from exc
+        self._files.write_new(relative, content)
 
     def _replace_relative_file(self, source: str, destination: str, *, mode: int) -> None:
-        with (
-            self._open_data_parent(source) as (source_fd, source_name),
-            self._open_data_parent(destination) as (destination_fd, destination_name),
-        ):
-            try:
-                destination_mode = os.stat(
-                    destination_name,
-                    dir_fd=destination_fd,
-                    follow_symlinks=False,
-                ).st_mode
-            except FileNotFoundError:
-                destination_mode = None
-            if destination_mode is not None and stat.S_ISDIR(destination_mode):
-                raise InvalidInputError("artifact destination is an unexpected directory")
-            try:
-                os.replace(
-                    source_name,
-                    destination_name,
-                    src_dir_fd=source_fd,
-                    dst_dir_fd=destination_fd,
-                )
-                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-                descriptor = os.open(destination_name, flags, dir_fd=destination_fd)
-                try:
-                    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                        raise InvalidInputError("artifact destination is not a regular file")
-                    os.fchmod(descriptor, mode)
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-                os.fsync(source_fd)
-                if destination_fd != source_fd:
-                    os.fsync(destination_fd)
-            except OSError as exc:
-                raise InvalidInputError("artifact file replacement failed") from exc
+        self._files.replace_file(source, destination, mode=mode)
 
     def _remove_owned_relative(self, relative: str) -> None:
-        parts = self._relative_parts(relative)
-        if parts in {("artifacts",), ("artifacts", ".tmp")}:
-            raise InvalidInputError("refusing to remove a protected artifact ancestor")
-        with self._open_data_parent(relative) as (directory_fd, name):
-            self._remove_entry_at(directory_fd, name)
-            os.fsync(directory_fd)
-
-    @staticmethod
-    def _remove_entry_at(directory_fd: int, name: str) -> None:
-        try:
-            entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return
-        if not stat.S_ISDIR(entry.st_mode):
-            os.unlink(name, dir_fd=directory_fd)
-            return
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        flags |= getattr(os, "O_CLOEXEC", 0)
-        child_fd = os.open(name, flags, dir_fd=directory_fd)
-        try:
-            os.fchmod(child_fd, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-            for child_name in os.listdir(child_fd):
-                ArtifactSnapshotService._remove_entry_at(child_fd, child_name)
-        finally:
-            os.close(child_fd)
-        os.rmdir(name, dir_fd=directory_fd)
+        self._files.remove(relative)

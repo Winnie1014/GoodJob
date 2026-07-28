@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -114,6 +116,31 @@ def test_writer_busy_performs_no_personal_data_initialization(data_paths: DataPa
     assert not data_paths.config_file.exists()
     assert not data_paths.artifacts_dir.exists()
     assert not data_paths.database_file.exists()
+
+
+def test_each_writer_context_holds_one_lock_across_migration_recovery_and_business_write(
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acquisitions: list[Path] = []
+
+    @contextmanager
+    def counting_lock(path: Path) -> Generator[ExclusiveWriterLock, None, None]:
+        acquisitions.append(path)
+        with ExclusiveWriterLock(path) as lock:
+            yield lock
+
+    monkeypatch.setattr("goodjob.db.ExclusiveWriterLock", counting_lock)
+    database = Database(data_paths)
+
+    with database.write_transaction() as connection:
+        connection.execute("SELECT 1")
+    assert acquisitions == [data_paths.writer_lock_file]
+
+    acquisitions.clear()
+    with database.exclusive_writer_connection() as connection:
+        connection.execute("SELECT 1")
+    assert acquisitions == [data_paths.writer_lock_file]
 
 
 def test_v9_migration_conservatively_backfills_review_order_and_cutoffs(

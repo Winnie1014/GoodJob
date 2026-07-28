@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from goodjob.errors import UnsupportedSchemaError
 from goodjob.locks import ExclusiveWriterLock
 from goodjob.paths import DataPaths
+from goodjob.recovery import recover_interrupted_exports
 
 
 @dataclass(frozen=True)
@@ -983,54 +984,14 @@ class Database:
         self.paths = paths
 
     def migrate(self) -> int:
-        """Apply all known migrations, rejecting a database from a newer runtime."""
-        with ExclusiveWriterLock(self.paths.writer_lock_file):
-            self.paths.ensure_layout()
-            connection = self._connect()
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS schema_migrations (
-                        version INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        applied_at TEXT NOT NULL
-                    )
-                    """
-                )
-                row = connection.execute(
-                    "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
-                ).fetchone()
-                current_version = int(row["version"])
-                latest_version = MIGRATIONS[-1].version
-                if current_version > latest_version:
-                    raise UnsupportedSchemaError(
-                        "database schema is newer than this installed GoodJob version"
-                    )
-                for migration in MIGRATIONS:
-                    if migration.version <= current_version:
-                        continue
-                    for statement in migration.statements:
-                        connection.execute(statement)
-                    connection.execute(
-                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-                        (migration.version, migration.name, _utc_now()),
-                    )
-                    current_version = migration.version
-                connection.commit()
-                return current_version
-            except Exception:
-                connection.rollback()
-                raise
-            finally:
-                connection.close()
+        """Prepare schema and recovery state under one writer-lock acquisition."""
+        with self._prepared_writer_connection() as (_, current_version):
+            return current_version
 
     @contextmanager
     def write_transaction(self) -> Generator[sqlite3.Connection, None, None]:
         """Open a short atomic write transaction after applying known schema changes."""
-        self.migrate()
-        with ExclusiveWriterLock(self.paths.writer_lock_file):
-            connection = self._connect()
+        with self._prepared_writer_connection() as (connection, _):
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 yield connection
@@ -1038,21 +999,67 @@ class Database:
             except Exception:
                 connection.rollback()
                 raise
-            finally:
-                connection.close()
 
     @contextmanager
     def exclusive_writer_connection(self) -> Generator[sqlite3.Connection, None, None]:
         """Hold the single writer lock across a multi-transaction publication session."""
-        self.migrate()
+        with self._prepared_writer_connection() as (connection, _):
+            yield connection
+
+    @contextmanager
+    def _prepared_writer_connection(
+        self,
+    ) -> Generator[tuple[sqlite3.Connection, int], None, None]:
+        """Hold one lock across schema migration, recovery, and the caller's write."""
         with ExclusiveWriterLock(self.paths.writer_lock_file):
+            self.paths.ensure_layout()
             connection = self._connect()
             try:
-                yield connection
+                current_version = self._prepare_writer_state(connection)
+                yield connection, current_version
             finally:
                 if connection.in_transaction:
                     connection.rollback()
                 connection.close()
+
+    def _prepare_writer_state(self, connection: sqlite3.Connection) -> int:
+        """Apply schema migrations, then recover dead publications before new writes."""
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
+            row = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
+            ).fetchone()
+            current_version = int(row["version"])
+            latest_version = MIGRATIONS[-1].version
+            if current_version > latest_version:
+                raise UnsupportedSchemaError(
+                    "database schema is newer than this installed GoodJob version"
+                )
+            for migration in MIGRATIONS:
+                if migration.version <= current_version:
+                    continue
+                for statement in migration.statements:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                    (migration.version, migration.name, _utc_now()),
+                )
+                current_version = migration.version
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        recover_interrupted_exports(connection, self.paths)
+        return current_version
 
     @contextmanager
     def read_connection(self) -> Generator[sqlite3.Connection, None, None]:

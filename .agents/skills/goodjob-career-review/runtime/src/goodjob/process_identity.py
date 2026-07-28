@@ -15,6 +15,17 @@ def process_identity() -> str:
     return f"pid:{pid};started:{started}" if started is not None else f"pid:{pid};started:unknown"
 
 
+def is_recoverable_process_identity(identity: str) -> bool:
+    """Return whether an identity can later prove PID death or reuse."""
+    prefix, separator, started = identity.partition(";started:")
+    if not separator or not prefix.startswith("pid:") or not started or started == "unknown":
+        return False
+    try:
+        return int(prefix.removeprefix("pid:")) > 0
+    except ValueError:
+        return False
+
+
 def process_start_marker(pid: int) -> str | None:
     result = subprocess.run(
         ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
@@ -31,9 +42,9 @@ def process_start_marker(pid: int) -> str | None:
 
 def owner_process_stopped(identity: str) -> bool:
     """Return true only when both PID existence and its start marker prove death."""
-    prefix, separator, started = identity.partition(";started:")
-    if not separator or not prefix.startswith("pid:") or started == "unknown":
+    if not is_recoverable_process_identity(identity):
         return False
+    prefix, _, started = identity.partition(";started:")
     try:
         pid = int(prefix.removeprefix("pid:"))
     except ValueError:

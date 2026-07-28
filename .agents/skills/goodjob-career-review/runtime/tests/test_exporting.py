@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sqlite3
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -17,15 +20,77 @@ from goodjob.locks import ExclusiveWriterLock
 from goodjob.paths import DataPaths
 from goodjob.reporting import ArtifactSnapshotService
 
+_SIGKILL_EXPORT_SCRIPT = r"""
+import json
+import os
+import signal
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+
+import goodjob.safe_fs as safe_fs
+from goodjob.db import Database
+from goodjob.exporting import ExportService
+from goodjob.paths import DataPaths
+
+database = Database(DataPaths(Path(sys.argv[2])))
+workspace = Path(sys.argv[3])
+receipt_id = sys.argv[4]
+fault_at = sys.argv[5]
+request = json.loads(sys.stdin.buffer.read())
+service = ExportService(database)
+
+if fault_at == "after_temp":
+    original_verify = ExportService._verify_rendered_files
+
+    def kill_after_temp(self, relative, manifest):
+        original_verify(self, relative, manifest)
+        os.kill(os.getpid(), signal.SIGKILL)
+
+    ExportService._verify_rendered_files = kill_after_temp
+elif fault_at == "after_rename":
+    original_rename = safe_fs.os.rename
+
+    def kill_after_rename(*args, **kwargs):
+        original_rename(*args, **kwargs)
+        os.kill(os.getpid(), signal.SIGKILL)
+
+    safe_fs.os.rename = kill_after_rename
+elif fault_at == "before_database_commit":
+    def kill_before_database_commit(self, connection, attempt, manifest_sha256):
+        os.kill(os.getpid(), signal.SIGKILL)
+
+    ExportService._record_success = kill_before_database_commit
+else:
+    raise RuntimeError("unknown SIGKILL test stage")
+
+service.translate_export(
+    workspace_path=workspace,
+    authorization_receipt_id=receipt_id,
+    request_value=request,
+)
+raise RuntimeError("export unexpectedly survived SIGKILL hook")
+"""
+
 
 def _published_snapshot(
     tmp_path: Path,
     data_paths: DataPaths,
+    *,
+    claim_statement_prefix: str | None = None,
+    technology_identifiers: list[str] | None = None,
 ) -> tuple[Path, Database, str, dict[str, object]]:
     workspace = _workspace(tmp_path)
     database = Database(data_paths)
     receipt_id = _authorize(database, workspace)
-    run_id, _ = _prepare_and_analyze(database, workspace, receipt_id)
+    run_id, _ = _prepare_and_analyze(
+        database,
+        workspace,
+        receipt_id,
+        claim_statement_prefix=claim_statement_prefix,
+        technology_identifiers=technology_identifiers,
+    )
     snapshot = _dict(ArtifactSnapshotService(database).render(run_id)["artifact_snapshot"])
     return workspace, database, receipt_id, snapshot
 
@@ -226,7 +291,13 @@ def test_translation_publish_atomically_creates_one_immutable_derived_export(
 
 @pytest.mark.parametrize(
     "damage",
-    ["missing_item", "extra_item", "anchor_tamper", "number_omission", "extra_technology"],
+    [
+        "missing_item",
+        "extra_item",
+        "anchor_tamper",
+        "technology_anchor_tamper",
+        "number_omission",
+    ],
 )
 def test_translation_publish_rejects_non_equivalent_candidate_batches_without_writes(
     tmp_path: Path,
@@ -247,14 +318,16 @@ def test_translation_publish_rejects_non_equivalent_candidate_batches_without_wr
     elif damage == "anchor_tamper":
         anchors = _dict(items[0]["anchors"])
         anchors["numbers_and_units"] = [*_list(anchors["numbers_and_units"]), "999"]
+    elif damage == "technology_anchor_tamper":
+        anchors = _dict(items[0]["anchors"])
+        anchors["technology_identifiers"] = [
+            *_list(anchors["technology_identifiers"]),
+            "MongoDB",
+        ]
     elif damage == "number_omission":
         target = _dict(items[0]["target"])
         for key in target:
             target[key] = "Explains the testable Python function boundary without a new fact."
-    else:
-        target = _dict(items[0]["target"])
-        first_key = next(iter(target))
-        target[first_key] = f"{target[first_key]} Redis"
 
     latest_before = data_paths.latest_artifact_file.read_bytes()
     with pytest.raises(InvalidInputError):
@@ -271,6 +344,150 @@ def test_translation_publish_rejects_non_equivalent_candidate_batches_without_wr
     try:
         assert connection.execute("SELECT COUNT(*) FROM export_attempts").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM derived_exports").fetchone() == (0,)
+    finally:
+        connection.close()
+
+
+def test_translation_numeric_equivalence_preserves_sign_thousands_separator_and_units(
+    tmp_path: Path,
+    data_paths: DataPaths,
+) -> None:
+    workspace, database, receipt_id, snapshot = _published_snapshot(
+        tmp_path,
+        data_paths,
+        claim_statement_prefix=("我可以解释 Python 边界如何接受 -5 个到 1,000 个输入，并安全展示 "),
+    )
+    service = ExportService(database)
+    source = _prepare_translation(service, workspace, receipt_id, snapshot)
+    request = _translation_request(source)
+    items = cast(list[dict[str, object]], request["items"])
+    for item in items:
+        item["target"] = (
+            {"text": ("The Python boundary accepts -5 items to 1,000 items and preserves value 1.")}
+            if item["export_kind"] == "resume"
+            else {
+                "question": "What range does the Python boundary accept?",
+                "answer": "It accepts -5 items to 1,000 items and preserves value 1.",
+            }
+        )
+
+    published = service.translate_export(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+    assert (
+        _dict(published["derived_export"])["source_projection_sha256"]
+        == source["source_projection_sha256"]
+    )
+
+    changed_sign = cast(dict[str, object], json.loads(json.dumps(request)))
+    changed_items = cast(list[dict[str, object]], changed_sign["items"])
+    first_target = _dict(changed_items[0]["target"])
+    for key, value in first_target.items():
+        first_target[key] = str(value).replace("-5", "5")
+    with pytest.raises(InvalidInputError, match="numeric or unit"):
+        service.translate_export(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=changed_sign,
+        )
+
+
+def test_translation_accepts_technology_aliases_without_changing_structured_anchors(
+    tmp_path: Path,
+    data_paths: DataPaths,
+) -> None:
+    workspace, database, receipt_id, snapshot = _published_snapshot(
+        tmp_path,
+        data_paths,
+        claim_statement_prefix=("我可以解释可测试的 TypeScript 函数边界，并安全展示记录值 "),
+        technology_identifiers=["typescript"],
+    )
+    service = ExportService(database)
+    source = _prepare_translation(service, workspace, receipt_id, snapshot)
+    request = _translation_request(source)
+    for item in cast(list[dict[str, object]], request["items"]):
+        item["target"] = (
+            {
+                "text": (
+                    "Explains a testable TS function boundary while preserving "
+                    "the recorded value (1)."
+                )
+            }
+            if item["export_kind"] == "resume"
+            else {
+                "question": "How is the testable TS function boundary implemented?",
+                "answer": "It uses TS and preserves the recorded value (1).",
+            }
+        )
+
+    published = service.translate_export(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+
+    assert (
+        _dict(published["derived_export"])["source_projection_sha256"]
+        == source["source_projection_sha256"]
+    )
+
+
+def test_translation_does_not_infer_structured_technology_anchors_from_prose(
+    tmp_path: Path,
+    data_paths: DataPaths,
+) -> None:
+    workspace, database, receipt_id, snapshot = _published_snapshot(tmp_path, data_paths)
+    service = ExportService(database)
+    source = _prepare_translation(service, workspace, receipt_id, snapshot)
+    request = _translation_request(source)
+    resume = next(
+        item
+        for item in cast(list[dict[str, object]], request["items"])
+        if item["export_kind"] == "resume"
+    )
+    resume["target"] = {
+        "text": (
+            "Go through the testable Python function boundary, React to failures, "
+            "and preserve the recorded value (1)."
+        )
+    }
+
+    published = service.translate_export(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+
+    assert _dict(published["derived_export"])["language"] == "en"
+
+
+def test_translation_rejects_unrecoverable_process_identity_before_any_attempt_write(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, database, receipt_id, snapshot = _published_snapshot(tmp_path, data_paths)
+    service = ExportService(database)
+    source = _prepare_translation(service, workspace, receipt_id, snapshot)
+    monkeypatch.setattr(
+        "goodjob.exporting.process_identity",
+        lambda: f"pid:{os.getpid()};started:unknown",
+    )
+
+    with pytest.raises(InvalidInputError, match="process start marker"):
+        service.translate_export(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=_translation_request(source),
+        )
+
+    assert not any(data_paths.export_tmp_dir.iterdir())
+    assert not [path for path in data_paths.exports_dir.iterdir() if path.name != ".tmp"]
+    connection = sqlite3.connect(data_paths.database_file)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM export_attempts").fetchone() == (0,)
     finally:
         connection.close()
 
@@ -387,6 +604,76 @@ def test_dead_export_owner_recovery_cleans_only_registered_paths_and_retries_fre
     assert export_count == (2,)
 
 
+@pytest.mark.parametrize("fault_at", ["after_temp", "after_rename", "before_database_commit"])
+def test_real_sigkill_export_is_recovered_by_the_next_writer_entry(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    fault_at: str,
+) -> None:
+    workspace, database, receipt_id, snapshot = _published_snapshot(tmp_path, data_paths)
+    service = ExportService(database)
+    source = _prepare_translation(service, workspace, receipt_id, snapshot)
+    runtime_source = Path(__file__).resolve().parents[1] / "src"
+
+    killed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            _SIGKILL_EXPORT_SCRIPT,
+            str(runtime_source),
+            str(data_paths.root),
+            str(workspace),
+            receipt_id,
+            fault_at,
+        ],
+        input=json.dumps(_translation_request(source)).encode("utf-8"),
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert killed.returncode == -signal.SIGKILL, killed.stderr.decode("utf-8", "replace")
+    connection = sqlite3.connect(data_paths.database_file)
+    try:
+        row = connection.execute(
+            """
+            SELECT temp_relative_path, final_relative_path, status
+            FROM export_attempts ORDER BY rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None
+    temp_relative, final_relative, status = row
+    assert status == "running"
+    if fault_at == "after_temp":
+        assert (data_paths.root / temp_relative).is_dir()
+        assert not (data_paths.root / final_relative).exists()
+    else:
+        assert not (data_paths.root / temp_relative).exists()
+        assert (data_paths.root / final_relative).is_dir()
+
+    # Schema migration is a normal writer entry unrelated to English export publication.
+    database.migrate()
+
+    assert not (data_paths.root / temp_relative).exists()
+    assert not (data_paths.root / final_relative).exists()
+    connection = sqlite3.connect(data_paths.database_file)
+    try:
+        recovered = connection.execute(
+            "SELECT status, finished_at, error_summary FROM export_attempts"
+        ).fetchone()
+        assert connection.execute("SELECT COUNT(*) FROM derived_exports").fetchone() == (0,)
+    finally:
+        connection.close()
+    assert recovered is not None
+    assert recovered[0] == "interrupted"
+    assert recovered[1]
+    assert "owner process stopped" in recovered[2]
+
+
 def test_export_recovery_does_not_interrupt_or_clean_an_unproven_live_owner(
     tmp_path: Path,
     data_paths: DataPaths,
@@ -417,7 +704,7 @@ def test_export_recovery_does_not_interrupt_or_clean_an_unproven_live_owner(
     assert row is not None
     old_attempt_id, temp_relative = row
     assert (data_paths.root / temp_relative).is_dir()
-    monkeypatch.setattr("goodjob.exporting.owner_process_stopped", lambda _identity: False)
+    monkeypatch.setattr("goodjob.recovery.owner_process_stopped", lambda _identity: False)
 
     succeeded = _dict(
         service.translate_export(
