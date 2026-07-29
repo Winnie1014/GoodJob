@@ -29,7 +29,7 @@
 | D-011 | 项目发现 | 指定工作区后自动发现 Git、嵌套 Git、工作树及可识别的非 Git 项目 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
 | D-012 | 工作树身份 | 同一 Git common-dir 的多个工作树合并为一个项目；相同内容复用分析但保留来源，分支差异保持 worktree scope | [扫描设计](../20-architecture/scanning-and-analysis.md) |
 | D-013 | 嵌套仓库 | 先发现独立 Git 根，再应用各自忽略规则；外层 ignore 不得吞掉内层仓库 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
-| D-014 | 忽略与敏感项 | 尊重各仓库 ignore，并硬排依赖、构建、缓存、环境变量和密钥文件；精确安全例外不能重新纳入实际秘密 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
+| D-014 | 忽略与敏感项 | 尊重各仓库 ignore，并硬排依赖、构建、缓存、环境变量和密钥文件；ignore 语义按确定性子集实现，不支持的模式必须可见而非静默近似。精确安全例外推迟为 `F-009`，其“不能重新纳入实际秘密”的约束在恢复时仍然成立 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md)、[扫描设计 §4.1](../20-architecture/scanning-and-analysis.md) |
 | D-015 | 扫描节奏 | 首次全量索引，之后由用户显式触发增量 refresh；不运行后台监听 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
 | D-016 | 事实与快照优先级 | 当前可读工作树是实现事实主来源，文档计划不得升级为已实现；准备阶段三次哈希校验，漂移时显式 refresh，不混用源码版本 | [ADR-0007](adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md) |
 | D-017 | Git 历史 | 初始读取最近 180 天；只有具体结论需要时才向更早历史追溯 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
@@ -49,8 +49,8 @@
 | D-031 | 证据呈现 | 关键结论在 Markdown 与 HTML 中直接关联模块、文件、状态和证据摘要 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md) |
 | D-032 | 学习闭环 | 复盘绑定稳定 ReviewTarget；指纹由结构化复习语义而非 Revision/Gap ID 生成，纯文案变化延续、实质语义变化重评 | [ADR-0007](adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md) |
 | D-033 | 面试隐私 | 不保存完整面试对话，只保存结构化复盘；不创建主动提醒 | [产物设计](../20-architecture/artifacts-and-learning.md) |
-| D-034 | 配置位置 | 工作区注册、默认岗位、忽略例外和项目角色信息统一保存到个人中心配置 | [系统设计](../20-architecture/system-design.md) |
-| D-035 | 当前治理阶段 | 先完成并验收权威文档；Owner 核对后另行拆实现任务；当前不部署 Implementer/channel | 本决策账本 |
+| D-034 | 配置位置 | 个人中心 `config.toml` 保存 `config_revision`、默认岗位与项目级排除规则；工作区注册、项目身份与角色信息由 SQLite 持有。文件级安全例外收窄为 `F-009`，不进入首版 | [系统设计](../20-architecture/system-design.md)、[扫描设计 §4.3](../20-architecture/scanning-and-analysis.md) |
+| D-035 | 当前治理阶段 | 权威文档先行、实现按卡推进。自 2026-07-29 起部署双 agent 协作（Architect 出卡/裁决/验收、Implementer 按卡实现、Owner 决策），信道与任务卡位于 [docs/collab/](../collab/)，任务状态以[任务池](../40-delivery/backlog.md)为准；协作运行区不产生产品契约 | 本决策账本、[协作协议](../collab/protocol.md) |
 | D-036 | 不可信输入 | 工作区、`.git`/Git 配置、JD、用户上下文和模型文本只作为数据；不得驱动命令、生成授权或扩大路径，进入 HTML 前必须安全编码并受 CSP 约束 | [系统设计](../20-architecture/system-design.md)、[扫描设计](../20-architecture/scanning-and-analysis.md)、[产物设计](../20-architecture/artifacts-and-learning.md) |
 | D-037 | 个人数据保留 | 首版不自动删除、归档或淘汰 SQLite、快照、导出和工作稿；每次运行显示分类用量，清理作为未来显式能力 | [证据模型](../20-architecture/evidence-model.md) |
 | D-038 | 运行恢复与单写者 | 所有写操作使用 OS 非阻塞排他锁；运行与 ExportAttempt 中断由恢复账本终止并只清理预登记归属路径，不超时偷锁或续跑模型内存 | [系统设计](../20-architecture/system-design.md) |
@@ -58,6 +58,8 @@
 | D-040 | 看板打包形态 | 看板入口为单个全内联 HTML 文件，字体只用系统字体栈，CSP 以 `<meta>` 按内联哈希施加；同一快照的 Markdown、manifest 与派生导出仍是独立文件 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[看板呈现契约](../20-architecture/dashboard-design.md) |
 | D-041 | 富文本进入呈现层的形态 | `ReportBundle` 只以 `ReportInlineToken` 封闭集合传递富文本，不传 Markdown/HTML 字符串；看板不含解析器，未知 kind 整批拒绝 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[证据模型](../20-architecture/evidence-model.md) |
 | D-042 | 看板呈现顺序与只读出口 | 总览首屏固定 `L0→L4`，覆盖限制与降级先于叙事；看板不提供写状态控件，只给可复制的 Skill 调用出口 | [看板呈现契约](../20-architecture/dashboard-design.md) |
+| D-043 | 校验与门禁的判定层级 | 对结构化数据的校验必须按结构判定：token 序列的散文级规则只作用于 `text`/`emphasis`，入口文档的属性检查不作用于内联数据区。禁止先扁平化成字符串再模式匹配；任何门禁必须在任意真实用户内容下成立 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[证据模型](../20-architecture/evidence-model.md)、[看板呈现契约](../20-architecture/dashboard-design.md) |
+| D-044 | 呈现层动态几何与行为验收 | 呈现层禁用全部 `.style` 运行时写入，动态几何用内联 SVG 几何属性配合整数 `viewBox`；看板行为由跨 Chromium/WebKit 的真实文档核对验收，并以「注入 `style` 属性必须触发违规」为阳性对照，不以源码字符串匹配代替行为断言 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[看板呈现契约](../20-architecture/dashboard-design.md)、[验收基线](../40-delivery/acceptance-baseline.md) |
 
 ## 明确的非首版能力
 
@@ -71,6 +73,7 @@
 | F-006 | 需要本地服务的交互式 Dashboard | 不实现；首版为离线静态看板 |
 | F-007 | 独立桌面可执行程序 | 不实现；先验证 Skill 工作流 |
 | F-008 | 自动清理或压缩个人数据 | 不实现；首版只显示用量，未来需设计显式预览、引用保护与可恢复策略 |
+| F-009 | 精确到文件路径的忽略安全例外 | 不实现；首版只有项目级排除（`D-034`）。它是唯一会让扫描读到本来被排除内容的入口，需独立设计秘密拒绝校验、例外命中审计与覆盖摘要呈现 |
 
 ## Owner 核对
 

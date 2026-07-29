@@ -152,13 +152,15 @@ final_score_milli =
 | `AnalysisCommitRequest` | `preparation_run_id`、`role_lens_id`、EvidenceDraft、有序 ClaimDraft、ProjectAssessment 草稿、KnowledgeGap 草稿 | Repository 校验冻结范围、facet/反证/个人归因和 review semantic projection，canonicalize/hash 后原子提交；投影无法与 statement/证据一致时拒绝或保守换 hash |
 | `ReviewSubjectProjection` | `review_target_id`、`topic_contract_version`、排序后的 `claim_atoms(claim_id, review_semantic_sha256, equivalence_status)`、排序后的 `gap_atoms(gap_key, dimension, severity, resolution_kind, status)`、`question_contract_version` | verified 时不含 Revision/Gap ID、题面或文案；unverified 时含 fallback semantic hash 并保守触发重评 |
 | `ExportProjectionItem` | `source_item_id`、`export_kind`、中文源文本、Claim/Evidence/RoleLens 引用、数字/单位、技术标识、状态、角色与结果锚点 | 每条可导出的简历 bullet 或问答都是独立源项；锚点使用规范化结构，不靠翻译后文本反推 |
-| `ReportInlineToken` | `kind=text\|code\|emphasis\|claim_ref\|evidence_ref\|gap_ref\|inert_url`、`value`、按 kind 必需的 `ref_id` | 富文本的唯一传递形态；kind 是封闭集合，接收方拒绝未知 kind 而不是降级为纯文本；`value` 是已解码的明文，不含 Markdown 标记、HTML 标记或转义序列；`inert_url` 只携带原文供文本展示，不表示可导航目标 |
+| `ReportInlineToken` | `kind=text\|code\|emphasis\|claim_ref\|evidence_ref\|gap_ref\|inert_url`、`value`、按 kind 必需的 `ref_id` | 富文本的唯一传递形态；kind 是封闭集合，接收方拒绝未知 kind 而不是降级为纯文本；`value` 是已解码的明文，不含 Markdown 标记、HTML 标记或转义序列；`inert_url` 只携带原文供文本展示，不表示可导航目标；kind 同时是校验分层依据——散文级判定只作用于 `text` 与 `emphasis` 的 `value` |
 | `ReportBundle v1` | `contract_version`、`preparation_run_id`、canonical `bundle_sha256`、冻结 RoleLens、项目排序、ClaimRevision 投影、证据引用、缺口、覆盖、ReviewTargetBinding 与复习截点、`export_projection`、检索倒排索引、主语言 | Markdown 与 HTML 的唯一共同输入；canonical 序列化保证重试 hash 不漂移；只含呈现所需投影，不暴露 SQLite 表结构；全部富文本字段是 `ReportInlineToken` 序列，不得携带 Markdown 或 HTML 字符串 |
 | `TranslationExportRequest` | `source_artifact_snapshot_id`、`authorization_receipt_id`、`source_projection_sha256`、`target_language=en`、`export_kinds=resume,interview_qa` | 模型候选只存在当前 task 内存；首次写盘前由单个发布子进程创建 ExportAttempt，再校验并原子发布；不得读取数据库当前态或生成新 Claim |
 
 上述 JSON 值对象必须拒绝未知主版本；同一主版本可增加接收方可忽略的可选字段。`ReportBundle` 的章节语义由[产物与学习闭环](artifacts-and-learning.md)负责，视觉与交互语义由[看板呈现契约](dashboard-design.md)负责，本文件只规定其溯源字段与数据形态。
 
 `ReportInlineToken` 是 `NFR-08` 的结构性保障：Markdown 渲染器与 HTML 看板都只接收 token 序列，因此“净化原始 HTML、事件属性或 `javascript:` URL”不是运行时职责，而是不可能发生的输入。模型输出的富文本必须在 `record_analysis` 校验阶段就落到该封闭集合上，不允许把 Markdown 原文顺延到渲染阶段；无法映射为已知 kind 的内容整批拒绝，不做静默降级。理由见 [ADR-0008](../30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)。
+
+kind 的封闭性同时定义了校验的作用域，这一点对接收方是强制的。散文级判定——个人归因识别、非个人化主语核对、措辞门槛——只作用于 `text` 与 `emphasis` 的 `value`；`code`、`inert_url` 与三种 `*_ref` 的 `value` 是数据，不是被断言的自然语言，不得参与散文判定。把 token 序列拼接成单个字符串后再做正则匹配是明确禁止的实现方式：它恰好在结构最有价值的地方丢掉结构，会让一段被引用的标识符或命令行片段（例如 `rg -i` 中的 `-i`）触发本该只适用于散文的规则，并按批量原子性拒绝整份 `analysis-commit-v1`。逐 token 判定不降低归因门槛：主语核对仍要求首个 `text` token 的完整值等于 scope 派生主语，`code` token 也不能承载被禁止的个人化断言，因为它不是散文的载体。
 
 ## 4. 关系图
 
@@ -374,6 +376,7 @@ running -> succeeded | failed | interrupted
 | `EVID-INV-24` | 首版不自动删除个人数据或历史快照；只报告各存储区用量。未来清理必须是独立、显式、可预览且不破坏仍被快照引用的数据操作。 |
 | `EVID-INV-25` | 英文候选在 task 内存生成；首次文件写入前，单个持锁发布子进程必须持久化 ExportAttempt/owner identity，并只写预登记 attempt-scoped 路径。成功发布 DerivedExport；失败/中断只按账本清理。 |
 | `EVID-INV-26` | `ReportBundle` 的全部富文本以 `ReportInlineToken` 封闭集合传递，不得携带 Markdown 或 HTML 字符串；未知 kind 整批拒绝。canonical JSON 是 `bundle_sha256` 的唯一输入，嵌入 HTML 时的 `\uXXXX` 转义不参与哈希，产物哈希始终可独立复算。 |
+| `EVID-INV-27` | 对 token 序列的散文级校验按 kind 分层：只判定 `text` 与 `emphasis` 的 `value`，不得先拼接成单个字符串再匹配。任何针对不可信内容的校验都不得因引用的标识符、路径或命令行片段而拒绝一份本身合法的提交。 |
 
 数据库保存 `schema_version`，迁移和任何写操作必须先取得 OS 管理的非阻塞排他文件锁。锁的真相是持锁文件描述符及内核状态；PID、启动时间和命令只作诊断，绝不按 mtime 超时删除或“偷锁”。未取得锁返回 `writer_busy` 且不执行任何写入。未知新 schema 的旧版本 Skill 只能拒绝写入并给出升级提示，不得尝试降级或部分理解。人工数据与生成数据必须有来源字段；任何自动重新分析只能 supersede 旧记录，不能覆盖用户回答。
 
@@ -394,4 +397,4 @@ running -> succeeded | failed | interrupted
 | `NFR-04`、`NFR-05` | 分析 fingerprint、`PreparationSourceCheck/Mismatch`、运行状态机、不可变 Snapshot | 相同输入可复用；漂移要求显式 refresh；中断与失败不污染基线 |
 | `NFR-06` | 全部实体位于外部个人数据目录、`EVID-INV-24` | Skill 重装不影响知识库；首版不自动删除，存储用量可见 |
 | `NFR-07` | 可扩展 `evidence_kind`、adapter 字段、动态 RoleLens | 新语言或岗位不要求迁移一套平行核心模型 |
-| `NFR-08` | `ClaimDraft` 校验、参数化持久化、`ReportInlineToken` 封闭集合、`EVID-INV-13/26` | 项目/JD/模型文本不能改变命令、SQL、路径或呈现执行语义；呈现层无解析器可绕过 |
+| `NFR-08` | `ClaimDraft` 校验、参数化持久化、`ReportInlineToken` 封闭集合、`EVID-INV-13/26/27` | 项目/JD/模型文本不能改变命令、SQL、路径或呈现执行语义；呈现层无解析器可绕过；不可信内容也不能靠触发校验规则阻断合法提交 |

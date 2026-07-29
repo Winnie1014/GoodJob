@@ -146,11 +146,13 @@ Claim 卡片必需：statement、`facets` 集合、`support_level`、所属项�
 本节把 `NFR-08`、`ARCH-INV-11` 落成呈现层可检查的实现规则，技术选择理由见 [ADR-0008](../30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)。
 
 1. **零 Markdown 解析器**。看板只接收 `ReportBundle` 的结构化 inline token（见[证据模型](evidence-model.md) §3 `ReportInlineToken`），不接收 Markdown 或 HTML 字符串。前端把 token 映射为文本节点与已知安全元素。因此“净化原始 HTML、事件属性、`javascript:` URL”这一类问题在结构上不存在，而不是靠净化函数兜住。
-2. **嵌入转义**。报告数据以 canonical JSON 嵌入入口文档；序列化时必须把 `<`、`>`、`&`、U+2028、U+2029 转为 `\uXXXX` 转义序列。`bundle_sha256` 始终计算在 canonical JSON 上，嵌入层转义不参与哈希，因此产物哈希仍可独立复算。
+2. **嵌入转义**。报告数据以 canonical JSON 嵌入入口文档；序列化时必须把 `<`、`>`、`&`、`=`、U+2028、U+2029 转为 `\uXXXX` 转义序列。`bundle_sha256` 始终计算在 canonical JSON 上，嵌入层转义不参与哈希，因此产物哈希仍可独立复算。
 3. **CSP**。入口文档必须携带 `<meta http-equiv="Content-Security-Policy">`，至少包含 `default-src 'none'`、按哈希允许的 `script-src`、按哈希允许的 `style-src`、`img-src 'none'`、`font-src 'none'`、`connect-src 'none'`、`object-src 'none'`、`frame-src 'none'`、`form-action 'none'`、`base-uri 'none'`。不使用 `unsafe-inline`、`unsafe-eval` 或任何远端来源。
-4. **禁用的 API**。不使用 `eval`、`new Function`、`setTimeout`/`setInterval` 的字符串形式、`innerHTML`、`outerHTML`、`insertAdjacentHTML`、`document.write`、`srcdoc`，也不通过属性字符串注册事件处理器。另外不使用 `setAttribute("style", …)` 与 `cssText`：`style-src` 的哈希白名单只覆盖内联 `<style>` 元素，不覆盖 `style` 属性，两者会被 CSP 静默拦下；动态尺寸一律走 CSSOM 属性 setter（`element.style.width = …`）。构建门禁必须能静态检出以上全部调用。
+4. **禁用的 API**。不使用 `eval`、`new Function`、`setTimeout`/`setInterval` 的字符串形式、`innerHTML`、`outerHTML`、`insertAdjacentHTML`、`document.write`、`srcdoc`，也不通过属性字符串注册事件处理器。样式方面禁用全部运行时写入：`setAttribute("style", …)`、`cssText` 与 `element.style` 的任何属性赋值。`style-src` 的哈希白名单只覆盖内联 `<style>` 元素、不覆盖 `style` 属性，后者会被 CSP 静默拦下；CSSOM 虽不受 CSP 约束，但一条不作区分的禁令更容易静态机检。动态几何一律用内联 SVG 的几何属性（`x`/`width`/`height`）配合整数 `viewBox` 表达，比例保持整数原值（见 `DASH-INV-05`）。构建门禁必须能静态检出以上全部调用。
 5. **URL 与路径**。来自不可信数据的 URL（JD、用户回答、文档内容）一律不渲染为可点击链接，只作为可选中文本并标注“外部链接（未激活）”。locator 与相对路径绝不渲染为 `file://` 链接或任何可导航目标。
 6. **图标与字体**。图标使用内联 SVG 元素，不使用图标字体、不使用 `<img>`。字体只使用系统字体栈，不加载任何字体文件。
+7. **门禁的判定层级**。以上规则的自动检查必须在结构层判定，不得把入口文档扁平化成一个字符串后用模式匹配代替。属性检查只作用于产物结构，`<script id="report-data" type="application/json">` 的数据区不参与——数据区已按规则 2 转义，其中的任何内容都不可能成为标记或属性。门禁必须在任意真实工作区内容下成立：渲染发生在 `ReportBundle` 冻结之后，一次由用户内容触发的渲染拒绝会让该运行确定性地不可发布，重试同一 bundle 必然同样失败。
+8. **行为断言不得退化为源码文本断言**。前端静态门禁可以检查禁用 API 与禁止的资源引用，但不得用「源码中必须出现某段字符串/某句 UI 文案」来代替对渲染结果的断言。呈现行为由 `DASH-01` 至 `DASH-12` 在真实文档上核对（见 §12）。
 
 ## 10. 只读约束的出口
 
@@ -172,14 +174,15 @@ Claim 卡片必需：statement、`facets` 集合、`support_level`、所属项�
 | `DASH-INV-08` | 入口文档在断网且无本地服务时双击可完整使用；发现任何远端依赖或 CSP 违规时该运行不得发布为成功快照。 |
 | `DASH-INV-09` | 看板不提供写状态控件；只读约束通过可复制的 Skill 调用给出出口。 |
 | `DASH-INV-10` | Markdown 与 HTML 对同一 Claim 呈现相同的证据状态、facet、`commit_state` 与限制；呈现层不得引入 Markdown 未表达的结论。 |
+| `DASH-INV-11` | 呈现层与产物门禁在结构层判定，不在扁平字符串上判定；门禁在任意真实工作区内容下成立，不得出现由用户内容触发的确定性渲染拒绝。行为由真实文档核对，不由源码文本匹配代替。 |
 
 ## 12. 可判定验收规则
 
 | ID | 可判定输入 | 必须输出 | 失败或降级行为 | 需求映射 |
 | --- | --- | --- | --- | --- |
 | `DASH-01` | 断网、无本地服务，双击入口文档并打开开发者工具网络面板 | 视图、检索、筛选、证据展开、缺口与复习状态全部可用，网络面板零请求 | 出现任何请求即视为渲染失败，不发布快照 | `FR-12`、`NFR-03` |
-| `DASH-02` | 完整浏览全部视图并执行全部交互 | 控制台零 CSP 违规、零脚本错误 | 任一违规则该运行不发布为成功快照 | `NFR-03`、`NFR-08` |
-| `DASH-03` | 字段含 `</script>`、`<img onerror=…>`、`javascript:` URL、事件属性、U+2028/U+2029、RTL 覆盖字符、超长无空格串 | 全部以可读文本呈现，长串按字符换行不撑破布局 | 不执行脚本、不发请求、不产生可点击外部链接 | `NFR-08`、`ART-12` |
+| `DASH-02` | 在 Chromium 与 WebKit 各完整浏览全部视图并执行全部交互；同一核对注入一次 `style` 属性作为阳性对照 | 两个引擎干净加载后控制台零 CSP 违规、零脚本错误；阳性对照必须触发违规 | 任一引擎出现违规则该运行不发布为成功快照；阳性对照不触发说明 CSP 未生效，本项及依赖它的结论一并作废 | `NFR-03`、`NFR-08` |
+| `DASH-03` | 字段含 `</script>`、`<img onerror=…>`、`javascript:` URL、事件属性、`style="…"` 片段、U+2028/U+2029、RTL 覆盖字符、超长无空格串 | 全部以可读文本呈现，长串按字符换行不撑破布局；含 `style=` 的 `code` token 不影响渲染成功 | 不执行脚本、不发请求、不产生可点击外部链接；不得因语料内容拒绝渲染 | `NFR-08`、`ART-12`、`DASH-INV-11` |
 | `DASH-04` | 375px 宽视口浏览全部视图 | 无横向滚动、无遮挡，多列表格已转为定义列表 | 出现横向滚动容器即不通过 | `FR-12`、`NFR-03` |
 | `DASH-05` | `partial` 快照，含 `carried_forward`、`failed_no_baseline`、`excluded`、stale 证据与缺上下文项目 | `L0` 标 `partial`，`L2` 覆盖条分段与计数正确（`carried_forward` 计入参与评分），`L3` 逐条列出原因、影响与补救动作并可跳到对应筛选 | 不得折叠、合并或下移；不得把 `carried_forward` 算作未评分 | `FR-15`、`NFR-05` |
 | `DASH-06` | 任一关键 Claim，含 current/stale/missing/plan 混合证据与内容等价的多 worktree 来源 | 两次交互内看到全部必需证据字段；等价来源可展开为全部 worktree | stale/missing/plan 随行显示降级措辞；不复制源码或 diff | `FR-11`、`NFR-02` |
@@ -198,10 +201,10 @@ Claim 卡片必需：statement、`facets` 集合、`support_level`、所属项�
 | `FR-12` | §3、§7、`DASH-INV-08/10`、`DASH-01/04/07/10/12` | 离线可用、同源一致、快照可区分、窄屏可读；排版角色与断点可复核 |
 | `FR-14` | §10、`DASH-INV-09`、`DASH-11` | 复习状态只读呈现且给出明确更新出口 |
 | `FR-15` | §3 `L2`/`L3`、`DASH-INV-02`、`DASH-05` | 覆盖限制先于叙事且逐条可见 |
-| `NFR-03` | §7、§9、`DASH-INV-01/08`、`DASH-01/02/09` | 零网络依赖、零 CSP 违规、无障碍通道可用 |
+| `NFR-03` | §7、§9、`DASH-INV-01/08/11`、`DASH-01/02/09` | 零网络依赖、跨引擎零 CSP 违规且有阳性对照、无障碍通道可用 |
 | `NFR-04` | §6、`DASH-INV-05/10`、`DASH-12` | 定点数呈现可与 manifest 对账，同源渲染一致 |
 | `NFR-05` | §3 `L2`/`L3`、`DASH-05` | 降级在首屏可识别，不以空白伪造完整 |
-| `NFR-08` | §9、`DASH-INV-06/07`、`DASH-03` | 不可信数据结构上无法成为可执行标记或可导航目标 |
+| `NFR-08` | §9、`DASH-INV-06/07/11`、`DASH-03` | 不可信数据结构上无法成为可执行标记或可导航目标，也不能触发确定性渲染拒绝 |
 
 ## 14. 非首版边界
 

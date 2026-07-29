@@ -46,7 +46,7 @@ Skill 运行期间不得修改安装目录。升级、重装或删除 Skill 不�
 
 ```text
 ~/.codex/goodjob-career-review/
-├── config.toml                 # 工作区注册、默认岗位、忽略例外、项目角色信息
+├── config.toml                 # config_revision、默认岗位、项目级排除规则
 ├── goodjob.sqlite3             # 证据、运行、访谈与复习状态
 ├── artifacts/
 │   ├── <preparation-run-id>/   # 不可变的 report.zh-CN.md/resume.zh-CN.md/HTML/manifest 主快照

@@ -35,7 +35,7 @@
 - 项目成功索引，创建新 `ProjectSnapshot`，记为 `fresh`。
 - 项目本次失败但已有成功基线，引用最近基线，记为 `carried_forward`，同时写入本次 `ScanIssue`；该数据不得在输出中称为 fresh。
 - 项目本次失败且没有基线，记为 `failed_no_baseline`，不创建空快照。
-- Owner 配置明确排除的项目记为 `excluded`，并记录命中的规则来源。
+- Owner 在个人配置中明确排除的项目记为 `excluded`，并记录命中的规则来源（规则形态见 §4.3）。该分类只能由真实生效的排除规则产生；没有排除机制时它不得存在于任何输出、schema 取值或验收场景中。
 
 至少一个项目存在可用快照时，扫描可终态为 `completed` 或 `partial`；有任一 `carried_forward`、`failed_no_baseline` 或未解决覆盖问题时必须为 `partial`。无可用项目快照或工作区无法建立时为 `failed`。进程异常结束且未完成发布的运行在下一写会话中标为 `interrupted`；它不能成为 PreparationRun 基线，即使其中已有按项目提交的中间快照。失败或中断项目不得删除、回写或污染上一份成功快照（`FR-15`、`NFR-04`、`NFR-05`）。
 
@@ -79,7 +79,9 @@ Git 元数据损坏时，该候选项目产生 `broken_repository` 类 `ScanIssu
 - 实际环境变量文件、私钥、证书私钥、凭据存储和常见密钥命名文件；
 - 二进制、大型生成物或无法安全解码的文件。
 
-Owner 可在个人 `config.toml` 中登记少量、精确到相对文件路径的安全例外，以纳入被普通 ignore 或结构性排除误伤的示例、fixture 或源码。例外不得是目录通配，不得把实际环境变量、私钥或凭据重新纳入；`*.example`、fixture 等非秘密样本必须由精确路径和理由确认。排除类别、例外命中与未读原因均应进入覆盖摘要（`NFR-01`、`FR-15`）。
+扫描器实现的 ignore 语义是 `.gitignore` 的确定性子集，不承诺与 Git 逐条等价。子集的支持范围必须在实现中显式列举，并满足两条约束：命中不确定时偏向排除而不是纳入；遇到已知不支持的模式语法（例如需要精确锚定或需要在已排除目录下重新纳入的写法）必须产生 `ignore_pattern_unsupported` 类 `ScanIssue`，说明该模式被按何种近似语义处理，而不是静默按近似结果继续。覆盖摘要必须能让 Owner 看出“哪些内容因为哪条规则没有进入证据”（`NFR-01`、`FR-15`）。
+
+首版没有“把被 ignore 排除的文件重新纳入”的机制。被普通 ignore 或硬安全排除误伤的示例、fixture 或源码，只能通过调整项目自身的 ignore 规则或把目标目录作为新的显式工作区来纳入。精确到相对文件路径的安全例外是 `F-009`，不进入首版：它是唯一会让扫描读到本来被排除内容的入口，需要独立设计秘密拒绝校验、例外命中审计和覆盖摘要呈现，不能作为忽略规则的附带能力顺手加入。排除类别与未读原因仍必须进入覆盖摘要。
 
 ### 4.2 当前工作树是实现事实源
 
@@ -93,6 +95,17 @@ Owner 可在个人 `config.toml` 中登记少量、精确到相对文件路径�
 - “当前工作树优先”表示所有授权范围内的当前 worktree 都优先于 Git 历史描述，不表示任意挑一个分支覆盖其他分支。多 worktree 事实一致时可形成 project-scope Claim；不一致时必须按 worktree 分开或显式标冲突。
 
 每个源码型 Evidence 必须持有相对工作树路径、`SourceRevision`、内容哈希和定位器；摘要只说明为什么该位置有意义，不能复制源码正文。准备新材料前，使用者必须按当前 `ScanRun` 解析 `current`、`stale` 或 `missing` 时效；旧摘要不得静默证明当前实现（`FR-11`、`NFR-02`）。
+
+### 4.3 项目级排除与配置边界
+
+Owner 可在个人数据目录的 `config.toml` 中登记项目级排除规则，命中的项目在本次 `ScanRun` 中记为 `excluded`（§2.2），不创建快照、不产生 Evidence，也不进入合资格集合。
+
+- 规则按已发现项目的稳定身份或工作区相对位置匹配，不是文件通配；它只减少读取范围，不会让扫描读到任何本来读不到的内容。
+- 每条命中必须记录规则来源，并在覆盖摘要中与 `failed_no_baseline` 分开呈现——前者是 Owner 的选择，后者是失败，二者不得混为一类。
+- 配置不可读、格式错误或规则指向不存在的项目时，扫描继续进行并产生 `ScanIssue`，不静默忽略整份配置，也不因为配置问题使扫描失败。
+- 排除规则本身是个人配置，不进入仓库；`config_revision` 变更必须使受影响项目在下一次运行中重新评估。
+
+配置文件的职责边界到此为止。工作区注册、项目身份和角色信息由 SQLite 持有，不在 `config.toml` 中重复定义（`D-034` 已据此收窄）。
 
 ## 5. 全量索引、增量刷新与 Git 历史
 
@@ -153,7 +166,7 @@ Codex 按以下顺序工作：
 | `SCAN-01` | 一个可读工作区根或一个无效/不可读根 | 前者产生 `Workspace` 与终态 `ScanRun`；后者不产生可用快照 | 无效根为 `failed`，历史数据不被覆盖 | `FR-02`、`FR-03`、`NFR-01` |
 | `SCAN-02` | Git 根、根内 symlink loop/alias、`.git` 指针、嵌套 Git 与 manifest 非 Git 项目混合 | 稳定 Project/Worktree/Module 发现结果；空目录不是项目；循环停止且 alias 不重复解析 | 损坏 Git 根或循环记 `ScanIssue`，不降格、不阻断其他项目 | `FR-03`、`NFR-01`、`NFR-05` |
 | `SCAN-03` | 同一 common-dir 的多个 linked worktree，既有相同文件也有分支差异 | 一个 Project、多份 worktree observation；相同内容复用分析但保留来源；差异事实按 worktree 分开 | 不能读取某个工作树时问题可见；不得把不同分支拼成一个当前项目状态 | `FR-03`、`FR-11`、`FR-15` |
-| `SCAN-04` | 父项目 ignore 内层 Git；依赖、构建、缓存、`.env` 与密钥文件 | 内层仓库被独立发现；敏感和硬排项不读、不存、不输出 | 普通 ignore 不覆盖内层 Git；硬排项只报告类别，不泄露内容 | `FR-03`、`FR-15`、`NFR-01` |
+| `SCAN-04` | 父项目 ignore 内层 Git；依赖、构建、缓存、`.env` 与密钥文件；一条 Owner 项目级排除规则；一条已知不支持的 ignore 模式语法 | 内层仓库被独立发现；敏感和硬排项不读、不存、不输出；被排除项目记为 `excluded` 并注明规则来源；不支持的模式产生 `ignore_pattern_unsupported` | 普通 ignore 不覆盖内层 Git；硬排项只报告类别，不泄露内容；`excluded` 与 `failed_no_baseline` 在覆盖摘要中分开呈现；近似匹配不得静默生效 | `FR-03`、`FR-15`、`NFR-01` |
 | `SCAN-05` | 已提交、modified 与 untracked 的合资格文件、测试定义/结果元数据，以及只含计划的文档 | Evidence 记录正确 commit state/facet；测试定义与通过结果分开；计划不显示为实现 | 无实现不得生成 implemented；无匹配通过结果不得生成 test_verified | `FR-11`、`NFR-02` |
 | `SCAN-06` | 首扫后无变化、修改、删除、移动、分析器/配置变更，以及 size/mtime 被保留的内容变化 | fast 运行明确“未检测变化”；verify_content 发现所有内容变化；旧定位出现 stale/missing | 项目事务失败保留旧快照为 `carried_forward`，不冒充 fresh | `FR-04`、`FR-15`、`NFR-04`、`NFR-05` |
 | `SCAN-07` | 当前实现与超过/未超过 180 天的 Git 历史；正常默认分支、无默认分支和 detached HEAD | 默认只索引近期本地根内提交；history basis 可解释；按 Claim 可进行有记录的定向追溯 | default 不可解析时使用 HEAD-only；无法读取历史产生 ScanIssue，不阻断当前工作树索引 | `FR-06`、`NFR-02` |

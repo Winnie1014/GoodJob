@@ -28,6 +28,7 @@ GoodJob 不会仅凭 Git 作者信息把整个项目归为你的个人贡献。�
 
 ## 环境要求
 
+- macOS。当前运行时把 Git 子进程限制在 `sandbox-exec` 沙箱中运行（拒绝网络、只读授权根、禁用 hooks），并用 BSD `ps` 的启动时间作为进程身份，两者都没有跨平台实现；在其他系统上读取 Git 元数据会显式失败而不是降级；
 - Codex，支持本地 Skill；
 - Python 3.12.x，已安装在本机；当前隔离启动器固定选择 `--python 3.12`，只有更高版本不能替代；
 - [`uv`](https://docs.astral.sh/uv/)；

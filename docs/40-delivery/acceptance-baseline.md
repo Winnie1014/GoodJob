@@ -11,6 +11,7 @@
 - 每个实现任务或行为变更必须引用本基线中的验收项，并补充当时真实存在的门禁命令。
 - 仓库已包含私有首版 Skill、扫描器、SQLite schema、离线前端和自动化测试；任何“已通过”的结论仍必须指向同一份代码状态和对应的可复现证据。代码存在、局部单测或安装副本都不等于全部 `IMP-*`、真实工作区或发布验收已经通过。
 - 部分失败可以通过，但必须在 Coverage/ScanIssue 中显式呈现；静默漏扫不能通过。
+- 门禁本身也要成立。任何校验、构建或渲染门禁必须在任意真实工作区内容下有效：只在固定夹具下成立的门禁不算门禁；把结构化数据扁平化成字符串后再模式匹配的门禁不算门禁；以源码文本匹配代替行为断言的门禁不算门禁（`D-043`、`D-044`）。发现由用户内容触发的确定性拒绝时，按缺陷处理，不按“输入不合法”处理。
 - Owner 核对文档不等于授权额外范围。实现任务、依赖和公共契约的变更仍须显式审查。
 
 ## 2. 文档阶段 DoD
@@ -59,7 +60,7 @@
 | IMP-01 | Skill 入口与 JD | 用户显式调用 Skill，分别提供无 JD、有效文本/文件 JD、不可读/目录/不可解码 JD | 参数缺失时只追问缺失项；无 JD 可继续并显示假设；坏 JD 在更正或明确 `continue_without_jd` 前不创建 JobInput、RoleLens、ScanRun/PreparationRun |
 | IMP-02 | 项目发现 | Git 根、.git 指针、嵌套 Git、manifest 非 Git 项目混合存在；另测一个可读空工作区 | 每个真实项目均有稳定 identity；空目录不成为项目，并返回空覆盖、下一步提示和 failed ScanRun，不生成准备快照 |
 | IMP-03 | 工作树归并 | 同一 common-dir 有多个 linked worktree，其中一个 common-dir 位于授权根外；另含根内 `.git` 目录指向根外 common-dir；工作树间既有相同内容也有分支差异 | 根内候选检查、候选绑定关系授权、路径/身份绑定元数据授权和双向校验全部通过后只生成一个项目；相同内容不重复解析但可展开全部来源；差异形成 worktree-scope/冲突 Claim；根外只出现关系、HEAD/ref，index/dirty 与源码 commit state 明示不可用，非法外部 config 不影响扫描 |
-| IMP-04 | 嵌套 ignore | 父仓库 ignore 内层 Git 仓库 | 内层仓库仍独立扫描，并应用自己的 ignore |
+| IMP-04 | 嵌套 ignore 与忽略语义边界 | 父仓库 ignore 内层 Git 仓库；另测一条已知不支持的 ignore 模式语法，以及一条命中的 Owner 项目级排除规则 | 内层仓库仍独立扫描，并应用自己的 ignore；不支持的模式产生 `ignore_pattern_unsupported` ScanIssue 并说明实际近似语义，不静默生效；被排除项目记为 `excluded` 并在覆盖摘要中与 `failed_no_baseline` 分开呈现 |
 | IMP-05 | 路径与敏感排除 | 存在指向根外源码的普通 symlink、symlink 环、多个别名指向同一目录、显式根外 JD、.env、密钥、依赖、构建和缓存目录 | 普通 symlink 不跟随；环不会递归/挂死；别名按规范实路径去重；JD 只作输入；秘密/生成物不读取、不存储、不输出；覆盖说明排除类别 |
 | IMP-06 | 当前状态 | 同时存在已提交、已修改和未跟踪代码/文档 | 全部非忽略内容可成为证据，并正确标记来源状态 |
 | IMP-07 | 证据真实性 | 分别提交：计划文档→implemented、测试定义→test_verified、匹配 revision 的通过结果→test_verified | 前两类整批拒绝且不半提交；计划可改为 documented/planned，测试定义只可 test_defined；匹配通过结果可 test_verified |
@@ -83,7 +84,7 @@
 | IMP-25 | 复习状态谱系 | 同一目标分别仅改写 statement/顺序/行号/等价 Evidence，以及修改概念、机制、facet、conflict、evidence validity、角色/结果锚点或 gap 状态；另测相似题面跨项目 | 前一组 canonical projection/hash 不变并延续；后一组必须新 hash 且“需重评”；无法验证投影等价时保守重评；不直接使用 Revision/Gap ID，不跨项目合并 |
 | IMP-26 | 个人数据保留 | 构造多次扫描、快照、英文导出和工作稿，并升级/重装 Skill | 无自动删除/归档；每次 scan/prepare 显示 SQLite/artifacts/exports/drafts 字节数和快照数量；状态完整保留且仓库不含个人数据 |
 | IMP-27 | 英文导出中断恢复 | 候选生成阶段确认零文件；发布阶段同时存在成功导出、未知目录和新 ExportAttempt，分别在写 temp、原子改名后、DB 提交前杀进程，并伪造 PID 复用后重试 | 首次写盘前 attempt 已记录 PID+启动标识；只在确认 owner 消失后标 interrupted；只清理预登记 temp/无 DerivedExport 的 final；不碰成功/未知目录；重试新 attempt，latest 不变 |
-| IMP-28 | 看板呈现与安全边界 | 对同一冻结 `ReportBundle` 执行 `DASH-01` 至 `DASH-12`：断网双击、全视图交互、注入语料、375px 视口、`partial` 首屏、混合时效证据、打印、纯键盘、`forced-colors`/灰度、双快照与跨版本深链、复习三态、Markdown/HTML 逐条比对 | 网络面板零请求、控制台零 CSP 违规与零脚本错误；注入语料全部为文本且无可点击外部链接；无横向滚动；`partial` 首屏降级带非空不可折叠；两次交互内到完整证据指针；打印展开全部折叠与 locator；键盘全流程可达；状态在无色通道下仍可辨；跨版本深链明确报错；无写状态控件；Markdown 与 HTML 对同一 Claim 呈现一致 |
+| IMP-28 | 看板呈现与安全边界 | 对同一冻结 `ReportBundle` 执行 `DASH-01` 至 `DASH-12`：断网双击、Chromium/WebKit 双引擎全视图交互、注入语料（含 `style="…"` 片段）、375px 视口、`partial` 首屏、混合时效证据、打印、纯键盘、`forced-colors`/灰度、双快照与跨版本深链、复习三态、Markdown/HTML 逐条比对 | 两个引擎网络面板零请求、控制台零 CSP 违规与零脚本错误，且“注入 `style` 属性触发违规”的阳性对照成立；注入语料全部为文本、无可点击外部链接，且不导致渲染被拒；无横向滚动；`partial` 首屏降级带非空不可折叠；两次交互内到完整证据指针；打印展开全部折叠与 locator；键盘全流程可达；状态在无色通道下仍可辨；跨版本深链明确报错；无写状态控件；Markdown 与 HTML 对同一 Claim 呈现一致 |
 
 ## 4. 真实工作区只读验收
 
@@ -106,7 +107,9 @@
 ## 5. 质量与安全门禁
 
 - Python：单元测试、类型检查、lint、格式检查和 SQLite migration 测试全部通过；当前命令以根目录 README 与 runtime manifest 为准，变更时同步更新。
-- TypeScript 前端：类型检查、lint、单元测试和可复现构建通过；构建产物不得引用远端 CDN、远端字体或同目录静态资源。构建门禁还必须静态检出 `ADR-0008` 决策 6 列出的禁用 API，校验 CSP meta 中的哈希与实际内联内容一致，并验证同一 `ReportBundle` 重复渲染产出逐字节相同的入口文件。
+- TypeScript 前端：类型检查、lint、单元测试和可复现构建通过；构建产物不得引用远端 CDN、远端字体或同目录静态资源。构建门禁还必须静态检出 `ADR-0008` 决策 6 列出的禁用 API（含 `element.style` 的任何属性赋值），校验 CSP meta 中的哈希与实际内联内容一致，并验证同一 `ReportBundle` 重复渲染产出逐字节相同的入口文件。静态门禁不得以“源码中必须出现某段字符串或某句 UI 文案”代替行为断言（`ADR-0008` 决策 8、`DASH-INV-11`）。
+- 看板行为：在真实渲染产物上跨 Chromium 与 WebKit 各执行一次可机检核对，断言干净加载零控制台错误、零外部请求、多宽度 × 全视图零横向溢出、打印分支生效，并以“注入 `style` 属性必须触发 CSP 违规”为阳性对照。核对脚本随运行时前端一起维护，不以设计原型中的同类脚本充当证据。
+- 门禁的反向用例：至少覆盖一条含 `style=` 的 `code` token 能正常渲染，一条引用命令行片段（如 `rg -i`）的非个人化 Claim 能通过归因校验。二者任一失败即为门禁缺陷。
 - 端到端：合成工作区覆盖嵌套仓库、symlink 环/别名、linked worktree 与根外伪造指针、dirty/untracked、三阶段失效哈希、未知语言、进程中断和部分失败。
 - 视觉：桌面与窄窗口截图不存在遮挡、横向溢出、不可读对比度或无反馈交互。
 - 隐私：数据库、argv、环境变量、stdout/stderr、诊断、产物和仓库扫描均不包含原始 SessionCapability、环境变量值、密钥、完整源码快照或完整面试对话；回执只含 scope/notice/session binding digest，根外 Git 不含历史/object/blob/diff/config。
