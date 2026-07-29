@@ -2255,7 +2255,8 @@ class AnalysisService:
                 raise InvalidInputError(
                     "non-personal Claim statement must begin with its exact scope subject token"
                 )
-            detected = AnalysisService._detected_personal_attribution(statement)
+            attribution_prose = AnalysisService._personal_attribution_prose(draft.statement_tokens)
+            detected = AnalysisService._detected_personal_attribution(attribution_prose)
             if detected is not None and not AnalysisService._attribution_covers(
                 draft.personal_attribution,
                 detected,
@@ -2487,6 +2488,11 @@ class AnalysisService:
                 resolved_ref = claim_id_by_ref[token.ref_id]
             resolved.append(token.as_json(resolved_ref))
         return resolved, "".join(token.value for token in tokens)
+
+    @staticmethod
+    def _personal_attribution_prose(tokens: tuple[InlineToken, ...]) -> str:
+        # Anchored omitted-subject patterns start at the participating prose sequence.
+        return "".join(token.value for token in tokens if token.kind in {"text", "emphasis"})
 
     @staticmethod
     def _non_personal_subject(draft: ClaimDraft) -> str:

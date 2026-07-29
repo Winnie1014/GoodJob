@@ -462,6 +462,82 @@ def test_record_analysis_atomically_freezes_claims_assessment_and_retry(
     assert "<script>" not in stored_tokens
 
 
+@pytest.mark.parametrize(
+    ("prose_before", "code_value", "prose_after"),
+    (
+        ("通过 ", "rg -i", " 做大小写不敏感检索并汇总候选文件。"),
+        ("在遍历中使用 ", "for (i = 0; i < n; i++)", " 控制候选批次。"),
+    ),
+)
+def test_non_personal_claim_ignores_code_tokens_for_prose_attribution(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    prose_before: str,
+    code_value: str,
+    prose_after: str,
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    prepared, run_id, lens_id, project_id = _prepare(database, workspace, receipt_id)
+    evidence = _evidence_by_kind(prepared)
+    request = _analysis_request(
+        run_id=run_id,
+        lens_id=lens_id,
+        project_id=project_id,
+        implementation_id=cast(str, evidence["implementation"]["evidence_id"]),
+        test_id=cast(str, evidence["test_definition"]["evidence_id"]),
+    )
+    statement_tokens = [
+        {"kind": "text", "value": "该项目"},
+        {"kind": "text", "value": prose_before},
+        {"kind": "code", "value": code_value},
+        {"kind": "text", "value": prose_after},
+    ]
+    _dict(_list(request["claim_drafts"])[0])["statement_tokens"] = statement_tokens
+
+    result = AnalysisService(database).record_analysis(
+        workspace_path=workspace,
+        authorization_receipt_id=receipt_id,
+        request_value=request,
+    )
+
+    assert result["run_status"] == "ready"
+    connection = sqlite3.connect(data_paths.database_file)
+    stored_statement = connection.execute("SELECT statement FROM claim_revisions").fetchone()[0]
+    connection.close()
+    assert stored_statement == "该项目" + prose_before + code_value + prose_after
+
+
+def test_non_personal_claim_still_requires_text_scope_subject_before_code(
+    tmp_path: Path,
+    data_paths: DataPaths,
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    prepared, run_id, lens_id, project_id = _prepare(database, workspace, receipt_id)
+    evidence = _evidence_by_kind(prepared)
+    request = _analysis_request(
+        run_id=run_id,
+        lens_id=lens_id,
+        project_id=project_id,
+        implementation_id=cast(str, evidence["implementation"]["evidence_id"]),
+        test_id=cast(str, evidence["test_definition"]["evidence_id"]),
+    )
+    _dict(_list(request["claim_drafts"])[0])["statement_tokens"] = [
+        {"kind": "code", "value": "我实现了"},
+        {"kind": "text", "value": "核心计算流程。"},
+    ]
+
+    with pytest.raises(InvalidInputError):
+        AnalysisService(database).record_analysis(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=request,
+        )
+
+
 def test_record_analysis_rejects_another_session_before_history_revalidation(
     tmp_path: Path,
     data_paths: DataPaths,
