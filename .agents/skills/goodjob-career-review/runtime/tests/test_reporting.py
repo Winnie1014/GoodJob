@@ -23,6 +23,7 @@ from goodjob.reporting import (
     canonical_report_bundle,
     render_dashboard_html,
     render_report_markdown,
+    report_bundle_sha256,
 )
 from goodjob.review import ReviewService
 from goodjob.scanner import WorkspaceScanner
@@ -266,6 +267,47 @@ def _latest(paths: DataPaths) -> dict[str, object]:
     )
 
 
+@pytest.mark.parametrize(
+    "token_value",
+    (
+        '<div style="color:red">hi</div>',
+        "style=",
+        "<img src=x onerror=alert(1)>",
+    ),
+)
+def test_dashboard_renders_markup_like_code_tokens_as_inert_data(token_value: str) -> None:
+    bundle: dict[str, object] = {
+        "contract_version": "report-bundle-v1",
+        "tokens": [{"kind": "code", "value": token_value}],
+    }
+    bundle["bundle_sha256"] = report_bundle_sha256(bundle)
+
+    html = render_dashboard_html(bundle)
+    assert html == render_dashboard_html(bundle)
+    marker = '<script id="report-data" type="application/json">'
+    embedded_data = html.split(marker, maxsplit=1)[1].split("</script>", maxsplit=1)[0]
+    for character, escape in (("<", "\\u003c"), (">", "\\u003e"), ("=", "\\u003d")):
+        assert character not in embedded_data
+        if character in token_value:
+            assert escape in embedded_data
+    document_structure = html.replace(f"{marker}{embedded_data}</script>", "", 1)
+    assert " style=" not in document_structure.lower()
+    assert "<img" not in document_structure.lower()
+
+
+def test_dashboard_embedding_preserves_canonical_bundle_digest() -> None:
+    bundle: dict[str, object] = {
+        "contract_version": "report-bundle-v1",
+        "x": [{"kind": "code", "value": '<div style="color:red">hi</div>'}],
+    }
+    expected_digest = "ba683a8d440b45447ddaef2ff3bc8d5bbc9794b1cee91f33440906450e6e200e"
+    assert report_bundle_sha256(bundle) == expected_digest
+
+    bundle["bundle_sha256"] = expected_digest
+    render_dashboard_html(bundle)
+    assert report_bundle_sha256(bundle) == expected_digest
+
+
 def test_report_bundle_and_snapshot_are_deterministic_safe_and_idempotent(
     tmp_path: Path,
     data_paths: DataPaths,
@@ -292,7 +334,7 @@ def test_report_bundle_and_snapshot_are_deterministic_safe_and_idempotent(
     assert "unsafe-inline" not in html
     assert "unsafe-eval" not in html
     assert "<img onerror=alert(1)>" not in html
-    assert "\\u003cimg onerror=alert(1)\\u003e" in html
+    assert "\\u003cimg onerror\\u003dalert(1)\\u003e" in html
     assert "\\u2028" in html
     assert "\\u2029" in html
     assert "\\u202e" in html
