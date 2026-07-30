@@ -155,6 +155,22 @@ def _direct_scanner(data_dir: Path, workspace: Path) -> tuple[WorkspaceScanner, 
     return WorkspaceScanner(database), receipt.authorization_receipt_id
 
 
+def _write_project_exclusions(
+    data_dir: Path,
+    rules: list[dict[str, str]],
+) -> None:
+    lines = ["[goodjob]", "config_version = 1"]
+    for rule in rules:
+        lines.extend(
+            [
+                "",
+                "[[goodjob.excluded_projects]]",
+                *(f"{key} = {json.dumps(value)}" for key, value in rule.items()),
+            ]
+        )
+    DataPaths(data_dir).config_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def test_known_binary_assets_are_normal_exclusions_but_invalid_source_is_reported(
     tmp_path: Path,
 ) -> None:
@@ -1683,3 +1699,291 @@ def test_project_failure_carries_forward_its_baseline_and_keeps_other_projects_f
     assert refreshed.status == "partial"
     assert refreshed.coverage["fresh_projects"] == 1
     assert refreshed.coverage["carried_forward_projects"] == 1
+
+
+def test_relative_project_exclusion_precedes_snapshot_and_stays_distinct_from_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    for name in ("included", "excluded", "failed"):
+        project = workspace / name
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text(f"[project]\nname='{name}'\n", encoding="utf-8")
+        (project / "main.py").write_text(f"NAME = '{name}'\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    scanner, receipt_id = _direct_scanner(data_dir, workspace)
+    _write_project_exclusions(
+        data_dir,
+        [
+            {
+                "match": "relative_location",
+                "value": "./excluded",
+                "reason": "Owner chose not to use this project for role preparation.",
+            }
+        ],
+    )
+    original_read_project = scanner._read_project
+
+    def fail_selected_project(
+        *,
+        plan: ProjectPlan,
+        config_revision: str,
+        change_detection_mode: Literal["fast", "verify_content"] | None,
+        nested_project_roots: set[Path],
+    ) -> ProjectData:
+        if plan.display_name == "failed":
+            raise OSError("injected project failure")
+        return original_read_project(
+            plan=plan,
+            config_revision=config_revision,
+            change_detection_mode=change_detection_mode,
+            nested_project_roots=nested_project_roots,
+        )
+
+    monkeypatch.setattr(scanner, "_read_project", fail_selected_project)
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="project-exclusion-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.status == "partial"
+    assert result.coverage["fresh_projects"] == 1
+    assert result.coverage["excluded_projects"] == 1
+    assert result.coverage["failed_no_baseline_projects"] == 1
+    assert result.coverage["project_exclusions"] == [
+        {
+            "project_display_name": "excluded",
+            "match": "relative_location",
+            "value": "./excluded",
+            "reason": "Owner chose not to use this project for role preparation.",
+        }
+    ]
+    role_context = _object_field(result.coverage, "role_lens_context")
+    context_projects = role_context["projects"]
+    assert isinstance(context_projects, list)
+    excluded_context = next(
+        item
+        for item in context_projects
+        if isinstance(item, dict) and item.get("display_name") == "excluded"
+    )
+    assert excluded_context["snapshot_disposition"] == "excluded"
+    assert excluded_context["project_snapshot_id"] is None
+    assert excluded_context["evidence_count"] == 0
+
+    with scanner._database.read_connection() as connection:
+        excluded_row = connection.execute(
+            """
+            SELECT p.project_id, srp.snapshot_disposition, srp.project_snapshot_id
+            FROM scan_run_projects AS srp
+            JOIN projects AS p ON p.project_id = srp.project_id
+            WHERE srp.scan_run_id = ? AND p.display_name = 'excluded'
+            """,
+            (result.scan_run_id,),
+        ).fetchone()
+        assert excluded_row is not None
+        assert excluded_row["snapshot_disposition"] == "excluded"
+        assert excluded_row["project_snapshot_id"] is None
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM project_snapshots WHERE scan_run_id = ? AND project_id = ?",
+                (result.scan_run_id, excluded_row["project_id"]),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM evidence WHERE project_id = ?",
+                (excluded_row["project_id"],),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_identity_key_project_exclusion_is_exact(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    selected = workspace / "selected"
+    other = workspace / "other"
+    for project in (selected, other):
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        (project / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    scanner, receipt_id = _direct_scanner(data_dir, workspace)
+    _write_project_exclusions(
+        data_dir,
+        [
+            {
+                "match": "identity_key",
+                "value": str(selected.resolve()),
+                "reason": "Identity-specific exclusion.",
+            }
+        ],
+    )
+
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="identity-exclusion-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.coverage["fresh_projects"] == 1
+    assert result.coverage["excluded_projects"] == 1
+    assert result.coverage["project_exclusions"] == [
+        {
+            "project_display_name": "selected",
+            "match": "identity_key",
+            "value": str(selected.resolve()),
+            "reason": "Identity-specific exclusion.",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("config_text", "expected_issue", "expected_excluded"),
+    (
+        (
+            "[goodjob\nconfig_version = 1\n",
+            "project_exclusion_config_invalid",
+            0,
+        ),
+        (
+            """
+[goodjob]
+config_version = 1
+
+[[goodjob.excluded_projects]]
+match = "relative_location"
+value = "excluded"
+
+[[goodjob.excluded_projects]]
+match = "relative_location"
+value = "excluded"
+reason = "The valid rule must still apply."
+""",
+            "project_exclusion_rule_invalid",
+            1,
+        ),
+        (
+            """
+[goodjob]
+config_version = 1
+
+[[goodjob.excluded_projects]]
+match = "relative_location"
+value = "not-present"
+reason = "This rule should be visible as unmatched."
+""",
+            "project_exclusion_rule_unmatched",
+            0,
+        ),
+    ),
+)
+def test_bad_project_exclusion_config_warns_without_discarding_other_projects(
+    tmp_path: Path,
+    config_text: str,
+    expected_issue: str,
+    expected_excluded: int,
+) -> None:
+    workspace = tmp_path / "workspace"
+    for name in ("included", "excluded"):
+        project = workspace / name
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text(f"[project]\nname='{name}'\n", encoding="utf-8")
+        (project / "main.py").write_text(f"NAME = '{name}'\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    scanner, receipt_id = _direct_scanner(data_dir, workspace)
+    DataPaths(data_dir).config_file.write_text(config_text, encoding="utf-8")
+
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision=f"bad-config-{expected_issue}",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.status == "partial"
+    assert result.coverage["excluded_projects"] == expected_excluded
+    assert result.coverage["fresh_projects"] == 2 - expected_excluded
+    matching_issues = [issue for issue in result.issues if issue.kind == expected_issue]
+    assert len(matching_issues) == 1
+    assert matching_issues[0].severity == "warning"
+
+
+def test_unreadable_project_exclusion_config_warns_and_scan_continues(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "included"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='included'\n", encoding="utf-8")
+    (project / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    scanner, receipt_id = _direct_scanner(data_dir, workspace)
+    config_file = DataPaths(data_dir).config_file
+    config_file.unlink()
+    config_file.mkdir()
+
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="unreadable-config-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.coverage["fresh_projects"] == 1
+    assert any(
+        issue.kind == "project_exclusion_config_unreadable" and issue.severity == "warning"
+        for issue in result.issues
+    )
+
+
+def test_config_revision_re_evaluates_project_exclusions(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    selected = workspace / "selected"
+    other = workspace / "other"
+    for project in (selected, other):
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        (project / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    scanner, receipt_id = _direct_scanner(data_dir, workspace)
+    _write_project_exclusions(
+        data_dir,
+        [
+            {
+                "match": "relative_location",
+                "value": "selected",
+                "reason": "Excluded in the first revision.",
+            }
+        ],
+    )
+    first = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="project-exclusion-v1",
+        authorization_receipt_id=receipt_id,
+    )
+    _write_project_exclusions(data_dir, [])
+
+    second = scanner.refresh(
+        workspace_id=first.workspace_id,
+        config_revision="project-exclusion-v2",
+        change_detection_mode="fast",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert first.coverage["excluded_projects"] == 1
+    assert first.coverage["fresh_projects"] == 1
+    assert second.coverage["excluded_projects"] == 0
+    assert second.coverage["fresh_projects"] == 2
+    with scanner._database.read_connection() as connection:
+        selected_dispositions = [
+            str(row["snapshot_disposition"])
+            for row in connection.execute(
+                """
+                SELECT srp.snapshot_disposition
+                FROM scan_run_projects AS srp
+                JOIN projects AS p ON p.project_id = srp.project_id
+                WHERE p.identity_key = ?
+                ORDER BY srp.scan_run_id
+                """,
+                (str(selected.resolve()),),
+            ).fetchall()
+        ]
+    assert sorted(selected_dispositions) == ["excluded", "fresh"]

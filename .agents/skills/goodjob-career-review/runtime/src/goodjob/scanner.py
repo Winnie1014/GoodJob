@@ -30,6 +30,7 @@ from goodjob.adapters import (
     adapter_version,
     analyze_file,
 )
+from goodjob.config import ExcludedProjectRule, ProjectExclusionConfig, load_project_exclusions
 from goodjob.db import Database
 from goodjob.errors import InvalidInputError
 from goodjob.process_identity import owner_process_stopped, process_identity
@@ -972,7 +973,7 @@ class WorkspaceScanner:
                 ).fetchall()
             }
         )
-        coverage = self._coverage(scan_run_id, dispositions, Counter())
+        coverage = self._coverage(scan_run_id, dispositions, Counter(), [])
         coverage["overview_provenance"] = "reconstructed_without_exclusion_counts"
         coverage["excluded_by_category_available"] = False
         return coverage
@@ -1003,6 +1004,7 @@ class WorkspaceScanner:
             authorization_receipt_id=authorization_receipt_id,
             started_at=scan_started_at,
         )
+        exclusion_config = load_project_exclusions(self._database.paths.config_file)
         try:
             return self._run_started(
                 root=root,
@@ -1013,6 +1015,7 @@ class WorkspaceScanner:
                 config_revision=config_revision,
                 external_git_grants=external_git_grants,
                 scan_started_at=scan_started_at,
+                exclusion_config=exclusion_config,
             )
         except BaseException:
             with suppress(Exception):
@@ -1030,17 +1033,41 @@ class WorkspaceScanner:
         config_revision: str,
         external_git_grants: tuple[ExternalGitGrant, ...],
         scan_started_at: str,
+        exclusion_config: ProjectExclusionConfig,
     ) -> ScanResult:
         plans, discovery_issues = self._discover(root, external_git_grants, scan_started_at)
-        self._persist_issues(scan_run_id, None, tuple(discovery_issues))
-        all_issues = list(discovery_issues)
+        exclusion_matches, unmatched_issues = self._match_project_exclusions(
+            root, plans, exclusion_config.rules
+        )
+        config_issues = [
+            _issue(issue.kind, "warning", issue.message, issue.remediation)
+            for issue in exclusion_config.issues
+        ]
+        run_issues = [*config_issues, *discovery_issues, *unmatched_issues]
+        self._persist_issues(scan_run_id, None, tuple(run_issues))
+        all_issues = list(run_issues)
         dispositions: Counter[str] = Counter()
         excluded: Counter[str] = Counter()
+        project_exclusions: list[dict[str, str]] = []
         discovered_ids: set[str] = set()
 
         for plan in plans:
             project = self._upsert_project(workspace_id, scan_run_id, root, plan)
             discovered_ids.add(project.project_id)
+            matching_rules = exclusion_matches.get(plan.identity_key, ())
+            if matching_rules:
+                chosen_rule = matching_rules[0]
+                self._record_project_exclusion(scan_run_id, project.project_id)
+                dispositions["excluded"] += 1
+                project_exclusions.append(
+                    {
+                        "project_display_name": project.display_name,
+                        "match": chosen_rule.match,
+                        "value": chosen_rule.value,
+                        "reason": chosen_rule.reason,
+                    }
+                )
+                continue
             try:
                 project_data = self._read_project(
                     plan=plan,
@@ -1083,7 +1110,12 @@ class WorkspaceScanner:
         all_issues.extend(carried_issues)
         dispositions.update(carried_dispositions)
         status = self._final_status(scan_run_id, dispositions, all_issues)
-        coverage = self._coverage(scan_run_id, dispositions, excluded)
+        coverage = self._coverage(
+            scan_run_id,
+            dispositions,
+            excluded,
+            project_exclusions,
+        )
         self._finish_run(scan_run_id, status, coverage)
         return ScanResult(
             scan_run_id=scan_run_id,
@@ -1094,6 +1126,42 @@ class WorkspaceScanner:
             coverage=coverage,
             issues=tuple(all_issues),
         )
+
+    @staticmethod
+    def _match_project_exclusions(
+        root: Path,
+        plans: list[ProjectPlan],
+        rules: tuple[ExcludedProjectRule, ...],
+    ) -> tuple[dict[str, tuple[ExcludedProjectRule, ...]], list[ScanIssueDraft]]:
+        matches: dict[str, tuple[ExcludedProjectRule, ...]] = {}
+        matched_rule_indexes: set[int] = set()
+        for plan in plans:
+            relative_location = _relative_path(plan.worktrees[0].root, root)
+            project_matches = tuple(
+                rule
+                for rule in rules
+                if rule.matches(
+                    identity_key=plan.identity_key,
+                    relative_location=relative_location,
+                )
+            )
+            if project_matches:
+                matches[plan.identity_key] = project_matches
+                matched_rule_indexes.update(rule.index for rule in project_matches)
+        unmatched = [
+            _issue(
+                "project_exclusion_rule_unmatched",
+                "warning",
+                (
+                    f"Project exclusion rule {rule.index} matched no discovered project "
+                    f"by {rule.match}: {_short(rule.value, 180)}."
+                ),
+                "Correct the exact project identity or workspace-relative location.",
+            )
+            for rule in rules
+            if rule.index not in matched_rule_indexes
+        ]
+        return matches, unmatched
 
     @staticmethod
     def _workspace_root_issue(root: Path) -> ScanIssueDraft | None:
@@ -2590,7 +2658,10 @@ class WorkspaceScanner:
                             "file_too_large",
                             "warning",
                             "A file exceeded the configured local indexing limit.",
-                            "Add a narrow safe exception only if this file is source material.",
+                            (
+                                "Review this file manually if needed; it remains outside the "
+                                "local index while other files continue."
+                            ),
                             relative,
                         )
                     )
@@ -3569,6 +3640,18 @@ class WorkspaceScanner:
             self._insert_issues(connection, scan_run_id, project_id, (issue,))
         return disposition
 
+    def _record_project_exclusion(self, scan_run_id: str, project_id: str) -> None:
+        with self._database.write_transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO scan_run_projects(
+                    scan_run_id, project_id, snapshot_disposition, project_snapshot_id
+                )
+                VALUES (?, ?, 'excluded', NULL)
+                """,
+                (scan_run_id, project_id),
+            )
+
     def _carry_forward_missing_projects(
         self,
         *,
@@ -3694,6 +3777,7 @@ class WorkspaceScanner:
         scan_run_id: str,
         dispositions: Counter[str],
         excluded: Counter[str],
+        project_exclusions: list[dict[str, str]],
     ) -> dict[str, object]:
         with self._database.read_connection() as connection:
             worktrees = int(
@@ -3776,6 +3860,15 @@ class WorkspaceScanner:
             "carried_forward_projects": dispositions["carried_forward"],
             "failed_no_baseline_projects": dispositions["failed_no_baseline"],
             "excluded_projects": dispositions["excluded"],
+            "project_exclusions": sorted(
+                project_exclusions,
+                key=lambda item: (
+                    item["project_display_name"],
+                    item["match"],
+                    item["value"],
+                    item["reason"],
+                ),
+            ),
             "worktrees": worktrees,
             "modules": modules,
             "indexed_files": files,
