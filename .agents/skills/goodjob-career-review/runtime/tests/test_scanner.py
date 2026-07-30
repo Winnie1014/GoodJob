@@ -20,7 +20,14 @@ from goodjob.auth import AuthorizationRepository, AuthorizationRequest, generate
 from goodjob.cli import run
 from goodjob.db import Database
 from goodjob.paths import DataPaths
-from goodjob.scanner import ProjectData, ProjectPlan, WorkspaceScanner, _open_regular_file
+from goodjob.scanner import (
+    IGNORE_PATTERN_SYNTAX,
+    IgnoreMatcher,
+    ProjectData,
+    ProjectPlan,
+    WorkspaceScanner,
+    _open_regular_file,
+)
 
 RUNTIME_DIR = Path(__file__).resolve().parents[1]
 NOTICE_VERSION = "goodjob-source-analysis-v1"
@@ -1987,3 +1994,116 @@ def test_config_revision_re_evaluates_project_exclusions(tmp_path: Path) -> None
             ).fetchall()
         ]
     assert sorted(selected_dispositions) == ["excluded", "fresh"]
+
+
+def test_ignore_syntax_capabilities_are_structurally_enumerated() -> None:
+    capabilities = dict(IGNORE_PATTERN_SYNTAX)
+
+    assert {
+        "literal_name",
+        "star_and_question_wildcards",
+        "directory_suffix",
+        "negation_prefix",
+        "path_pattern",
+        "comment",
+        "blank_line",
+    } <= capabilities.keys()
+
+
+def test_git_root_anchor_is_currently_approximated_at_any_depth(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("/build/\n", encoding="utf-8")
+
+    matcher, _ = IgnoreMatcher.load(tmp_path, [".gitignore"])
+
+    assert matcher.matches("nested/build/output.js") is True
+
+
+def test_git_negation_below_excluded_directory_currently_reincludes(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("ignored/\n!ignored/keep.py\n", encoding="utf-8")
+
+    matcher, _ = IgnoreMatcher.load(tmp_path, [".gitignore"])
+
+    assert matcher.matches("ignored/drop.py") is True
+    assert matcher.matches("ignored/keep.py") is False
+
+
+def test_git_single_star_path_currently_crosses_directories(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("src/*.py\n", encoding="utf-8")
+
+    matcher, issues = IgnoreMatcher.load(tmp_path, [".gitignore"])
+
+    assert matcher.matches("src/a/b.py") is True
+    assert any(
+        issue.kind == "ignore_pattern_unsupported"
+        and "src/*.py" in issue.message
+        and 'match "/"' in issue.remediation
+        for issue in issues
+    )
+
+
+def test_unsupported_ignore_patterns_report_source_raw_line_and_approximation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".gitignore").write_text(
+        "/build/\nignored/\n!ignored/keep.py\n**/cache/\n",
+        encoding="utf-8",
+    )
+
+    _, issues = IgnoreMatcher.load(tmp_path, [".gitignore"])
+
+    unsupported = [issue for issue in issues if issue.kind == "ignore_pattern_unsupported"]
+    assert len(unsupported) == 3
+    assert all(issue.severity == "warning" for issue in unsupported)
+    assert {issue.relative_path for issue in unsupported} == {".gitignore"}
+    assert any(
+        "/build/" in issue.message and "any depth" in issue.remediation for issue in unsupported
+    )
+    assert any(
+        "!ignored/keep.py" in issue.message and "last matching rule wins" in issue.remediation
+        for issue in unsupported
+    )
+    assert any(
+        "**/cache/" in issue.message and "Python fnmatch" in issue.remediation
+        for issue in unsupported
+    )
+
+
+def test_ignore_approximations_are_visible_in_coverage_without_failing_scan(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    approximated = workspace / "approximated"
+    unaffected = workspace / "unaffected"
+    for project in (approximated, unaffected):
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        (project / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (approximated / ".gitignore").write_text(
+        "/build/\nignored/\n!ignored/keep.py\n**/cache/\n",
+        encoding="utf-8",
+    )
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="ignore-approximation-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.status == "partial"
+    assert result.status != "failed"
+    assert result.coverage["fresh_projects"] == 2
+    coverage_issues = result.coverage["ignore_pattern_issues"]
+    assert isinstance(coverage_issues, list)
+    assert len(coverage_issues) == 3
+    assert all(
+        isinstance(issue, dict)
+        and issue.get("project_display_name") == "approximated"
+        and issue.get("source_ignore_file") == ".gitignore"
+        and issue.get("severity") == "warning"
+        and isinstance(issue.get("raw_pattern_and_reason"), str)
+        and isinstance(issue.get("approximation"), str)
+        for issue in coverage_issues
+    )
+    unsupported = [issue for issue in result.issues if issue.kind == "ignore_pattern_unsupported"]
+    assert len(unsupported) == 3

@@ -58,6 +58,17 @@ MAX_ROLE_LENS_CONTEXT_EVIDENCE_SAMPLES = 500
 MAX_ROLE_LENS_CONTEXT_EVIDENCE_PER_PROJECT = 10
 SCAN_OVERVIEW_CONTRACT_VERSION = "scan-overview-v1"
 MAX_SCAN_OVERVIEW_ISSUES = 200
+IGNORE_PATTERN_SYNTAX: tuple[tuple[str, str], ...] = (
+    ("literal_name", "supported"),
+    ("star_and_question_wildcards", "supported_with_python_fnmatch_approximation"),
+    ("directory_suffix", "supported"),
+    ("negation_prefix", "supported_as_last_match_reinclusion"),
+    ("path_pattern", "supported_with_python_fnmatch_approximation"),
+    ("comment", "supported"),
+    ("blank_line", "supported"),
+    ("root_anchor", "approximated_as_unanchored"),
+    ("double_star", "approximated_as_repeated_star"),
+)
 GIT_COMMAND_TIMEOUT_SECONDS = 10.0
 GIT_EXECUTABLE_CANDIDATES = (
     Path("/Applications/Xcode.app/Contents/Developer/usr/bin/git"),
@@ -753,14 +764,89 @@ class IgnoreMatcher:
                 line = raw_line.strip()
                 if not line or line.startswith("#"):
                     continue
+                raw_pattern = line
                 include = line.startswith("!")
                 if include:
                     line = line[1:]
+                if line.startswith("/"):
+                    issues.append(
+                        cls._unsupported_issue(
+                            relative,
+                            raw_pattern,
+                            (
+                                'the leading "/" is removed and the remaining pattern may '
+                                "match the same name at any depth"
+                            ),
+                        )
+                    )
                 directory_only = line.endswith("/")
                 line = line.strip("/")
                 if line:
+                    if include and cls._reincludes_ignored_descendant(patterns, base, line):
+                        issues.append(
+                            cls._unsupported_issue(
+                                relative,
+                                raw_pattern,
+                                (
+                                    "last matching rule wins, so this entry is re-included even "
+                                    "though Git keeps files below an excluded directory ignored"
+                                ),
+                            )
+                        )
+                    if "**" in line:
+                        issues.append(
+                            cls._unsupported_issue(
+                                relative,
+                                raw_pattern,
+                                (
+                                    'Python fnmatch treats "**" as repeated "*"; stars may '
+                                    'match "/" and have no special Git double-star semantics'
+                                ),
+                            )
+                        )
+                    elif "/" in line and any(character in line for character in "*?"):
+                        issues.append(
+                            cls._unsupported_issue(
+                                relative,
+                                raw_pattern,
+                                (
+                                    'Python fnmatch allows "*" and "?" in path patterns to '
+                                    'match "/", unlike Git wildcards'
+                                ),
+                            )
+                        )
                     patterns.append((base, line, include, directory_only))
         return cls(tuple(patterns)), issues
+
+    @staticmethod
+    def _unsupported_issue(
+        source: str,
+        raw_pattern: str,
+        approximation: str,
+    ) -> ScanIssueDraft:
+        return _issue(
+            "ignore_pattern_unsupported",
+            "warning",
+            f"Ignore pattern {raw_pattern!r} uses syntax with non-Git semantics.",
+            f"Approximation applied: {approximation}.",
+            source,
+        )
+
+    @classmethod
+    def _reincludes_ignored_descendant(
+        cls,
+        patterns: list[tuple[str, str, bool, bool]],
+        base: str,
+        pattern: str,
+    ) -> bool:
+        parts = PurePosixPath(pattern).parts
+        matcher = cls(tuple(patterns))
+        for length in range(1, len(parts)):
+            parent = PurePosixPath(*parts[:length]).as_posix()
+            candidate = parent if base == "." else f"{base}/{parent}"
+            if matcher.matches(candidate):
+                return True
+        return False
 
     def matches(self, relative_path: str) -> bool:
         ignored = False
@@ -3833,6 +3919,17 @@ class WorkspaceScanner:
                 """,
                 (scan_run_id,),
             ).fetchall()
+            ignore_issue_rows = connection.execute(
+                """
+                SELECT si.project_id, p.display_name, si.severity, si.relative_path,
+                       si.message, si.remediation
+                FROM scan_issues AS si
+                LEFT JOIN projects AS p ON p.project_id = si.project_id
+                WHERE si.scan_run_id = ? AND si.kind = 'ignore_pattern_unsupported'
+                ORDER BY p.display_name, si.relative_path, si.message, si.issue_id
+                """,
+                (scan_run_id,),
+            ).fetchall()
             role_lens_context = self._role_lens_context(connection, scan_run_id)
         history_basis_by_worktree = {
             str(row["canonical_root"]): str(row["history_basis"]) for row in observations
@@ -3876,6 +3973,17 @@ class WorkspaceScanner:
             "history_basis_by_worktree": history_basis_by_worktree,
             "external_git_metadata": external_git_metadata,
             "excluded_by_category": dict(sorted(excluded.items())),
+            "ignore_pattern_issues": [
+                {
+                    "project_id": row["project_id"],
+                    "project_display_name": row["display_name"],
+                    "source_ignore_file": row["relative_path"],
+                    "severity": str(row["severity"]),
+                    "raw_pattern_and_reason": str(row["message"]),
+                    "approximation": str(row["remediation"]),
+                }
+                for row in ignore_issue_rows
+            ],
             "role_lens_context": role_lens_context,
         }
 
