@@ -11,6 +11,7 @@ from goodjob.analysis import (
     AnalysisService,
     ClaimDraft,
     EvidenceRelationDraft,
+    InlineToken,
     _EvidenceState,
     _reject_verbatim_source_summary,
 )
@@ -467,6 +468,7 @@ def test_record_analysis_atomically_freezes_claims_assessment_and_retry(
     (
         ("通过 ", "rg -i", " 做大小写不敏感检索并汇总候选文件。"),
         ("在遍历中使用 ", "for (i = 0; i < n; i++)", " 控制候选批次。"),
+        ("详见 ", "rg -i", " 的用法。"),
     ),
 )
 def test_non_personal_claim_ignores_code_tokens_for_prose_attribution(
@@ -507,6 +509,116 @@ def test_non_personal_claim_ignores_code_tokens_for_prose_attribution(
     stored_statement = connection.execute("SELECT statement FROM claim_revisions").fetchone()[0]
     connection.close()
     assert stored_statement == "该项目" + prose_before + code_value + prose_after
+
+
+def test_non_personal_claim_rejects_personal_attribution_across_code_seam(
+    tmp_path: Path,
+    data_paths: DataPaths,
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    prepared, run_id, lens_id, project_id = _prepare(database, workspace, receipt_id)
+    evidence = _evidence_by_kind(prepared)
+    request = _analysis_request(
+        run_id=run_id,
+        lens_id=lens_id,
+        project_id=project_id,
+        implementation_id=cast(str, evidence["implementation"]["evidence_id"]),
+        test_id=cast(str, evidence["test_definition"]["evidence_id"]),
+    )
+    _dict(_list(request["claim_drafts"])[0])["statement_tokens"] = [
+        {"kind": "text", "value": "该项目"},
+        {"kind": "text", "value": "结果"},
+        {"kind": "code", "value": "X"},
+        {"kind": "text", "value": "I led this migration."},
+    ]
+
+    with pytest.raises(InvalidInputError, match="stronger personal attribution"):
+        AnalysisService(database).record_analysis(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=request,
+        )
+
+
+@pytest.mark.parametrize(
+    ("token_values", "expected"),
+    (
+        (
+            (
+                {"kind": "text", "value": "我"},
+                {"kind": "emphasis", "value": "实现了核心计算流程。"},
+            ),
+            "implemented",
+        ),
+        (
+            (
+                {"kind": "text", "value": "我负"},
+                {"kind": "code", "value": "X"},
+                {"kind": "emphasis", "value": "责核心计算流程。"},
+            ),
+            "responsible",
+        ),
+        (
+            (
+                {"kind": "text", "value": "我主"},
+                {"kind": "code", "value": "X"},
+                {"kind": "emphasis", "value": "导了架构重构。"},
+            ),
+            "led",
+        ),
+        (
+            (
+                {"kind": "text", "value": "我当时"},
+                {"kind": "code", "value": "X"},
+                {"kind": "emphasis", "value": "学到了很多。"},
+            ),
+            "personal_learning",
+        ),
+    ),
+)
+def test_personal_attribution_projection_union_preserves_existing_classification(
+    token_values: tuple[dict[str, str], ...],
+    expected: str,
+) -> None:
+    tokens = tuple(
+        InlineToken.from_value(value, f"tokens[{index}]")
+        for index, value in enumerate(token_values)
+    )
+    projections = AnalysisService._personal_attribution_projections(tokens)
+
+    assert AnalysisService._detected_personal_attribution(*projections) == expected
+
+
+def test_responsible_declaration_does_not_cover_split_implemented_statement(
+    tmp_path: Path,
+    data_paths: DataPaths,
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id, _ = _authorize(database, workspace)
+    prepared, run_id, lens_id, project_id = _prepare(database, workspace, receipt_id)
+    evidence = _evidence_by_kind(prepared)
+    request = _analysis_request(
+        run_id=run_id,
+        lens_id=lens_id,
+        project_id=project_id,
+        implementation_id=cast(str, evidence["implementation"]["evidence_id"]),
+        test_id=cast(str, evidence["test_definition"]["evidence_id"]),
+        attribution="responsible",
+    )
+    _dict(_list(request["claim_drafts"])[0])["statement_tokens"] = [
+        {"kind": "text", "value": "我"},
+        {"kind": "emphasis", "value": "实现了核心计算流程。"},
+    ]
+
+    with pytest.raises(InvalidInputError, match="stronger personal attribution"):
+        AnalysisService(database).record_analysis(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=request,
+        )
 
 
 def test_non_personal_claim_still_requires_text_scope_subject_before_code(
