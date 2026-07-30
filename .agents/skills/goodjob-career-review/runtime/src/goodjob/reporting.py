@@ -1703,6 +1703,7 @@ def _embedded_json(bundle: JSONObject) -> str:
         value.replace("&", "\\u0026")
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
+        .replace("=", "\\u003d")
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
@@ -1737,7 +1738,7 @@ def render_dashboard_html(bundle: JSONObject) -> str:
             "base-uri 'none'",
         )
     )
-    html = (
+    document_before_data = (
         "<!doctype html>\n"
         '<html lang="zh-CN">\n'
         "<head>\n"
@@ -1750,25 +1751,26 @@ def render_dashboard_html(bundle: JSONObject) -> str:
         "<body>\n"
         '<a class="skip-link" href="#main">跳到主要内容</a>\n'
         '<div id="app"><p class="boot-status">正在校验冻结报告…</p></div>\n'
-        f'<script id="report-data" type="application/json">{data}</script>\n'
-        f"<script>{script}</script>\n"
-        "</body>\n"
-        "</html>\n"
+        '<script id="report-data" type="application/json">'
     )
-    _validate_dashboard_document(html, script, style, data, csp)
+    document_after_data = f"</script>\n<script>{script}</script>\n</body>\n</html>\n"
+    html = document_before_data + data + document_after_data
+    _validate_dashboard_document(
+        document_before_data + document_after_data, script, style, data, csp
+    )
     return html
 
 
 def _validate_dashboard_document(
-    html: str,
+    document_structure: str,
     script: str,
     style: str,
     data: str,
     csp: str,
 ) -> None:
-    if re.search(r"\sstyle\s*=", html, re.IGNORECASE):
+    if re.search(r"\sstyle\s*=", document_structure, re.IGNORECASE):
         raise InvalidInputError("dashboard output contains a forbidden style attribute")
-    if re.search(r"<(?:img|iframe|object|embed|link)\b", html, re.IGNORECASE):
+    if re.search(r"<(?:img|iframe|object|embed|link)\b", document_structure, re.IGNORECASE):
         raise InvalidInputError("dashboard output contains a forbidden external-resource element")
     if "unsafe-inline" in csp or "unsafe-eval" in csp:
         raise InvalidInputError("dashboard CSP contains an unsafe allowance")
