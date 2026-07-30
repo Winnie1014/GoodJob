@@ -269,7 +269,13 @@ uv build
 cd .agents/skills/goodjob-career-review/runtime/frontend
 npm ci
 npm test
+npx playwright install webkit chromium  # 首次准备浏览器二进制
+npm run verify                          # 发布前独立行为门禁
 ```
+
+`npm test` 负责类型、静态规则、单元测试和构建一致性；`npm run verify` 调用 Python
+真实渲染器生成离线 HTML，并在 Chromium 与 WebKit 中核对交互、布局、打印和 CSP。
+浏览器二进制属于本机发布前依赖，因此该命令保持为独立门禁，不并入日常 `npm test`。
 
 设计验证原型可独立构建：
 

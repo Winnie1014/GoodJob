@@ -9,16 +9,25 @@ const files = [
   resolve(root, "src/dashboard.ts"),
   resolve(root, "../src/goodjob/dashboard_assets/dashboard.js"),
 ];
+const domStyleMutation = /\.style(?:\.|\[)/;
 const banned = [
   ["dynamic evaluation", /\beval\s*\(|\bnew\s+Function\b/],
   ["HTML string sink", /\b(?:innerHTML|outerHTML|insertAdjacentHTML|document\.write|srcdoc)\b/],
   ["style string sink", /setAttribute\s*\(\s*["']style["']|\.cssText\b/],
-  ["DOM style mutation", /\.style(?:\.|\[)/],
+  ["DOM style mutation", domStyleMutation],
   ["attribute event handler", /setAttribute\s*\(\s*["']on[a-z]+["']/i],
   ["string timer", /set(?:Timeout|Interval)\s*\(\s*["'`]/],
   ["network API", /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\b/],
   ["persistent browser state", /\b(?:localStorage|sessionStorage|indexedDB)\b/],
 ];
+for (const mutation of [
+  "element.style.color = value",
+  'element.style["color"] = value',
+]) {
+  if (!domStyleMutation.test(mutation)) {
+    throw new Error(`DOM style mutation self-check missed: ${mutation}`);
+  }
+}
 for (const file of files) {
   const source = await readFile(file, "utf8");
   for (const [label, pattern] of banned) {
@@ -26,24 +35,6 @@ for (const file of files) {
       throw new Error(`${label} is forbidden in ${file}`);
     }
   }
-}
-
-const dashboardSource = await readFile(resolve(root, "src/dashboard.ts"), "utf8");
-for (const [label, pattern] of [
-  ["RoleLens assumption rendering", /role_lens\.assumptions/],
-  ["deferred search focus", /pendingSearchFocus/],
-  ["focused project activation", /link\.click\(\)/],
-  [
-    "coverage limitation scope link",
-    /element\("a", "scope-link", "查看受影响范围"\)/,
-  ],
-]) {
-  if (!pattern.test(dashboardSource)) {
-    throw new Error(`${label} is required in the dashboard source`);
-  }
-}
-if (/element\("a", "nav-link", "查看受影响范围"\)/.test(dashboardSource)) {
-  throw new Error("coverage limitation action must not reuse the sidebar nav-link grid");
 }
 
 const cssPath = resolve(root, "../src/goodjob/dashboard_assets/dashboard.css");
