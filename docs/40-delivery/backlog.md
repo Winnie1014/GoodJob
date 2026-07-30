@@ -15,20 +15,23 @@
 
 | 任务 | 卡面 | 状态 | 验收项 |
 | --- | --- | --- | --- |
-| GJ-01 · 渲染门禁被工作区内容触发 | [GJ-01](../collab/tasks/GJ-01.md) | 已领取（Sol，信道 #2）·待放行 | `IMP-28`、`DASH-03` |
-| GJ-02 · 归因校验按 token kind 分层 | [GJ-02](../collab/tasks/GJ-02.md) | 已领取（Sol，信道 #2）·待放行 | `IMP-14`、`IMP-22` |
+| GJ-01 · 渲染门禁被工作区内容触发 | [GJ-01](../collab/tasks/GJ-01.md) | ✅ 已验收合入（信道 #5，merge `0e75a78`） | `IMP-28`、`DASH-03` |
+| GJ-02 · 归因校验按 token kind 分层 | [GJ-02](../collab/tasks/GJ-02.md) | ✅ 已验收合入（信道 #5，merge `0e75a78`） | `IMP-14`、`IMP-22` |
 
-批量模式：统一分支 `task/GJ-A-structural-gates`，按卡独立 commit，统一交付统一验收。
+批量模式：统一分支 `task/GJ-A-structural-gates`，从 `ead37b0` 拉出，按卡独立 commit（`3131465`、`5cebbc1`），统一交付统一验收。
 
-放行前置：两卡的契约依据（`D-043`、`D-044`、`EVID-INV-27`、`DASH-INV-11`、ADR-0008 决策 8）当前仍是未提交改动，须先落主干，任务分支才有可追溯的契约基线。工作区形态 A 下也不允许在她建分支后再补提交主干。
+验收裁决要点（信道 #5）：契约与 DoD 逐条成立，范围零越界，体量 64/200 与 84/260。变异测试确认新增用例在缺陷回归时变红；产物在 Chromium 151 与 WebKit 26.5 上零控制台错误、零外部请求、内联 JSON 正常解析。验收中发现的两处**出卡侧疏漏**（非实现缺陷）已转 GJ-08。
 
-### 后续单卡（批次 A 合入后依次派出）
+### 后续单卡
 
 | 任务 | 卡面 | 状态 | 前置 | 验收项 |
 | --- | --- | --- | --- | --- |
-| GJ-04 · 跨引擎行为门禁进入运行时前端 | [GJ-04](../collab/tasks/GJ-04.md) | 已出卡·排队 | 批次 A | `IMP-28` |
+| GJ-08 · 让分层判定各自守得住 | [GJ-08](../collab/tasks/GJ-08.md) | 已出卡·待派 | 批次 A（已合入） | `IMP-28`、`DASH-03`、`IMP-14`、`IMP-22` |
+| GJ-04 · 跨引擎行为门禁进入运行时前端 | [GJ-04](../collab/tasks/GJ-04.md) | 已出卡·排队 | 批次 A（已合入） | `IMP-28` |
 | GJ-03 · 项目级排除与 `excluded` 生产者 | [GJ-03](../collab/tasks/GJ-03.md) | 已出卡·排队 | 无 | `IMP-04`、`IMP-13` |
 | GJ-05 · ignore 子集显式化并可见 | [GJ-05](../collab/tasks/GJ-05.md) | 已出卡·排队 | 无 | `IMP-04`、`SCAN-04` |
+
+GJ-08 与 GJ-03/GJ-04/GJ-05 文件范围互不重叠（GJ-08 碰 `reporting.py`/`analysis.py`，GJ-03/GJ-05 碰 `scanner.py`，GJ-04 碰 `frontend/`），派发顺序由 Owner 定。
 
 ### 机动池（未出卡）
 
@@ -43,3 +46,4 @@
 | --- | --- | --- |
 | 看板呈现契约与 ADR-0008 | [dashboard-design.md](../20-architecture/dashboard-design.md)、[ADR-0008](../30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md) 已接受 | 部署前 |
 | 首版实现评审与文档回写 | `D-043`/`D-044`/`EVID-INV-27`/`DASH-INV-11`/`F-009` 已落契约；`D-014`/`D-034`/`D-035` 已收窄 | 部署前 |
+| 批次 A · GJ-01 + GJ-02 | 渲染门禁与归因校验改为按结构分层判定；merge `0e75a78` | #4 交付 / #5 验收 / #6 收口 |
