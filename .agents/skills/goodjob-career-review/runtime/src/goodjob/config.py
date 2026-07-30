@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 
+from goodjob.source_io import open_absolute_regular_file, read_open_file
+
 ProjectMatchKind = Literal["identity_key", "relative_location"]
+MAX_CONFIG_FILE_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -54,15 +58,23 @@ def normalize_relative_location(value: str) -> str:
 def load_project_exclusions(config_file: Path) -> ProjectExclusionConfig:
     """Read project exclusions once; malformed entries do not discard valid siblings."""
     try:
-        text = config_file.read_text(encoding="utf-8")
+        file_fd, _ = open_absolute_regular_file(config_file)
+        try:
+            content = read_open_file(file_fd, maximum_bytes=MAX_CONFIG_FILE_BYTES)
+        finally:
+            os.close(file_fd)
+        text = content.decode("utf-8")
     except (OSError, UnicodeError):
         return ProjectExclusionConfig(
             (),
             (
                 ConfigIssue(
                     "project_exclusion_config_unreadable",
-                    "The owner-local configuration could not be read as UTF-8.",
-                    "Restore a readable config.toml and run scan or refresh again.",
+                    "The owner-local configuration is not a bounded regular UTF-8 file.",
+                    (
+                        "Restore a readable regular config.toml without symbolic links and run "
+                        "scan or refresh again."
+                    ),
                 ),
             ),
         )

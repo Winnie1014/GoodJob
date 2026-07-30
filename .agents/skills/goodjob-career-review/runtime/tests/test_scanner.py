@@ -18,6 +18,7 @@ import goodjob.scanner as scanner_module
 from goodjob.adapters import AnalysisResult, analyze_file
 from goodjob.auth import AuthorizationRepository, AuthorizationRequest, generate_capability
 from goodjob.cli import run
+from goodjob.config import MAX_CONFIG_FILE_BYTES
 from goodjob.db import Database
 from goodjob.paths import DataPaths
 from goodjob.scanner import (
@@ -1916,7 +1917,11 @@ def test_bad_project_exclusion_config_warns_without_discarding_other_projects(
     assert matching_issues[0].severity == "warning"
 
 
-def test_unreadable_project_exclusion_config_warns_and_scan_continues(tmp_path: Path) -> None:
+@pytest.mark.parametrize("invalid_config_kind", ("directory", "symlink", "oversized"))
+def test_unsafe_project_exclusion_config_warns_and_scan_continues(
+    tmp_path: Path,
+    invalid_config_kind: str,
+) -> None:
     workspace = tmp_path / "workspace"
     project = workspace / "included"
     project.mkdir(parents=True)
@@ -1926,7 +1931,14 @@ def test_unreadable_project_exclusion_config_warns_and_scan_continues(tmp_path: 
     scanner, receipt_id = _direct_scanner(data_dir, workspace)
     config_file = DataPaths(data_dir).config_file
     config_file.unlink()
-    config_file.mkdir()
+    if invalid_config_kind == "directory":
+        config_file.mkdir()
+    elif invalid_config_kind == "symlink":
+        target = tmp_path / "linked-config.toml"
+        target.write_text("[goodjob]\nconfig_version = 1\n", encoding="utf-8")
+        config_file.symlink_to(target)
+    else:
+        config_file.write_bytes(b"[goodjob]\nconfig_version = 1\n#" + b"x" * MAX_CONFIG_FILE_BYTES)
 
     result = scanner.scan(
         workspace_path=str(workspace),
