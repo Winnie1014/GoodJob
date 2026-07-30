@@ -841,6 +841,8 @@ class IgnoreMatcher:
     ) -> bool:
         parts = PurePosixPath(pattern).parts
         matcher = cls(tuple(patterns))
+        if base != "." and matcher.matches(base):
+            return True
         for length in range(1, len(parts)):
             parent = PurePosixPath(*parts[:length]).as_posix()
             candidate = parent if base == "." else f"{base}/{parent}"

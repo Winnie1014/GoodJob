@@ -2039,6 +2039,28 @@ def test_git_negation_below_excluded_directory_currently_reincludes(tmp_path: Pa
     assert matcher.matches("ignored/keep.py") is False
 
 
+def test_nested_ignore_negation_below_root_exclusion_reports_approximation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / ".gitignore").write_text("!keep.py\n", encoding="utf-8")
+
+    matcher, issues = IgnoreMatcher.load(
+        tmp_path,
+        [".gitignore", "ignored/.gitignore"],
+    )
+
+    assert matcher.matches("ignored/keep.py") is False
+    assert any(
+        issue.kind == "ignore_pattern_unsupported"
+        and issue.relative_path == "ignored/.gitignore"
+        and "!keep.py" in issue.message
+        and "last matching rule wins" in issue.remediation
+        for issue in issues
+    )
+
+
 def test_git_single_star_path_currently_crosses_directories(tmp_path: Path) -> None:
     (tmp_path / ".gitignore").write_text("src/*.py\n", encoding="utf-8")
 
