@@ -16,12 +16,31 @@ const views = [
   ["overview", "#/v1/overview"],
   ["project-list", "#/v1/project"],
   ["project-detail", "#/v1/project/p_primary"],
+  ["project-module", "#/v1/project/p_primary/module/module_p_primary"],
   ["evidence", "#/v1/evidence"],
   ["gaps", "#/v1/gaps"],
   ["interview", "#/v1/interview"],
+  ["review-target", "#/v1/interview/target/target_continued"],
   ["version-mismatch", "#/v9/overview"],
 ];
 const locatorText = '{"line_end":12,"line_start":10,"path":"src/app.py"}';
+const statusChannels = {
+  fresh: { symbol: "✓", label: "本次新鲜 1" },
+  carried_forward: { symbol: "◷", label: "沿用基线 1" },
+  failed_no_baseline: { symbol: "!", label: "失败无基线 1" },
+  excluded: { symbol: "○", label: "已排除 1" },
+  current: { symbol: "✓", label: "当前" },
+  stale: { symbol: "◷", label: "历史限制" },
+  missing: { symbol: "!", label: "已缺失" },
+  plan: { symbol: "◷", label: "已规划" },
+  single_source: { symbol: "○", label: "单一来源" },
+  cross_checked: { symbol: "✓", label: "交叉验证" },
+  user_confirmed: { symbol: "✓", label: "用户确认" },
+  conflicted: { symbol: "!", label: "存在冲突" },
+  new: { symbol: "○", label: "待首次复习" },
+  continued: { symbol: "✓", label: "状态延续" },
+  reassess_required: { symbol: "!", label: "需要重评" },
+};
 
 function tokens(value, kind = "text") {
   return [{ kind, value }];
@@ -265,8 +284,10 @@ async function route(page, hash) {
 }
 
 async function taggedGroup(page, statuses) {
+  const expectedEntries = statuses.map((status) => ({ status, ...statusChannels[status] }));
   return page.evaluate((expected) => {
-    const entries = expected.map((status) => {
+    const mediaActive = matchMedia("(forced-colors: active)").matches;
+    const entries = expected.map(({ status, symbol: expectedSymbol, label: expectedLabel }) => {
       const tag = document.querySelector(`.status-tag[data-status="${status}"]`);
       const parts = tag ? [...tag.children].map((part) => part.textContent?.trim() ?? "") : [];
       return {
@@ -274,15 +295,21 @@ async function taggedGroup(page, statuses) {
         visible: tag instanceof HTMLElement && tag.getClientRects().length > 0,
         symbol: parts[0] ?? "",
         label: parts[1] ?? "",
+        expectedSymbol,
+        expectedLabel,
         forcedColorAdjust: tag instanceof HTMLElement ? getComputedStyle(tag).forcedColorAdjust : null,
       };
     });
     return {
-      ok: entries.every((entry) => entry.visible && Boolean(entry.symbol) && Boolean(entry.label)),
-      mediaActive: matchMedia("(forced-colors: active)").matches,
+      ok: entries.every((entry) => (
+        entry.visible
+        && entry.symbol === entry.expectedSymbol
+        && entry.label === entry.expectedLabel
+      )),
+      mediaActive,
       entries,
     };
-  }, statuses);
+  }, expectedEntries);
 }
 
 async function runEngine(engineName, engine) {
@@ -312,6 +339,11 @@ async function runEngine(engineName, engine) {
     record(engineName, "role-lens-assumption-visible", assumptionVisible);
 
     const scopeLink = page.locator(".scope-link").first();
+    let originalScopeHref = null;
+    if (mutation === "scope-focusable") {
+      originalScopeHref = await scopeLink.getAttribute("href");
+      await scopeLink.evaluate((node) => node.removeAttribute("href"));
+    }
     if (mutation === "scope-activation") {
       await scopeLink.evaluate((node) => node.setAttribute("href", "#/v1/gaps"));
     }
@@ -320,6 +352,9 @@ async function runEngine(engineName, engine) {
     }
     await scopeLink.focus();
     record(engineName, "coverage-scope-link-focusable", await scopeLink.evaluate((node) => node === document.activeElement && node instanceof HTMLAnchorElement));
+    if (originalScopeHref !== null) {
+      await scopeLink.evaluate((node, href) => node.setAttribute("href", href), originalScopeHref);
+    }
     record(engineName, "coverage-scope-link-outside-nav", await scopeLink.evaluate((node) => node.closest("nav") === null));
     await scopeLink.press("Enter");
     await page.waitForFunction(
@@ -356,6 +391,7 @@ async function runEngine(engineName, engine) {
     await route(page, "#/v1/overview");
     const dispositionGroup = await taggedGroup(page, ["fresh", "carried_forward", "failed_no_baseline", "excluded"]);
     record(engineName, "forced-colors-project-disposition", dispositionGroup.ok, dispositionGroup);
+    record(engineName, "forced-colors-media-active", dispositionGroup.mediaActive, dispositionGroup);
     await route(page, "#/v1/evidence");
     await page.evaluate(() => document.querySelectorAll("details").forEach((item) => { item.open = true; }));
     const validityGroup = await taggedGroup(page, ["current", "stale", "missing", "plan"]);
