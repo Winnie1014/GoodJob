@@ -30,6 +30,7 @@ from goodjob.adapters import (
     adapter_version,
     analyze_file,
 )
+from goodjob.config import ExcludedProjectRule, ProjectExclusionConfig, load_project_exclusions
 from goodjob.db import Database
 from goodjob.errors import InvalidInputError
 from goodjob.process_identity import owner_process_stopped, process_identity
@@ -57,6 +58,17 @@ MAX_ROLE_LENS_CONTEXT_EVIDENCE_SAMPLES = 500
 MAX_ROLE_LENS_CONTEXT_EVIDENCE_PER_PROJECT = 10
 SCAN_OVERVIEW_CONTRACT_VERSION = "scan-overview-v1"
 MAX_SCAN_OVERVIEW_ISSUES = 200
+IGNORE_PATTERN_SYNTAX: tuple[tuple[str, str], ...] = (
+    ("literal_name", "supported"),
+    ("star_and_question_wildcards", "supported_with_python_fnmatch_approximation"),
+    ("directory_suffix", "supported"),
+    ("negation_prefix", "supported_as_last_match_reinclusion"),
+    ("path_pattern", "supported_with_python_fnmatch_approximation"),
+    ("comment", "supported"),
+    ("blank_line", "supported"),
+    ("root_anchor", "approximated_as_unanchored"),
+    ("double_star", "approximated_as_repeated_star"),
+)
 GIT_COMMAND_TIMEOUT_SECONDS = 10.0
 GIT_EXECUTABLE_CANDIDATES = (
     Path("/Applications/Xcode.app/Contents/Developer/usr/bin/git"),
@@ -752,14 +764,91 @@ class IgnoreMatcher:
                 line = raw_line.strip()
                 if not line or line.startswith("#"):
                     continue
+                raw_pattern = line
                 include = line.startswith("!")
                 if include:
                     line = line[1:]
+                if line.startswith("/"):
+                    issues.append(
+                        cls._unsupported_issue(
+                            relative,
+                            raw_pattern,
+                            (
+                                'the leading "/" is removed and the remaining pattern may '
+                                "match the same name at any depth"
+                            ),
+                        )
+                    )
                 directory_only = line.endswith("/")
                 line = line.strip("/")
                 if line:
+                    if include and cls._reincludes_ignored_descendant(patterns, base, line):
+                        issues.append(
+                            cls._unsupported_issue(
+                                relative,
+                                raw_pattern,
+                                (
+                                    "last matching rule wins, so this entry is re-included even "
+                                    "though Git keeps files below an excluded directory ignored"
+                                ),
+                            )
+                        )
+                    if "**" in line:
+                        issues.append(
+                            cls._unsupported_issue(
+                                relative,
+                                raw_pattern,
+                                (
+                                    'Python fnmatch treats "**" as repeated "*"; stars may '
+                                    'match "/" and have no special Git double-star semantics'
+                                ),
+                            )
+                        )
+                    elif "/" in line and any(character in line for character in "*?"):
+                        issues.append(
+                            cls._unsupported_issue(
+                                relative,
+                                raw_pattern,
+                                (
+                                    'Python fnmatch allows "*" and "?" in path patterns to '
+                                    'match "/", unlike Git wildcards'
+                                ),
+                            )
+                        )
                     patterns.append((base, line, include, directory_only))
         return cls(tuple(patterns)), issues
+
+    @staticmethod
+    def _unsupported_issue(
+        source: str,
+        raw_pattern: str,
+        approximation: str,
+    ) -> ScanIssueDraft:
+        return _issue(
+            "ignore_pattern_unsupported",
+            "warning",
+            f"Ignore pattern {raw_pattern!r} uses syntax with non-Git semantics.",
+            f"Approximation applied: {approximation}.",
+            source,
+        )
+
+    @classmethod
+    def _reincludes_ignored_descendant(
+        cls,
+        patterns: list[tuple[str, str, bool, bool]],
+        base: str,
+        pattern: str,
+    ) -> bool:
+        parts = PurePosixPath(pattern).parts
+        matcher = cls(tuple(patterns))
+        if base != "." and matcher.matches(base):
+            return True
+        for length in range(1, len(parts)):
+            parent = PurePosixPath(*parts[:length]).as_posix()
+            candidate = parent if base == "." else f"{base}/{parent}"
+            if matcher.matches(candidate):
+                return True
+        return False
 
     def matches(self, relative_path: str) -> bool:
         ignored = False
@@ -972,7 +1061,7 @@ class WorkspaceScanner:
                 ).fetchall()
             }
         )
-        coverage = self._coverage(scan_run_id, dispositions, Counter())
+        coverage = self._coverage(scan_run_id, dispositions, Counter(), [])
         coverage["overview_provenance"] = "reconstructed_without_exclusion_counts"
         coverage["excluded_by_category_available"] = False
         return coverage
@@ -1003,6 +1092,7 @@ class WorkspaceScanner:
             authorization_receipt_id=authorization_receipt_id,
             started_at=scan_started_at,
         )
+        exclusion_config = load_project_exclusions(self._database.paths.config_file)
         try:
             return self._run_started(
                 root=root,
@@ -1013,6 +1103,7 @@ class WorkspaceScanner:
                 config_revision=config_revision,
                 external_git_grants=external_git_grants,
                 scan_started_at=scan_started_at,
+                exclusion_config=exclusion_config,
             )
         except BaseException:
             with suppress(Exception):
@@ -1030,17 +1121,41 @@ class WorkspaceScanner:
         config_revision: str,
         external_git_grants: tuple[ExternalGitGrant, ...],
         scan_started_at: str,
+        exclusion_config: ProjectExclusionConfig,
     ) -> ScanResult:
         plans, discovery_issues = self._discover(root, external_git_grants, scan_started_at)
-        self._persist_issues(scan_run_id, None, tuple(discovery_issues))
-        all_issues = list(discovery_issues)
+        exclusion_matches, unmatched_issues = self._match_project_exclusions(
+            root, plans, exclusion_config.rules
+        )
+        config_issues = [
+            _issue(issue.kind, "warning", issue.message, issue.remediation)
+            for issue in exclusion_config.issues
+        ]
+        run_issues = [*config_issues, *discovery_issues, *unmatched_issues]
+        self._persist_issues(scan_run_id, None, tuple(run_issues))
+        all_issues = list(run_issues)
         dispositions: Counter[str] = Counter()
         excluded: Counter[str] = Counter()
+        project_exclusions: list[dict[str, str]] = []
         discovered_ids: set[str] = set()
 
         for plan in plans:
             project = self._upsert_project(workspace_id, scan_run_id, root, plan)
             discovered_ids.add(project.project_id)
+            matching_rules = exclusion_matches.get(plan.identity_key, ())
+            if matching_rules:
+                chosen_rule = matching_rules[0]
+                self._record_project_exclusion(scan_run_id, project.project_id)
+                dispositions["excluded"] += 1
+                project_exclusions.append(
+                    {
+                        "project_display_name": project.display_name,
+                        "match": chosen_rule.match,
+                        "value": chosen_rule.value,
+                        "reason": chosen_rule.reason,
+                    }
+                )
+                continue
             try:
                 project_data = self._read_project(
                     plan=plan,
@@ -1083,7 +1198,12 @@ class WorkspaceScanner:
         all_issues.extend(carried_issues)
         dispositions.update(carried_dispositions)
         status = self._final_status(scan_run_id, dispositions, all_issues)
-        coverage = self._coverage(scan_run_id, dispositions, excluded)
+        coverage = self._coverage(
+            scan_run_id,
+            dispositions,
+            excluded,
+            project_exclusions,
+        )
         self._finish_run(scan_run_id, status, coverage)
         return ScanResult(
             scan_run_id=scan_run_id,
@@ -1094,6 +1214,42 @@ class WorkspaceScanner:
             coverage=coverage,
             issues=tuple(all_issues),
         )
+
+    @staticmethod
+    def _match_project_exclusions(
+        root: Path,
+        plans: list[ProjectPlan],
+        rules: tuple[ExcludedProjectRule, ...],
+    ) -> tuple[dict[str, tuple[ExcludedProjectRule, ...]], list[ScanIssueDraft]]:
+        matches: dict[str, tuple[ExcludedProjectRule, ...]] = {}
+        matched_rule_indexes: set[int] = set()
+        for plan in plans:
+            relative_location = _relative_path(plan.worktrees[0].root, root)
+            project_matches = tuple(
+                rule
+                for rule in rules
+                if rule.matches(
+                    identity_key=plan.identity_key,
+                    relative_location=relative_location,
+                )
+            )
+            if project_matches:
+                matches[plan.identity_key] = project_matches
+                matched_rule_indexes.update(rule.index for rule in project_matches)
+        unmatched = [
+            _issue(
+                "project_exclusion_rule_unmatched",
+                "warning",
+                (
+                    f"Project exclusion rule {rule.index} matched no discovered project "
+                    f"by {rule.match}: {_short(rule.value, 180)}."
+                ),
+                "Correct the exact project identity or workspace-relative location.",
+            )
+            for rule in rules
+            if rule.index not in matched_rule_indexes
+        ]
+        return matches, unmatched
 
     @staticmethod
     def _workspace_root_issue(root: Path) -> ScanIssueDraft | None:
@@ -2590,7 +2746,10 @@ class WorkspaceScanner:
                             "file_too_large",
                             "warning",
                             "A file exceeded the configured local indexing limit.",
-                            "Add a narrow safe exception only if this file is source material.",
+                            (
+                                "Review this file manually if needed; it remains outside the "
+                                "local index while other files continue."
+                            ),
                             relative,
                         )
                     )
@@ -3569,6 +3728,18 @@ class WorkspaceScanner:
             self._insert_issues(connection, scan_run_id, project_id, (issue,))
         return disposition
 
+    def _record_project_exclusion(self, scan_run_id: str, project_id: str) -> None:
+        with self._database.write_transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO scan_run_projects(
+                    scan_run_id, project_id, snapshot_disposition, project_snapshot_id
+                )
+                VALUES (?, ?, 'excluded', NULL)
+                """,
+                (scan_run_id, project_id),
+            )
+
     def _carry_forward_missing_projects(
         self,
         *,
@@ -3694,6 +3865,7 @@ class WorkspaceScanner:
         scan_run_id: str,
         dispositions: Counter[str],
         excluded: Counter[str],
+        project_exclusions: list[dict[str, str]],
     ) -> dict[str, object]:
         with self._database.read_connection() as connection:
             worktrees = int(
@@ -3749,6 +3921,17 @@ class WorkspaceScanner:
                 """,
                 (scan_run_id,),
             ).fetchall()
+            ignore_issue_rows = connection.execute(
+                """
+                SELECT si.project_id, p.display_name, si.severity, si.relative_path,
+                       si.message, si.remediation
+                FROM scan_issues AS si
+                LEFT JOIN projects AS p ON p.project_id = si.project_id
+                WHERE si.scan_run_id = ? AND si.kind = 'ignore_pattern_unsupported'
+                ORDER BY p.display_name, si.relative_path, si.message, si.issue_id
+                """,
+                (scan_run_id,),
+            ).fetchall()
             role_lens_context = self._role_lens_context(connection, scan_run_id)
         history_basis_by_worktree = {
             str(row["canonical_root"]): str(row["history_basis"]) for row in observations
@@ -3776,6 +3959,15 @@ class WorkspaceScanner:
             "carried_forward_projects": dispositions["carried_forward"],
             "failed_no_baseline_projects": dispositions["failed_no_baseline"],
             "excluded_projects": dispositions["excluded"],
+            "project_exclusions": sorted(
+                project_exclusions,
+                key=lambda item: (
+                    item["project_display_name"],
+                    item["match"],
+                    item["value"],
+                    item["reason"],
+                ),
+            ),
             "worktrees": worktrees,
             "modules": modules,
             "indexed_files": files,
@@ -3783,6 +3975,17 @@ class WorkspaceScanner:
             "history_basis_by_worktree": history_basis_by_worktree,
             "external_git_metadata": external_git_metadata,
             "excluded_by_category": dict(sorted(excluded.items())),
+            "ignore_pattern_issues": [
+                {
+                    "project_id": row["project_id"],
+                    "project_display_name": row["display_name"],
+                    "source_ignore_file": row["relative_path"],
+                    "severity": str(row["severity"]),
+                    "raw_pattern_and_reason": str(row["message"]),
+                    "approximation": str(row["remediation"]),
+                }
+                for row in ignore_issue_rows
+            ],
             "role_lens_context": role_lens_context,
         }
 

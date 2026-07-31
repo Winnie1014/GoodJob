@@ -9,10 +9,12 @@
     "typecheck": "tsc --noEmit",
     "lint": "node scripts/static-gate.mjs",
     "test:unit": "node scripts/test.mjs",
-    "test": "npm run typecheck && npm run lint && npm run test:unit && npm run build:check"
+    "test": "npm run typecheck && npm run lint && npm run test:unit && npm run build:check",
+    "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.8",
+    "playwright": "1.62.0",
     "typescript": "5.8.3"
   }
 }

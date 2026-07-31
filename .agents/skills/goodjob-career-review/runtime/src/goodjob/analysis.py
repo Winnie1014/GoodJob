@@ -2255,8 +2255,10 @@ class AnalysisService:
                 raise InvalidInputError(
                     "non-personal Claim statement must begin with its exact scope subject token"
                 )
-            attribution_prose = AnalysisService._personal_attribution_prose(draft.statement_tokens)
-            detected = AnalysisService._detected_personal_attribution(attribution_prose)
+            attribution_projections = AnalysisService._personal_attribution_projections(
+                draft.statement_tokens
+            )
+            detected = AnalysisService._detected_personal_attribution(*attribution_projections)
             if detected is not None and not AnalysisService._attribution_covers(
                 draft.personal_attribution,
                 detected,
@@ -2490,9 +2492,11 @@ class AnalysisService:
         return resolved, "".join(token.value for token in tokens)
 
     @staticmethod
-    def _personal_attribution_prose(tokens: tuple[InlineToken, ...]) -> str:
-        # Anchored omitted-subject patterns start at the participating prose sequence.
-        return "".join(token.value for token in tokens if token.kind in {"text", "emphasis"})
+    def _personal_attribution_projections(
+        tokens: tuple[InlineToken, ...],
+    ) -> tuple[str, str]:
+        values = tuple(token.value for token in tokens if token.kind in {"text", "emphasis"})
+        return "".join(values), "\n".join(values)
 
     @staticmethod
     def _non_personal_subject(draft: ClaimDraft) -> str:
@@ -2729,14 +2733,14 @@ class AnalysisService:
         return False
 
     @staticmethod
-    def _detected_personal_attribution(statement: str) -> str | None:
+    def _detected_personal_attribution(*projections: str) -> str | None:
         for attribution, pattern in _PERSONAL_PATTERNS:
-            if pattern.search(statement):
+            if any(pattern.search(projection) for projection in projections):
                 return attribution
         for attribution, pattern in _OMITTED_SUBJECT_PERSONAL_PATTERNS:
-            if pattern.search(statement):
+            if any(pattern.search(projection) for projection in projections):
                 return attribution
-        if _FIRST_PERSON_PATTERN.search(statement):
+        if any(_FIRST_PERSON_PATTERN.search(projection) for projection in projections):
             return "personal_assertion"
         return None
 

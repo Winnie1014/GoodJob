@@ -61,6 +61,13 @@ _VISIBLE_CONTROL_LABELS = {
     "\u2068": "[U+2068]",
     "\u2069": "[U+2069]",
 }
+_EMBEDDED_JSON_ESCAPES: dict[str, str] = {
+    "&": "\\u0026",
+    "<": "\\u003c",
+    ">": "\\u003e",
+    "=": "\\u003d",
+    **{character: f"\\u{ord(character):04x}" for character in _VISIBLE_CONTROL_LABELS},
+}
 
 type JSONObject = dict[str, object]
 type TokenValue = dict[str, object]
@@ -1698,18 +1705,15 @@ def _asset_text(name: str) -> str:
 
 
 def _embedded_json(bundle: JSONObject) -> str:
-    value = canonical_report_bundle(bundle).decode("utf-8")
-    escaped = (
-        value.replace("&", "\\u0026")
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("=", "\\u003d")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
-    for character in _VISIBLE_CONTROL_LABELS:
-        escaped = escaped.replace(character, f"\\u{ord(character):04x}")
+    escaped = canonical_report_bundle(bundle).decode("utf-8")
+    for character, replacement in _EMBEDDED_JSON_ESCAPES.items():
+        escaped = escaped.replace(character, replacement)
     return escaped
+
+
+def _validate_embedded_json(data: str) -> None:
+    if any(character in _EMBEDDED_JSON_ESCAPES for character in data):
+        raise InvalidInputError("dashboard embedded JSON contains an unescaped character")
 
 
 def _csp_hash(value: str) -> str:
@@ -1721,6 +1725,7 @@ def render_dashboard_html(bundle: JSONObject) -> str:
     script = _asset_text("dashboard.js")
     style = _asset_text("dashboard.css")
     data = _embedded_json(bundle)
+    _validate_embedded_json(data)
     script_hash = _csp_hash(script)
     data_hash = _csp_hash(data)
     style_hash = _csp_hash(style)

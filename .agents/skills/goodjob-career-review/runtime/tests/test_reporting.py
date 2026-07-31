@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+import goodjob.reporting as reporting
 from goodjob.analysis import AnalysisService
 from goodjob.auth import AuthorizationRepository, AuthorizationRequest, generate_capability
 from goodjob.db import Database
@@ -17,9 +18,12 @@ from goodjob.locks import ExclusiveWriterLock
 from goodjob.paths import DataPaths
 from goodjob.preparation import PreparationService, validate_job_input
 from goodjob.reporting import (
+    _EMBEDDED_JSON_ESCAPES,
     ArtifactSnapshotService,
     ReportBundleBuilder,
     _artifact_snapshot_id,
+    _embedded_json,
+    _validate_embedded_json,
     canonical_report_bundle,
     render_dashboard_html,
     render_report_markdown,
@@ -265,6 +269,38 @@ def _latest(paths: DataPaths) -> dict[str, object]:
         dict[str, object],
         json.loads(paths.latest_artifact_file.read_text(encoding="utf-8")),
     )
+
+
+@pytest.mark.parametrize("unsafe_data", ("<", ">", "="))
+def test_embedded_json_validation_rejects_unescaped_data(unsafe_data: str) -> None:
+    with pytest.raises(InvalidInputError):
+        _validate_embedded_json(unsafe_data)
+
+
+def test_embedded_json_escape_mapping_drives_every_required_escape() -> None:
+    unsafe_characters = "".join(_EMBEDDED_JSON_ESCAPES)
+    bundle: dict[str, object] = {
+        "contract_version": "report-bundle-v1",
+        "value": unsafe_characters,
+    }
+    bundle["bundle_sha256"] = report_bundle_sha256(bundle)
+
+    embedded_data = _embedded_json(bundle)
+
+    for character, escape in _EMBEDDED_JSON_ESCAPES.items():
+        assert character not in embedded_data
+        assert escape in embedded_data
+
+
+def test_dashboard_render_enforces_embedded_json_postcondition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle: dict[str, object] = {"contract_version": "report-bundle-v1"}
+    bundle["bundle_sha256"] = report_bundle_sha256(bundle)
+    monkeypatch.setattr(reporting, "_embedded_json", lambda _: '{"unsafe":"<x=>"}')
+
+    with pytest.raises(InvalidInputError, match="unescaped character"):
+        render_dashboard_html(bundle)
 
 
 @pytest.mark.parametrize(
