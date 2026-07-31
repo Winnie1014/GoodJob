@@ -251,31 +251,47 @@ Git authorship、计划文档、配置文件或一句用户陈述都不会单独
 
 ## 本地开发
 
-Python 运行时：
+首次准备开发依赖与浏览器二进制：
 
 ```bash
 cd .agents/skills/goodjob-career-review/runtime
 uv sync --group dev
+cd frontend
+npm ci
+npx playwright install webkit chromium  # 首次准备浏览器二进制
+```
+
+在仓库根目录使用 Make 聚合入口。日常开发运行 `make gate`；需要拆开定位时使用
+`make gate-python` 或 `make gate-frontend`；发布前运行 `make gate-release`：
+
+```bash
+make gate
+make gate-python
+make gate-frontend
+make gate-release
+```
+
+展开后的原始门禁命令如下，仍可按需单独执行：
+
+```bash
+cd .agents/skills/goodjob-career-review/runtime
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy .
 uv run pytest -q
-uv build
-```
 
-离线看板：
-
-```bash
-cd .agents/skills/goodjob-career-review/runtime/frontend
-npm ci
+cd frontend
 npm test
-npx playwright install webkit chromium  # 首次准备浏览器二进制
-npm run verify                          # 发布前独立行为门禁
+npm run verify
+
+cd ..
+uv build
 ```
 
 `npm test` 负责类型、静态规则、单元测试和构建一致性；`npm run verify` 调用 Python
 真实渲染器生成离线 HTML，并在 Chromium 与 WebKit 中核对交互、布局、打印和 CSP。
-浏览器二进制属于本机发布前依赖，因此该命令保持为独立门禁，不并入日常 `npm test`。
+浏览器二进制属于本机发布前依赖，因此 `npm run verify` 只进入 `make gate-release`，
+不并入日常 `make gate`。
 
 设计验证原型可独立构建：
 
