@@ -66,8 +66,8 @@
 
 | 任务 | 说明 | 触发条件 |
 | --- | --- | --- |
-| GJ-06 · 拆分 `WorkspaceScanner` | 纯重构，3986 行单文件、`WorkspaceScanner` 一类承担遍历/ignore/Git/分类/持久化/覆盖聚合。建议先剥「遍历 + ignore」与「Git 元数据 + 沙箱调用」两块 | GJ-05 合入后由 Owner 决定是否排期；不得与 GJ-01~GJ-05 混提交 |
-| GJ-07 · 聚合门禁入口 | Python 与前端目前是四条独立命令、无聚合入口，Python 侧测试不触发 `build:check` | 随任一卡顺手做则单独提交；否则挂账 |
+| GJ-06 · 拆分 `WorkspaceScanner` | 纯重构，零行为变更。M1 后 `scanner.py` 已达 4189 行，`WorkspaceScanner` 一类 64 个方法，同时承担遍历 / ignore / Git 元数据与沙箱调用 / 分类 / 持久化 / 证据生成 / 覆盖聚合。**红区（Git 子进程、文件系统边界、敏感文件判定）全部埋在此类中**，评审时难以确认改动未触及边界。建议先剥「遍历 + ignore」与「Git 元数据 + 沙箱调用」两块 | Owner 决定；建议押后于 GJ-07，并在下一批需改 `scanner.py` 的功能卡开工前顺势做。出卡时硬约束须为「零行为变更、测试一行不改」 |
+| GJ-07 · 聚合门禁入口 | 门禁为六条手敲命令，无 Makefile / justfile / CI。**实测（2026-07-31，Architect）**：改 `frontend/src/dashboard.ts` 一句 UI 文案而不重新构建，`uv run pytest -q`（180 用例）与 `npm run verify`（跨引擎行为门禁）**双双为绿**，仅 `npm run build:check` 变红——因为 Python 侧与 verify 读的都是已提交的 `dashboard_assets/dashboard.js` 产物，不感知 TS 源码。全套门禁中**只有一条命令**知道源码与产物是否一致 | Owner 决定；建议优先于 GJ-06，成本数十行 |
 
 ## 已完成
 
