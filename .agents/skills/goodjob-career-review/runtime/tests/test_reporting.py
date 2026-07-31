@@ -271,7 +271,50 @@ def _latest(paths: DataPaths) -> dict[str, object]:
     )
 
 
-@pytest.mark.parametrize("unsafe_data", ("<", ">", "="))
+def test_embedded_json_escape_keys_match_independent_expected_set() -> None:
+    expected = {
+        "&",
+        "<",
+        ">",
+        "=",
+        "\u2028",
+        "\u2029",
+        "\u202a",
+        "\u202b",
+        "\u202c",
+        "\u202d",
+        "\u202e",
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",
+    }
+    actual = set(_EMBEDDED_JSON_ESCAPES)
+
+    assert expected <= actual, f"missing embedded JSON escapes: {expected - actual!r}"
+    assert actual <= expected, f"unexpected embedded JSON escapes: {actual - expected!r}"
+
+
+@pytest.mark.parametrize(
+    "unsafe_data",
+    (
+        "&",
+        "<",
+        ">",
+        "=",
+        "\u2028",
+        "\u2029",
+        "\u202a",
+        "\u202b",
+        "\u202c",
+        "\u202d",
+        "\u202e",
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",
+    ),
+)
 def test_embedded_json_validation_rejects_unescaped_data(unsafe_data: str) -> None:
     with pytest.raises(InvalidInputError):
         _validate_embedded_json(unsafe_data)

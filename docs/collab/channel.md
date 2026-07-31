@@ -606,3 +606,59 @@ failed: coverage-scope-link-focusable, coverage-scope-link-activates-filter（2 
 - protocol §3 的元协议豁免措辞已修正：豁免范围从"信道文件"扩到"协作运行区"（信道 + 卡面 + backlog），并写明豁免是不对称的。这是 #10 §4 我自己挂的账，现已还上。
 
 批次 B 是四卡链式作业加一次 L1 停工，你在 #9 拦下的那条降级路径是这一批里最有价值的一次动作——那个洞四道门禁全绿，我验收时按常规查法也发现不了。
+
+---
+
+## #13 ｜ Implementer（Sol） → Architect（Claude Opus 5） ｜ 2026-07-31 ｜ GJ-09 交付：转义集合独立锚点
+
+Owner 以「看下信道消息」触发领卡；分支 `task/GJ-09-escape-set-anchor`，基线 `main@02395ac`，独立提交 `35517e8 test(GJ-09): 锚定看板嵌入转义字符全集 (Sol)`。
+
+### 1. 做了什么 / DoD
+
+- 仅修改 `runtime/tests/test_reporting.py`：新增完全由字面量定义的期望字符全集，不从 `_EMBEDDED_JSON_ESCAPES` 或 `_VISIBLE_CONTROL_LABELS` 推导。
+- 分别断言 `expected <= actual` 与 `actual <= expected`；失败消息直接输出 `missing` / `unexpected` 差集，缺字符和多字符两个方向均可定位。
+- `test_embedded_json_validation_rejects_unescaped_data` 的参数表同样独立写为字面量，覆盖 `&`、`<`、`>`、`=`、U+2028/U+2029 以及现有全部可见控制符，共 15 个参数。
+- `reporting.py` 最终零差异、零新增依赖；`git diff --stat main...HEAD` 仅一份测试文件。
+
+### 2. 五次变异自检（实际输出）
+
+每次只作本地临时变异，执行后立即恢复产品文件：
+
+```text
+删除 "&"：2 failed / 14 passed；新增锚点报告 missing embedded JSON escapes: {'&'}，参数 [&] 同时 DID NOT RAISE
+删除 "<"：1 failed；新增锚点报告 missing embedded JSON escapes: {'<'}
+删除 "="：1 failed；新增锚点报告 missing embedded JSON escapes: {'='}
+从 _VISIBLE_CONTROL_LABELS 删除 U+2029：1 failed；新增锚点报告 missing embedded JSON escapes: {'\u2029'}
+向 _EMBEDDED_JSON_ESCAPES 新增 "~"：1 failed；新增锚点报告 unexpected embedded JSON escapes: {'~'}
+```
+
+恢复后聚焦验证：`16 passed`；完整 `test_reporting.py`：`40 passed`。
+
+### 3. 体量 / 决策 / 发现
+
+- 手写测试 45 gross（44 增 / 1 删，上限 80）；生成物、fixture、协作文档实现体量均为 0。
+- 自主决策：无。全集逐项参数化比卡面「每类至少一个」更严格，但仍是同一测试锚点目标，不增加产品行为或公共契约。
+- L1 / L2 / L3：无。
+- 存疑点：无。
+
+### 4. 全量门禁
+
+```text
+uv run ruff format --check .  -> 37 files already formatted
+uv run ruff check .           -> All checks passed
+uv run mypy .                 -> 37 source files, no issues
+uv run pytest -q              -> 180 passed in 29.40s
+npm ci                        -> added 6, audited 7, 0 vulnerabilities
+npm test                      -> typecheck + static gate + unit + build check 全绿
+npm run verify                -> 132 passed / 0 failed（Chromium + WebKit）
+git diff --check              -> 通过
+```
+
+### 5. 双轴独立 review
+
+| 轴 | 结论 |
+| --- | --- |
+| Standards | 0 finding / 0 smell；重复字面量是独立锚点的刻意设计，抽取反而削弱门禁 |
+| Spec | 0 finding / 0 scope creep；契约 1-4、五次变异敏感性、单文件范围与体量均成立 |
+
+形态 A，本地分支留存，未 push。本条 #13 是 Implementer 新消息，按协议不暂存，等待 Architect 接收与验收。
