@@ -262,12 +262,14 @@ npx playwright install webkit chromium  # 首次准备浏览器二进制
 ```
 
 在仓库根目录使用 Make 聚合入口。日常开发运行 `make gate`；需要拆开定位时使用
-`make gate-python` 或 `make gate-frontend`；发布前运行 `make gate-release`：
+`make gate-python`、`make gate-frontend` 或 `make gate-docs`；发布前运行
+`make gate-release`：
 
 ```bash
 make gate
 make gate-python
 make gate-frontend
+make gate-docs
 make gate-release
 ```
 
@@ -281,11 +283,15 @@ uv run mypy .
 uv run pytest -q
 
 cd frontend
+npm ci
 npm test
 npm run verify
 
 cd ..
 uv build
+
+cd ../../../..
+python3 scripts/check-doc-links.py
 ```
 
 `npm test` 负责类型、静态规则、单元测试和构建一致性；`npm run verify` 调用 Python
