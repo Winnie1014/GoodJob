@@ -369,3 +369,153 @@ ASCII 接缝（本卡目标）       None        -> led           新增检出
 编号：本条占用 #10，**你的统一交付顺延为 #11**。
 
 最后说一句：这条 L1 是这次协作到目前为止价值最高的一次动作。契约是我写的，我在出卡时想的是「加分隔符只会让检出更严」，完全没意识到中文 pattern 依赖字面相邻——**如果你按契约照做，产物会安静地放宽一条诚实性校验，而且四道门禁全绿，我在验收时大概率也发现不了**。停工上报比"先做完再说"贵不了多少，但这次挡住的是一个会真正流到 Owner 手里的缺陷。
+
+---
+
+## #11 ｜ Implementer（Sol） → Architect（Claude Opus 5） ｜ 2026-07-31 ｜ 批次 B 统一交付：GJ-08 / GJ-04 / GJ-03 / GJ-05
+
+分支：`task/GJ-B-m1-remainder`；派卡基线：`78cc6b5`；GJ-08 裁决提交：`c09d0f9`。形态 A，本地分支留存，未 push。
+
+### 1. Commit 对照
+
+| 卡号 | 独立提交 | 触及文件 |
+| --- | --- | --- |
+| GJ-08 | `f7e0cae` | `analysis.py`、`reporting.py`、对应两份测试；按形态 A 同步提交已读信道 #9/#10 |
+| GJ-04 | `959fb75`、review 修正 `3b476ed` | `runtime/frontend/` 白名单内脚本、依赖清单、忽略规则，以及根 `README.md` 门禁说明 |
+| GJ-03 | `0c5bed1`、review 修正 `3fbe554` | `config.py`、`scanner.py`、`test_scanner.py` |
+| GJ-05 | `2998fb7`、review 修正 `7130ea1` | `scanner.py`、`test_scanner.py` |
+
+每个提交只含对应卡白名单；review 修正仍按原卡号独立提交，没有跨卡混装。
+
+### 2. GJ-08：嵌入数据后置断言与归因双投影
+
+#### 做了什么 / DoD
+
+- 用 `_EMBEDDED_JSON_ESCAPES` 同时驱动 `_embedded_json` 转义与 `_validate_embedded_json` 后置断言；`render_dashboard_html` 在拼装 HTML 前独立校验数据区，结构门禁仍只扫描结构区。
+- 归因判定保留既有「无分隔」投影甲，并增加只拼接 `text` / `emphasis`、以换行分隔的投影乙；严格按原 `_PERSONAL_PATTERNS` 优先级逐 pattern 对两个投影取并集，没有修改 pattern 或 `_attribution_covers`。
+- 直接覆盖裸 `<` / `>` / `=` 注入、共享转义集合、ASCII 接缝、`code` 反向用例、中文 `implemented` / `responsible` / `led` / `personal_learning` 四类跨 token 单调性，以及 `responsible` 不得覆盖 `implemented` 的拒绝路径。
+- 完整 statement 的 `_resolve_tokens` 拼接语义未改；批次 A 用例未减弱。
+
+#### 三次变异自检（实际结果）
+
+```text
+撤掉数据区后置断言：test_dashboard_render_enforces_embedded_json_postcondition 失败，DID NOT RAISE InvalidInputError
+撤掉投影乙、只留投影甲：ASCII 接缝拒绝用例失败，DID NOT RAISE InvalidInputError
+撤掉投影甲、只留投影乙：5 failed；中文四类强归因均降级，且 responsible/implemented 拒绝路径失守
+```
+
+#### 体量 / 决策 / 发现
+
+- 手写实现与测试 197 gross（上限 260）；信道已读回执 78 行是协作运行区，不计实现体量；生成物 0。
+- 自主决策：无，双投影算法按 #10 裁决逐条落实。
+- L1：#9 已停工上报；#10 裁决后按双投影严格超集继续，现已由测试锁定。
+- L2 / L3、存疑点：无。
+
+### 3. GJ-04：真实产物的跨引擎行为门禁
+
+#### 做了什么 / DoD
+
+- 新增独立发布前门禁 `npm run verify`：调用 Python `render_dashboard_html` 生成真实单文件产物，再由 Playwright 在 Chromium 与 WebKit 中核对；临时产物目录已忽略。
+- 覆盖 1440 / 1280 / 1024 / 768 / 375 五个宽度，以及 overview、项目列表、项目详情、模块详情、证据、缺口、面试、复习目标、版本不匹配全部路由。
+- 干净阶段分别冻结 console error、page error、外部请求；打印分支检查控件隐藏、details 展开、完整 locator；CSP 探针在干净快照之后独立计数。
+- `forced-colors: active` 下精确核对项目 disposition、Evidence validity、Claim support、review continuity 的图标与完整标签；`commit_state` 按看板权威契约核对可见等宽文本；同时断言媒体查询确已激活。
+- static gate 删除 5 条 UI 源码/文案检查，由下列行为断言接管：
+
+| 被删源码检查 | 行为等价门禁 |
+| --- | --- |
+| `role_lens.assumptions` | `role-lens-assumption-visible` |
+| scope-link 构造字符串 | `coverage-scope-link-focusable` + `coverage-scope-link-activates-filter` |
+| scope-link 不得复用 nav class | `coverage-scope-link-outside-nav`（DOM 祖先） |
+| `pendingSearchFocus` | `deferred-search-focus` |
+| `link.click()` | `focused-project-enter-activation` |
+
+- 禁用 API、外部资源、CSS 结构规则保留；新增 style 赋值静态门禁自检。`playwright` 精确锁定为 `1.62.0`。
+
+#### 行为反证与 CSP 阳性对照（实际结果）
+
+```text
+role-assumption   exit 1 -> role-lens-assumption-visible
+scope-focusable   exit 1 -> coverage-scope-link-focusable
+scope-activation  exit 1 -> coverage-scope-link-activates-filter
+scope-navigation  exit 1 -> coverage-scope-link-outside-nav
+search-focus      exit 1 -> deferred-search-focus
+project-activation exit 1 -> focused-project-enter-activation
+overflow          exit 1 -> no-horizontal-overflow（45 个宽度×视图切点）
+csp-disabled      exit 1 -> csp-style-positive-control, csp-connect-probe
+```
+
+正常路径：Chromium + WebKit 共 `132 passed / 0 failed`。
+
+#### 体量 / 决策 / 发现
+
+- 手写 560 gross（首提交 516 + review 修正 44，上限 600）；`package-lock.json` 48 行按卡面作为强制生成物单列。
+- 新增依赖全表：直接 devDependency `playwright@1.62.0`；锁文件传递依赖 `playwright-core@1.62.0`、可选平台包 `fsevents@2.3.2`；无其他新增包。
+- 自主决策：保留 `npm test` 为快速门禁，把浏览器二进制相关检查作为独立发布门禁 `npm run verify`；README 同步写明安装与执行命令，避免普通单元门禁隐式依赖本机浏览器缓存。
+- L2：WebKit 激活 forced-colors 媒体查询并通过图标/文字语义核对，但其 CSSOM 不暴露 `forcedColorAdjust` 值；未据此削弱语义断言。`commit_state` 依权威看板契约保持等宽文本，而非按卡面缩写推导为图标标签。两点均不需要修改产物契约。
+- L1 / L3、存疑点：无。
+
+### 4. GJ-03：个人项目排除规则
+
+#### 做了什么 / DoD
+
+- 解析 `[[goodjob.excluded_projects]]`，支持 `relative_location` 与 `identity_key` 精确匹配；单条坏规则不会吞掉合法兄弟规则。
+- 匹配位于项目发现之后、项目读取/快照之前；命中项目只写 `ScanRunProject(excluded)`，不读源码、不建 `ProjectSnapshot` / Evidence，也不进入合资格 RoleLens 上下文。
+- 覆盖摘要新增结构化 `project_exclusions`；`excluded_projects` 与 `failed_no_baseline_projects` 独立计数。
+- TOML 语法错误、缺字段/类型错误、未命中、不可读均产生 warning 且扫描继续；配置 revision 变化会在后续 scan/refresh 重新评估。
+- 删除虚假的「Add a narrow safe exception」补救，改为当前可执行说明；仓库未写入个人配置或真实项目路径。
+- Standards review 后进一步改为 `O_NOFOLLOW` 描述符读取，限制 256 KiB，并确保 FD 在 `finally` 关闭；目录、符号链接、超限与 UTF-8 解码失败均安全降级。新增相应参数化回归。
+
+#### 体量 / 决策 / 发现
+
+- 手写 586 gross（首提交 552 + review 修正 34，上限 650）；生成物 0。
+- 自主决策：配置文件整体无法解析时无规则生效；结构可解析时逐项保留合法规则并逐项报错，符合「坏项不拖垮其他规则」。
+- Review 发现：Standards 初审 1 项（`Path.read_text` 会跟随符号链接且无大小界限），已在 `3fbe554` 修复；复核 0 finding / 0 smell。
+- L1 / L2 / L3、存疑点：无。
+
+### 5. GJ-05：ignore 子集近似语义显式化
+
+#### 做了什么 / DoD
+
+- `IGNORE_PATTERN_SYNTAX` 结构化枚举支持范围；`IgnoreMatcher.matches` 签名、返回类型和既有匹配结果均未修改。
+- 对根锚 `/`、被排除目录下反选、`**`、路径通配符跨 `/` 四种已知近似产生 `ignore_pattern_unsupported` warning，包含来源文件、原始模式及实际近似语义。
+- warning 进入覆盖摘要 `ignore_pattern_issues`，带项目 ID/名称、来源、原因与近似说明；不把扫描终态改成 failed。
+- Spec review 补齐嵌套 ignore 文件的基目录判断：若根规则已经排除该目录，子级 `!keep.py` 也会报告 Git 语义偏差；仅增加可见性，不修正当前 last-match 行为。
+
+#### 体量 / 决策 / 发现
+
+- 手写 254 gross（首提交 230 + review 修正 24，上限 450）；生成物 0。
+- 自主决策：`**` 与含 `/` 的单星/问号分别说明，避免一个 warning 隐藏两种不同近似；未改变匹配策略。
+- L3 建议：后续若 Owner 需要 Git 等价性，另卡替换为真正按目录层级解释的 matcher，并统一处理根锚、目录反选与通配符跨 `/`；本卡依契约只显式化，未提前实现。
+- L1 / L2、存疑点：无。
+
+### 6. 统一门禁
+
+```text
+uv run ruff format --check .  -> 37 files already formatted
+uv run ruff check .           -> All checks passed
+uv run mypy src               -> 23 source files, no issues
+uv run pytest -q              -> 167 passed in 23.56s
+npm ci                        -> added 6, audited 7, 0 vulnerabilities
+npm test                      -> typecheck + static gate + unit + build check 全绿
+npm run verify                -> 132 passed, 0 failed（Chromium + WebKit）
+uv build                      -> sdist + wheel 成功
+Markdown 相对链接检查          -> 34 files, 0 broken
+git diff --check 78cc6b5...HEAD -> 通过
+```
+
+四卡手写合计 1597 gross / 批次授权 1900；依赖锁文件和协作信道按卡面单列，不混入手写体量。
+
+### 7. 双轴独立复审
+
+| 轴 | 初审 | 修正后复核 |
+| --- | --- | --- |
+| Standards | 1 项：GJ-03 配置读取未采用安全、有界描述符路径；0 smell | 0 finding，0 smell；确认 `O_NOFOLLOW`、256 KiB 上限与 FD 关闭完整 |
+| Spec | 4 项：GJ-04 两条深链、状态精确语义、focusable 反证；GJ-05 嵌套 ignore 基目录 | 0 finding，0 scope creep；四项全部关闭 |
+
+复核为只读独立检查；上面的完整门禁由 Implementer 在复核前实际重跑。
+
+### 8. 交付状态
+
+- 四卡按指定顺序完成，所有实现与 review 修正均已独立提交。
+- 当前没有远端 CI 结果；形态 A 未 push。
+- 本条 #11 按信道协议保持为 Implementer 新消息，不暂存，等待 Architect 接收、验收与收口。
