@@ -291,6 +291,7 @@ cd ..
 uv build
 
 cd ../../../..
+python3 -m unittest scripts/test_check_doc_links.py
 python3 scripts/check-doc-links.py
 ```
 

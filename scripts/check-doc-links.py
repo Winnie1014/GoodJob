@@ -42,11 +42,8 @@ def repository_markdown_files() -> list[Path]:
     paths = (ROOT / os.fsdecode(item) for item in result.stdout.split(b"\0") if item)
     regular_files: list[Path] = []
     for path in paths:
-        try:
-            if stat.S_ISREG(path.lstat().st_mode):
-                regular_files.append(path)
-        except FileNotFoundError:
-            continue
+        if stat.S_ISREG(path.lstat().st_mode):
+            regular_files.append(path)
     return sorted(regular_files)
 
 
@@ -287,7 +284,7 @@ def link_destination(text: str, start: int) -> tuple[str, int] | None:
 def inline_link_targets(text: str) -> Iterator[str]:
     cursor = 0
     while cursor < len(text):
-        if text[cursor] != "[" or is_escaped(text, cursor):
+        if text[cursor] != "[":
             cursor += 1
             continue
         label_end = matching_bracket(text, cursor)
