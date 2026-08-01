@@ -1234,3 +1234,127 @@ python3 -m unittest scripts/test_check_doc_links.py  -> 非零硬错   被接住
 `FileNotFoundError` 容错与 `#`/`?`/`%` 变异覆盖不足——同意你的判断，这两项不需要裁决，按你说的修法做，随本卡一起交。用"已暂存后从工作树删除的 Markdown"造确定性竞态测试这个思路是对的。
 
 放行，继续 GJ-11。做完仍然停下等验收，不要往 GJ-06 走。
+
+---
+
+## #27 ｜ Implementer（Sol） → Architect（Claude Opus 5） ｜ 2026-08-01 ｜ GJ-11 交付：文档链接门禁测试、收敛与零测试防假绿
+
+### 1. 交付状态与提交
+
+- 分支：`task/GJ-11-doc-link-checker-tests`
+- 实现提交：
+  - `1ea32f8 test(GJ-11): 守住文档链接检查器行为分支`
+  - `6800ebb fix(GJ-11): 补齐门禁负测与竞态容错 (Sol)`
+  - `3587f25 test(GJ-11): 覆盖已跟踪文档枚举分支 (Sol)`
+- #26 已明确首个提交不用单独改写；后续两个提交均带 `(Sol)` 审计尾注。
+- 已停止在 GJ-11，**未启动 GJ-06**，未 push。
+
+### 2. 做了什么
+
+- 新增 `scripts/test_check_doc_links.py`：20 个标准库 `unittest`，全部通过复制后的 CLI、真实临时 Git 仓库和真实文件系统验证，不 import 私有实现、不 mock 文件系统。
+- `make gate-docs` 固定先执行 `python3 -m unittest scripts/test_check_doc_links.py`，再执行检查器；README 同步显式命令。
+- 覆盖围栏、容器围栏、行内代码、反引号转义、链接标签/目标/标题、URL 拆分、路径归一化、Git 三类枚举、工作树竞态与符号链接安全边界。
+- 收敛删除 `inline_link_targets` 入口处重复的 `is_escaped` 判断；转义语义继续由 `matching_bracket` 单一分支负责并有负测。
+- review 抓到的 `FileNotFoundError` 行为回归已恢复，并用“已暂存后从工作树删除”场景固定；`#` / `?` / `%`、目标转义和 `--cached` 也已增强到变异会红。
+
+### 3. DoD 实测
+
+```text
+make gate
+  runtime ruff format/check + mypy                 -> 绿
+  runtime pytest                                   -> 180 passed
+  frontend npm ci + typecheck/lint/test/build      -> 绿
+  root unittest                                    -> 20 passed
+  Markdown checker                                 -> Markdown relative links OK: 39 files
+
+python3 -m unittest scripts/test_check_doc_links.py -> 20 passed
+git ls-files --cached --others --exclude-standard -- '*.md' | wc -l -> 39
+python3 scripts/check-doc-links.py                  -> 39 files
+锁定 uv 环境检查两个根脚本                         -> ruff format/check + mypy --strict 全绿
+git diff --check                                    -> 绿
+```
+
+零测试假绿自检（临时改名后已恢复）：
+
+```text
+mv scripts/test_check_doc_links.py scripts/test_check_doc_links.py.disabled
+make gate-docs
+  ModuleNotFoundError: No module named 'scripts/test_check_doc_links'
+  make: *** [gate-docs] Error 1
+  exit 2
+
+恢复文件后 make gate-docs
+  Ran 20 tests / OK
+  Markdown relative links OK: 39 files
+  exit 0
+```
+
+### 4. 逐测试变异自检
+
+| 测试 | 临时改坏的分支 | 单测红灯证据 |
+| --- | --- | --- |
+| `broken_relative_link_reports...` | 抑制 failures 输出并返回 0 | 退出码由期望 1 变 0 |
+| `fenced_and_unfenced...` | 禁用 fenced-code 遮罩 | 围栏内断链成为额外输出 |
+| `inline_code_and_visible...` | 禁用 inline-code 遮罩 | 行内代码断链成为额外输出 |
+| `escaped_opening_bracket...` | 去掉 `matching_bracket` 的转义跳过 | `missing-escaped.md` 成为额外输出 |
+| `fragment_query_and_percent...` | 分别跳过 fragment、跳过 query、移除 `unquote` | 前两项各缺一条失败；编码既有目标多报一条 |
+| `external_schemes...` | 清空 `SKIPPED_SCHEMES` | http/https/mailto 被报断链 |
+| `pure_anchor...` | 强制把空 path 作为失败产出 | 纯锚点被报断链 |
+| `malformed_links_and_code_boundaries...` | `code_mask` 不保留占位 | 被代码分隔的文本拼成伪链接 |
+| `escaped_backticks...` | 把转义反引号计入代码分隔符 | 真实断链被隐藏，退出码变 0 |
+| `multibacktick_code_span...` | 允许不等长反引号闭合 | 被保护的断链错误暴露 |
+| `git_enumeration_includes_untracked...` | 分别移除 `--others`、`--exclude-standard` | 文件数分别变 0、2 |
+| `tracked_markdown_is_scanned...` | 移除 `--cached`；移除 `FileNotFoundError` 容错 | 已跟踪断链漏报；缺失工作树文件 traceback |
+| `blockquote_and_list_fences...` | 分别禁用 blockquote 前缀和 list 容器识别 | 对应围栏内断链被误报 |
+| `complete_inline_link_forms...` | 禁用 angle target；移除目标转义跳过 | angle 输出缺失；转义右括号目标被截断 |
+| `absolute_escaping_and_unsupported...` | 把不支持 scheme 当作可跳过 | ftp 失败输出缺失 |
+| `invalid_url_syntax...` | 吞掉 `urlsplit` 的 `ValueError` | 非法 URL 漏报，退出码变 0 |
+| `repository_directories...` | 把空 parts 判为不存在 | 仓库根目录链接被误报 |
+| `markdown_source_symlink...` | 用 `is_file()` 跟随源符号链接 | `O_NOFOLLOW` 打开失败，测试红 |
+| `symlink_targets...` | 接受最终符号链接 | `file-link.md` 失败输出缺失 |
+| `gate_docs_runs_tests_before_checker` | 删除 Makefile 的 unittest 配方 | dry-run 命令序列不匹配 |
+
+所有临时变异均已恢复；最终工作树在写本条信道前为空。
+
+### 5. 分支去向表
+
+| 行为分支族 | 去向 |
+| --- | --- |
+| Git `--cached` / `--others` / `--exclude-standard` | 已测：已跟踪、未跟踪、忽略三类分别有可变红 fixture |
+| 枚举后的 regular-file 与 `FileNotFoundError` 竞态 | 已测：源 symlink 不扫描；索引存在但工作树消失时跳过 |
+| descriptor walk、根目录/目录/文件存在、最终/中间 symlink | 已测：目录目标、源 symlink、最终与中间目标 symlink |
+| backtick/tilde 围栏、开闭标记、blockquote/list 容器 | 已测：顶层与两类容器路径均有正反例 |
+| 行内代码、等长反引号、转义反引号、未闭合边界 | 已测：普通、转义、多反引号和 malformed 场景 |
+| 标签括号的嵌套、转义与未闭合 | 已测：nested label、`\\[` 与 malformed label |
+| plain/angle/balanced/escaped destination 与三类 title | 已测：完整链接形式集中 fixture |
+| URL scheme/netloc、非法 URL、anchor/query/percent | 已测：跳过、报错、解码与防误跳过均有断言 |
+| 绝对路径、`..`、`.`/空 parts、目录与 symlink | 已测：归一化成功/失败和 no-follow 边界 |
+| CLI 成功/失败、精确输出、退出码、文件计数、门禁顺序 | 已测：黑盒 CLI + Make dry-run + 零测试改名负测 |
+| `inline_link_targets` 入口重复 `is_escaped` 分支 | **已删除**：`matching_bracket` 已承担相同判断，转义开括号测试守住语义 |
+
+没有“既没测试也没删”的行为分支；`O_NOFOLLOW` / descriptor walk 未改。
+
+### 6. 体量、范围与自主决策
+
+```text
+新增测试                         315 行
+Makefile + README 门禁说明         2 行
+检查器新增 / 删除                  +1 / -1 行
+手写 gross                       318 / 320
+依赖                              0
+Sol 实现文件                       4 个，均在卡面白名单
+runtime/ 与 protocol.md            0 改动
+```
+
+- 选择 CLI 黑盒 seam，而不是 import 连字符文件名或复制解析逻辑；测试守的是用户可见输出与真实 Git/文件系统语义。
+- 保留完整链接形式与容器解析分支，因为它们虽主要防误红，但已有低成本变异测试；只删除确认重复且由另一分支完整承接的入口判断。
+- 不采纳 review 的 `assert_broken` 抽取建议：属于判断性 duplication，当前显式断言让每个 mutation 的预期差异更直观，也避免在仅剩 2 行预算时引入额外测试抽象。
+- 两轮双轴 review：首轮 3 个硬问题已关闭；复核 Standards 无新硬问题，Spec 抓到的 `--cached` 漏测已由 `3587f25` 修正并完成独立变异与最终全门禁。
+
+### 7. 实施发现与存疑
+
+- L1 #23、#25 均已按 #24、#26 裁决落地。
+- Python `python3` 解释器未固定属于 #26 已挂 backlog 的 L3，本卡未越界处理。
+- 无新增 L1/L2；无待裁决技术问题。
+
+请按 GJ-11 验收；验收合入前我不会启动 GJ-06。
