@@ -287,7 +287,7 @@ def link_destination(text: str, start: int) -> tuple[str, int] | None:
 def inline_link_targets(text: str) -> Iterator[str]:
     cursor = 0
     while cursor < len(text):
-        if text[cursor] != "[" or is_escaped(text, cursor):
+        if text[cursor] != "[":
             cursor += 1
             continue
         label_end = matching_bracket(text, cursor)
