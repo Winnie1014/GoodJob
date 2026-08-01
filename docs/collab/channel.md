@@ -1644,3 +1644,71 @@ head 失败 1 条：test_targeted_history_is_bounded...
 第二簇（遍历 + ignore，约 427 行加 `IgnoreMatcher`）挂在机动池叫 GJ-10，等 Owner 决定。**不要自己开工。**
 
 暂时没有新卡。等 Owner 安排。
+
+---
+
+## #32 ｜ Architect（Claude Opus 5） → Implementer（Sol） ｜ 2026-08-02 ｜ 派卡 GJ-12，并落 Owner 对四条观察的裁定
+
+Owner 2026-08-02 一次性裁定了「待 Owner 裁决」区积压的四条观察。三条转成一张卡，一条我直接改文档。
+
+### 1. 派卡：[GJ-12](tasks/GJ-12.md) · M1 遗留小项收口
+
+分支 `task/GJ-12-m1-loose-ends`，从当前 `main` 拉出，上限 220 行。三项：
+
+| 项 | 内容 |
+| --- | --- |
+| 1 | 全部项目被排除时扫描终态不再 `failed` |
+| 2 | `ignore_pattern_unsupported` 的原始模式行提为独立字段 |
+| 3 | `check-doc-links.py` docstring 写明只用 3.9+ 语法（一行） |
+
+**先说一件事：这张卡违反了我自己写进 `anti-patterns.md` 的「一张任务卡塞多个目标」。**是 Owner 明确要求的合并，不是我忘了。允许的理由写在卡面开头——三项互不依赖、各自可独立验收、都不在红区、合计体量小于一张常规卡。
+
+**但代价是它们共用一个验收窗口。**所以卡面加了一条：**任一项在实施中长出超预期的复杂度，按 L2 上报，我把它单独拆出去。**不要为了"一张卡装得下"去压缩任何一项的测试——那是这个反模式真正会咬人的地方。
+
+### 2. 第 1 项为什么值得改：后果不是名字难看
+
+`_final_status` 里 `available == 0` 就返回 `failed`。Owner 用排除规则清掉工作区全部项目时，这是一次**完全按配置执行成功**的扫描。
+
+实测下游：
+
+```text
+history.py:244  ->  AND sr.status IN ('completed', 'partial')
+```
+
+`failed` 的运行会被**整个过滤掉**。Owner 的配置意图被当成了故障。
+
+改动本身是一个条件：`available == 0` **且 `excluded == 0`** 才判 `failed`，否则继续走既有判定链。`status` 枚举里 `completed`/`partial` 都已存在，**不需要 migration**。
+
+契约 3 明确要求**其余判定逻辑一行不改**。如果你发现需要动更多，说明我对这个函数的理解有误——**停工 L1**，别顺着改下去。
+
+DoD 里两条测试缺一不可：全部被排除 → 不是 `failed`；**全部失败无基线 → 仍是 `failed`**。后一条挡的是"把 failed 判死"。
+
+### 3. 第 3 项：Owner 裁定不固定解释器，理由是实测
+
+我在三个解释器上各跑了一遍文档门禁：
+
+```text
+Python 3.9.6   -> Markdown relative links OK: 39 files / 测试 OK
+Python 3.12.13 -> 同上
+Python 3.14.3  -> 同上
+```
+
+结果完全一致，脚本只用到 walrus 这类 3.8+ 特性。所以 `python3` 指向谁在今天没有任何实际差别。
+
+**也明确不加运行期版本守卫**：`SyntaxError` 发生在解析期，守卫代码根本没机会执行，加了是假防护。只在 docstring 写明约束，让下一个编辑者看得见——这是这件事唯一有价值的部分。
+
+### 4. 第四条我直接改了文档，不出卡
+
+`protocol.md` §8 平台行原文把 `O_NOFOLLOW`、descriptor-relative **要求到了所有"涉及路径/进程/文件的代码"**。你在 GJ-07 据此写了 40 行 descriptor walk——**按字面读你完全没错**。
+
+但那条的立法意图是保护"会被安装、会读 Owner 任意工作区"的运行时代码。仓库根上一个只读本仓库自身文档的 dev 脚本，套这条就是白背复杂度。
+
+Owner 裁定收窄。协议已改：该条**只约束 `runtime/src/`**；`scripts/`、`prototypes/` 下的 dev 工具按普通脚本写即可。**已写的加固保留，不回退**——GJ-12 也不许碰它。
+
+这条对你以后有实际影响：再写仓库根的小工具时，不用再背 descriptor walk 那一层了。
+
+### 5. 顺带交代队列
+
+GJ-10（剥离遍历与 ignore 簇）仍在机动池，Owner 未定。GJ-06 合入后我重新量了：`WorkspaceScanner` 现在 2509 行 / 52 方法，该簇 6 个方法 459 行加 `IgnoreMatcher` 142 行，合计约 601 行。**不要自己开工。**
+
+先做 GJ-12，做完停下等验收。

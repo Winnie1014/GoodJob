@@ -59,10 +59,10 @@
 
 | 观察 | 出处 | 说明 |
 | --- | --- | --- |
-| 全部项目被排除时终态为 `failed` | GJ-03 验收 | `_final_status` 中 `available == 0` 即 `failed`。Owner 用排除规则清空工作区是合法操作，落 `failed` 是否恰当需裁决。GJ-03 卡面未规定，不计缺陷 |
-| ignore 原始模式行非独立字段 | GJ-05 验收 | `ignore_pattern_issues` 把原始模式行嵌在 message 文本内。GJ-05 契约 3 的"字段必须说明"合起来已说清，仅机器可读性弱一档 |
-| 文档门禁静默依赖 `python3` 解析到哪个解释器 | GJ-11 #26 裁决时实测 | `make gate-docs` 跑 `python3 scripts/check-doc-links.py`；本机 `python3` 解析到 **Python 3.9.6**（Xcode 自带），而 runtime 要求 3.12。检查器在 3.9.6 上工作正常、门禁为绿，故非缺陷。但门禁行为取决于 `python3` 恰好指向什么，是否固定解释器需 Owner 定。GJ-11 明确不处理此项 |
-| protocol §8「路径代码」条款的适用范围 | GJ-07 验收 | §8 平台行写「涉及路径/进程/文件的代码仍按 `O_NOFOLLOW`、descriptor-relative 的既有写法」。Architect 撰写时指的是**运行时**（会被安装、会读用户任意工作区），但字面覆盖到了仓库根上只读自己文档的 dev 脚本，GJ-07 据此写了 40 行加固。多守一层无害，但条款适用范围应由 Owner 裁定，非 Architect 单方收窄。GJ-11 契约 7 明确该 40 行保留不动 |
+| ~~全部项目被排除时终态为 `failed`~~ | GJ-03 验收 | **Owner 2026-08-02 裁定：改。**关键证据 `history.py:244` 的 `status IN ('completed','partial')` 会把 `failed` 运行整个过滤出下游，Owner 的配置意图被当成故障。已转 [GJ-12](../collab/tasks/GJ-12.md) 契约 1-3 |
+| ~~ignore 原始模式行非独立字段~~ | GJ-05 验收 | **Owner 2026-08-02 裁定：做。**已转 [GJ-12](../collab/tasks/GJ-12.md) 契约 4-5 |
+| ~~文档门禁静默依赖 `python3` 解析到哪个解释器~~ | GJ-11 #26 裁决时实测 | **Owner 2026-08-02 裁定：不固定解释器。**Architect 实测 Python 3.9.6 / 3.12.13 / 3.14.3 三版本结果完全一致（均 `39 files`、测试 `OK`），脚本只用 walrus 等 3.8+ 特性；运行期版本守卫拦不住 `SyntaxError`（解析期即失败），加了是假防护。仅要求在 docstring 写明「只用 3.9+ 语法」，已转 [GJ-12](../collab/tasks/GJ-12.md) 契约 6。原观察： `make gate-docs` 跑 `python3 scripts/check-doc-links.py`；本机 `python3` 解析到 **Python 3.9.6**（Xcode 自带），而 runtime 要求 3.12。检查器在 3.9.6 上工作正常、门禁为绿，故非缺陷。但门禁行为取决于 `python3` 恰好指向什么，是否固定解释器需 Owner 定。GJ-11 明确不处理此项 |
+| ~~protocol §8「路径代码」条款的适用范围~~ | GJ-07 验收 | **Owner 2026-08-02 裁定：收窄到运行时。**`O_NOFOLLOW`/descriptor-relative 只约束 `runtime/src/`（会被安装、会读 Owner 任意工作区）；仓库根 dev 工具（`scripts/`、`prototypes/`）只读本仓库自身内容，不受此条约束，已写的加固保留不回退。**已直接改入 [protocol §8](../collab/protocol.md)，不出卡。**原观察： §8 平台行写「涉及路径/进程/文件的代码仍按 `O_NOFOLLOW`、descriptor-relative 的既有写法」。Architect 撰写时指的是**运行时**（会被安装、会读用户任意工作区），但字面覆盖到了仓库根上只读自己文档的 dev 脚本，GJ-07 据此写了 40 行加固。多守一层无害，但条款适用范围应由 Owner 裁定，非 Architect 单方收窄。GJ-11 契约 7 明确该 40 行保留不动 |
 
 ## 里程碑 M1 后 · 门禁入口与结构债
 
@@ -112,11 +112,21 @@ GJ-06 验收裁决要点（信道 #31）：契约 1-7 逐条成立。`runtime/te
 
 **GJ-06 的核心约束**：零行为变更、`runtime/tests/` 一行不改（需要改测试即为停工信号）、逐字移动、对外导入面逐字不变（含 `history.py` 依赖的 `_safe_history_path` 与测试依赖的 `_open_regular_file` 两个跨模块私有名）。等价性证据为**变异对等自检**：同一组 5 次变异在重构前后两侧的失败用例集合必须逐个名字相同。
 
+### 批次 F（已出卡，待派发）
+
+| 任务 | 卡面 | 状态 | 体量上限 | 验收项 |
+| --- | --- | --- | --- | --- |
+| GJ-12 · M1 遗留小项收口 | [GJ-12](../collab/tasks/GJ-12.md) | 待派发 | 220 | `IMP-04`、`IMP-13`、`SCAN-04` |
+
+出卡缘由：Owner 2026-08-02 一次性裁定「待 Owner 裁决」区的三条观察，并要求合并为一张卡。三项为——(1) 全部项目被排除时终态不再 `failed`（`available == 0` 且 `excluded == 0` 才判 `failed`，不新增枚举、不做 migration）；(2) `ignore_pattern_unsupported` 的原始模式行提为独立字段；(3) `check-doc-links.py` docstring 写明只用 3.9+ 语法。
+
+**本卡违反 `anti-patterns.md` 的「一张任务卡塞多个目标」，系 Owner 明确要求的合并。**允许理由：三项互不依赖、各自可独立验收、均不在红区、合计体量小于一张常规卡。卡面已写明：任一项长出超预期复杂度即按 L2 上报，由 Architect 拆卡，不得为「一张卡装得下」而压缩测试。
+
 ### 机动池（未出卡）
 
 | 任务 | 说明 | 触发条件 |
 | --- | --- | --- |
-| GJ-10 · 剥离遍历与 ignore 簇 | GJ-06 的第二步，5 个方法 427 行加 `IgnoreMatcher` 约 142 行。**GJ-06 已于 `ed53ff2` 合入，前置满足**。出卡时须在 GJ-06 的 DoD 基础上补一条「对外暴露名字的可写性对等」——见 GJ-06 验收的方法论盲区 | 待 Owner 决定 |
+| GJ-10 · 剥离遍历与 ignore 簇 | GJ-06 的第二步。**GJ-06 合入后实测**：`WorkspaceScanner` 已降至 2509 行 / 52 方法，本簇为 `_discover`、`_walk_directories`、`_non_git_manifest`、`_iter_project_files`、`_is_sensitive`、`_classify` 共 6 方法 459 行，加 `IgnoreMatcher` 142 行，合计约 601 行。该簇管的是「扫描器能看到什么」——硬安全排除清单与敏感文件判定在其中。**GJ-06 已于 `ed53ff2` 合入，前置满足**。出卡时须在 GJ-06 的 DoD 基础上补一条「对外暴露名字的可写性对等」——见 GJ-06 验收的方法论盲区 | 待 Owner 决定 |
 | CI 接入 | 仓库无任何 CI 配置，门禁全靠本地。GJ-07 明确把此项排除在外，是独立决策 | Owner 决定 |
 
 ## 已完成
