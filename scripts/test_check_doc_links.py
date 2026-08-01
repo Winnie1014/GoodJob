@@ -95,17 +95,27 @@ class CheckerCliTests(unittest.TestCase):
         self.assertEqual(result.stdout, "docs/source.md:missing-visible.md\n")
 
     def test_fragment_query_and_percent_encoded_targets_resolve(self) -> None:
-        self.write("docs/target.md", "# Target\n")
         self.write("docs/target#hash.md", "# Encoded target\n")
         self.write(
             "docs/source.md",
-            """[fragment](target.md#section)
-[query](target.md?view=1)
-[encoded](target%23hash.md)
+            """[fragment](missing-fragment.md#section)
+[query](missing-query.md?view=1)
+[encoded existing](target%23hash.md)
+[encoded missing](missing%23hash.md)
 """,
         )
 
-        self.assert_clean(self.run_checker(), files=3)
+        result = self.run_checker()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "docs/source.md:missing-fragment.md#section",
+                "docs/source.md:missing-query.md?view=1",
+                "docs/source.md:missing%23hash.md",
+            ],
+        )
 
     def test_external_schemes_are_skipped(self) -> None:
         self.write(
@@ -160,6 +170,19 @@ class CheckerCliTests(unittest.TestCase):
 
         self.assert_clean(self.run_checker(), files=1)
 
+    def test_tracked_markdown_missing_from_worktree_is_skipped(self) -> None:
+        missing = self.write("removed.md", "# Removed\n")
+        subprocess.run(
+            ["git", "add", "removed.md"],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        missing.unlink()
+
+        self.assert_clean(self.run_checker(), files=0)
+
     def test_blockquote_and_list_fences_hide_links(self) -> None:
         self.write(
             "docs/source.md",
@@ -185,6 +208,7 @@ class CheckerCliTests(unittest.TestCase):
 [parenthesized title](missing-three.md (title))
 [angle target](<missing four.md> "title")
 [balanced target](missing(five).md)
+[escaped target](missing\\)six.md)
 """,
         )
 
@@ -199,6 +223,7 @@ class CheckerCliTests(unittest.TestCase):
                 "docs/source.md:missing-three.md",
                 "docs/source.md:missing four.md",
                 "docs/source.md:missing(five).md",
+                "docs/source.md:missing\\)six.md",
             ],
         )
 

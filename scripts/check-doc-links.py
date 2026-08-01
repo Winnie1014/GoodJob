@@ -42,8 +42,11 @@ def repository_markdown_files() -> list[Path]:
     paths = (ROOT / os.fsdecode(item) for item in result.stdout.split(b"\0") if item)
     regular_files: list[Path] = []
     for path in paths:
-        if stat.S_ISREG(path.lstat().st_mode):
-            regular_files.append(path)
+        try:
+            if stat.S_ISREG(path.lstat().st_mode):
+                regular_files.append(path)
+        except FileNotFoundError:
+            continue
     return sorted(regular_files)
 
 
