@@ -170,10 +170,11 @@ class CheckerCliTests(unittest.TestCase):
 
         self.assert_clean(self.run_checker(), files=1)
 
-    def test_tracked_markdown_missing_from_worktree_is_skipped(self) -> None:
+    def test_tracked_markdown_is_scanned_while_missing_worktree_file_is_skipped(self) -> None:
         missing = self.write("removed.md", "# Removed\n")
+        self.write("tracked.md", "[missing](missing.md)\n")
         subprocess.run(
-            ["git", "add", "removed.md"],
+            ["git", "add", "removed.md", "tracked.md"],
             cwd=self.repo,
             check=True,
             capture_output=True,
@@ -181,7 +182,10 @@ class CheckerCliTests(unittest.TestCase):
         )
         missing.unlink()
 
-        self.assert_clean(self.run_checker(), files=0)
+        result = self.run_checker()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "tracked.md:missing.md\n")
 
     def test_blockquote_and_list_fences_hide_links(self) -> None:
         self.write(
