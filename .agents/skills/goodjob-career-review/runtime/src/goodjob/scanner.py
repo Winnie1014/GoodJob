@@ -263,6 +263,11 @@ class ScanIssueDraft:
     remediation: str
 
 
+@dataclass(frozen=True)
+class IgnorePatternIssueDraft(ScanIssueDraft):
+    raw_pattern: str
+
+
 def _issue(
     kind: str,
     severity: Literal["info", "warning", "error"],
@@ -427,6 +432,7 @@ class IgnoreMatcher:
                                 'the leading "/" is removed and the remaining pattern may '
                                 "match the same name at any depth"
                             ),
+                            source_line=raw_line,
                         )
                     )
                 directory_only = line.endswith("/")
@@ -441,6 +447,7 @@ class IgnoreMatcher:
                                     "last matching rule wins, so this entry is re-included even "
                                     "though Git keeps files below an excluded directory ignored"
                                 ),
+                                source_line=raw_line,
                             )
                         )
                     if "**" in line:
@@ -452,6 +459,7 @@ class IgnoreMatcher:
                                     'Python fnmatch treats "**" as repeated "*"; stars may '
                                     'match "/" and have no special Git double-star semantics'
                                 ),
+                                source_line=raw_line,
                             )
                         )
                     elif "/" in line and any(character in line for character in "*?"):
@@ -463,6 +471,7 @@ class IgnoreMatcher:
                                     'Python fnmatch allows "*" and "?" in path patterns to '
                                     'match "/", unlike Git wildcards'
                                 ),
+                                source_line=raw_line,
                             )
                         )
                     patterns.append((base, line, include, directory_only))
@@ -473,13 +482,17 @@ class IgnoreMatcher:
         source: str,
         raw_pattern: str,
         approximation: str,
+        *,
+        source_line: str,
     ) -> ScanIssueDraft:
-        return _issue(
-            "ignore_pattern_unsupported",
-            "warning",
-            f"Ignore pattern {raw_pattern!r} uses syntax with non-Git semantics.",
-            f"Approximation applied: {approximation}.",
-            source,
+        return IgnorePatternIssueDraft(
+            issue_id=_new_id(),
+            kind="ignore_pattern_unsupported",
+            severity="warning",
+            relative_path=_short(source),
+            message=_short(f"Ignore pattern {raw_pattern!r} uses syntax with non-Git semantics."),
+            remediation=_short(f"Approximation applied: {approximation}."),
+            raw_pattern=source_line,
         )
 
     @classmethod
@@ -718,7 +731,7 @@ class WorkspaceScanner:
                 ).fetchall()
             }
         )
-        coverage = self._coverage(scan_run_id, dispositions, Counter(), [])
+        coverage = self._coverage(scan_run_id, dispositions, Counter(), [], {})
         coverage["overview_provenance"] = "reconstructed_without_exclusion_counts"
         coverage["excluded_by_category_available"] = False
         return coverage
@@ -860,6 +873,11 @@ class WorkspaceScanner:
             dispositions,
             excluded,
             project_exclusions,
+            {
+                issue.issue_id: issue.raw_pattern
+                for issue in all_issues
+                if isinstance(issue, IgnorePatternIssueDraft)
+            },
         )
         self._finish_run(scan_run_id, status, coverage)
         return ScanResult(
@@ -2660,7 +2678,7 @@ class WorkspaceScanner:
     ) -> str:
         del scan_run_id
         available = dispositions["fresh"] + dispositions["carried_forward"]
-        if available == 0:
+        if available == 0 and dispositions["excluded"] == 0:
             return "failed"
         if dispositions["carried_forward"] or dispositions["failed_no_baseline"]:
             return "partial"
@@ -2708,6 +2726,7 @@ class WorkspaceScanner:
         dispositions: Counter[str],
         excluded: Counter[str],
         project_exclusions: list[dict[str, str]],
+        raw_ignore_patterns: dict[str, str],
     ) -> dict[str, object]:
         with self._database.read_connection() as connection:
             worktrees = int(
@@ -2765,7 +2784,7 @@ class WorkspaceScanner:
             ).fetchall()
             ignore_issue_rows = connection.execute(
                 """
-                SELECT si.project_id, p.display_name, si.severity, si.relative_path,
+                SELECT si.issue_id, si.project_id, p.display_name, si.severity, si.relative_path,
                        si.message, si.remediation
                 FROM scan_issues AS si
                 LEFT JOIN projects AS p ON p.project_id = si.project_id
@@ -2825,6 +2844,11 @@ class WorkspaceScanner:
                     "severity": str(row["severity"]),
                     "raw_pattern_and_reason": str(row["message"]),
                     "approximation": str(row["remediation"]),
+                    **(
+                        {"raw_pattern": raw_ignore_patterns[str(row["issue_id"])]}
+                        if str(row["issue_id"]) in raw_ignore_patterns
+                        else {}
+                    ),
                 }
                 for row in ignore_issue_rows
             ],

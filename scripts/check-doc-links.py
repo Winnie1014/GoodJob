@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check repository-local targets of Markdown inline links."""
+"""Check repository-local targets of Markdown inline links.
+Use only Python 3.9+ syntax because gate-invoked python3 varies across machines."""
 
 from __future__ import annotations
 

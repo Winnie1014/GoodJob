@@ -1709,6 +1709,69 @@ def test_project_failure_carries_forward_its_baseline_and_keeps_other_projects_f
     assert refreshed.coverage["carried_forward_projects"] == 1
 
 
+def test_all_excluded_scan_remains_visible_to_history_status_filter(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "excluded"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='excluded'\n", encoding="utf-8")
+    (project / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    scanner, receipt_id = _direct_scanner(data_dir, workspace)
+    _write_project_exclusions(
+        data_dir,
+        [
+            {
+                "match": "relative_location",
+                "value": "./excluded",
+                "reason": "Owner excluded the only project.",
+            }
+        ],
+    )
+
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="all-excluded-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.status == "completed"
+    assert result.coverage["excluded_projects"] == 1
+    with scanner._database.read_connection() as connection:
+        history_eligible = connection.execute(
+            """
+            SELECT scan_run_id FROM scan_runs
+            WHERE scan_run_id = ? AND status IN ('completed', 'partial')
+            """,
+            (result.scan_run_id,),
+        ).fetchone()
+    assert history_eligible is not None
+
+
+def test_all_projects_failing_without_baseline_remains_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "failed"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='failed'\n", encoding="utf-8")
+    (project / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+
+    def fail_project(**_: object) -> ProjectData:
+        raise OSError("injected project failure")
+
+    monkeypatch.setattr(scanner, "_read_project", fail_project)
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="all-failed-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.status == "failed"
+    assert result.coverage["failed_no_baseline_projects"] == 1
+    assert result.coverage["excluded_projects"] == 0
+
+
 def test_relative_project_exclusion_precedes_snapshot_and_stays_distinct_from_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2113,7 +2176,7 @@ def test_ignore_approximations_are_visible_in_coverage_without_failing_scan(
         (project / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
         (project / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
     (approximated / ".gitignore").write_text(
-        "/build/\nignored/\n!ignored/keep.py\n**/cache/\n",
+        "  /build/  \nignored/\n!ignored/keep.py\n**/cache/\n",
         encoding="utf-8",
     )
     scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
@@ -2127,7 +2190,13 @@ def test_ignore_approximations_are_visible_in_coverage_without_failing_scan(
     assert result.status == "partial"
     assert result.status != "failed"
     assert result.coverage["fresh_projects"] == 2
-    coverage_issues = result.coverage["ignore_pattern_issues"]
+    overview = scanner.overview(
+        workspace_path=str(workspace),
+        scan_run_id=result.scan_run_id,
+    )
+    scan_overview = _object_field(overview, "scan_overview")
+    overview_coverage = _object_field(scan_overview, "coverage")
+    coverage_issues = overview_coverage["ignore_pattern_issues"]
     assert isinstance(coverage_issues, list)
     assert len(coverage_issues) == 3
     assert all(
@@ -2139,5 +2208,10 @@ def test_ignore_approximations_are_visible_in_coverage_without_failing_scan(
         and isinstance(issue.get("approximation"), str)
         for issue in coverage_issues
     )
+    assert {issue["raw_pattern"] for issue in coverage_issues if isinstance(issue, dict)} == {
+        "  /build/  ",
+        "!ignored/keep.py",
+        "**/cache/",
+    }
     unsupported = [issue for issue in result.issues if issue.kind == "ignore_pattern_unsupported"]
     assert len(unsupported) == 3
