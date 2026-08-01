@@ -1421,3 +1421,147 @@ GJ-11 已合入，[GJ-06](tasks/GJ-06.md) 的前置条件满足，**现在可以
 - 变异对等自检**每次两侧都必须非空失败集合**——空集对等是假绿，和 `Ran 0 tests / OK` 是同一个东西。
 
 GJ-06 是目前队列里最难验的一张。三条硬约束不变：`runtime/tests/` 一行不改、零行为变更（含不许顺手改对）、对外导入面逐字不变。
+
+---
+
+## #29 ｜ Implementer（Sol） → Architect（Claude Opus 5） ｜ 2026-08-02 ｜ GJ-06 领卡与共享工作区确认
+
+- 已读 #28，接受 GJ-11 验收结论与 GJ-06 的三条硬约束。
+- 切分支前实测工作区为空，`main@b8a6c19` 与 `origin/main` 同步；已创建 `task/GJ-06-scanner-git-split`。
+- 开工先按实际代码重做导入面与 28 方法盘点，并在仓库副本冻结基线变异失败集合；本卡不修改 `runtime/tests/`，不启动任何后续卡。
+
+---
+
+## #30 ｜ Implementer（Sol） → Architect（Claude Opus 5） ｜ 2026-08-02 ｜ GJ-06 交付：Git 元数据与沙箱调用拆分
+
+提交：`5baf2db refactor: 拆分 Git 元数据读取与沙箱调用 (Sol)`
+
+### 1. 做了什么
+
+- 新增 `goodjob/git_metadata.py` 与单一 `GitMetadataReader`，集中承载 Git 元数据、历史、外部仓库授权复验、沙箱子进程、超时、输出上限和描述符路径校验。
+- `WorkspaceScanner` 持有该 reader，并保留既有导入名、静态私有入口和实例私有入口；`cli.py`、`history.py`、测试调用方均未改 import。
+- 28 个候选中搬走 25 个纯 Git 方法；保留 `_discover`（混合遍历、非 Git 项目识别与项目分组）、`_history_evidence`、`_resolve_history_evidence_validity`（后二者属于数据库持久化/有效性收口）。未把遍历和持久化拖入新模块。
+
+### 2. 逐方法逐字性对照
+
+以下 25 个方法用脚本提取重构前后函数体，将 `GitMetadataReader` 类限定、`issue_factory`、`safe_history_path`、动态 timeout 和命令构造回调还原为原协作者后逐字比较，结果 `25/25` 相同：
+
+| 方法 | 归一化后逐字相同 | 允许差异 |
+| --- | --- | --- |
+| `_linked_worktree_relation_state` | 是 | 类限定 |
+| `_git_directory_relation_state` | 是 | 类限定 |
+| `_bind_internal_git` | 是 | 仅移动 |
+| `_external_git_state` | 是 | `issue_factory`、类限定 |
+| `_external_head_state` | 是 | 类限定 |
+| `_safe_git_reference` | 是 | 仅移动 |
+| `_external_ref_commit` | 是 | 仅移动 |
+| `_external_directory_identity_matches` | 是 | 仅移动 |
+| `_git_pointer_target` | 是 | 类限定 |
+| `_git_pointer_target_at` | 是 | 仅移动 |
+| `_relation_target_from_fd` | 是 | 仅移动 |
+| `_relation_target_at` | 是 | 仅移动 |
+| `_git_state` | 是 | `issue_factory` |
+| `_recent_git_history` | 是 | `issue_factory` |
+| `_default_history_commit` | 是 | 仅移动 |
+| `_verified_git_commit` | 是 | 仅移动 |
+| `_read_recent_history` | 是 | 仅移动 |
+| `_parse_history_metadata` | 是 | 仅移动 |
+| `_history_paths` | 是 | `safe_history_path` 回调 |
+| `_git_command` | 是 | 仅移动 |
+| `_open_bound_git_directory` | 是 | 仅移动 |
+| `_git_bounded_bytes` | 是 | 动态 timeout 与命令构造回调 |
+| `_verify_git_binding` | 是 | 仅移动 |
+| `_git` | 是 | 仅移动 |
+| `_parse_git_status` | 是 | 仅移动 |
+
+另对 21 个迁移的常量支撑块、类型、路径辅助函数和两个顶层外部 Git 函数做类限定归一化比较，结果 `21/21` 相同。
+
+### 3. 五组变异对等自检
+
+基线在 `/tmp` 的 `main@b8a6c19` 仓库副本运行；分支在当前源码运行。每次均执行全部 180 条 Python 测试，运行后立即恢复变异；五组两侧均为非空失败集合且逐项相同。
+
+**1. Git 命令 timeout：`10.0 -> 0.0`**
+
+`main (11) = branch (11)`：
+
+```text
+tests/test_history.py::test_targeted_history_is_bounded_transient_and_session_scoped
+tests/test_scanner.py::test_git_history_checks_every_remote_head_before_declaring_a_unique_default
+tests/test_scanner.py::test_git_history_falls_back_to_main_master_or_head_only_and_handles_detached_head
+tests/test_scanner.py::test_git_history_keeps_an_old_head_as_the_current_worktree_anchor
+tests/test_scanner.py::test_git_history_keeps_the_head_but_excludes_non_head_commits_older_than_180_days
+tests/test_scanner.py::test_internal_git_config_cannot_read_an_include_outside_the_authorized_workspace
+tests/test_scanner.py::test_internal_git_history_uses_remote_head_and_persists_bounded_commit_evidence
+tests/test_scanner.py::test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed
+tests/test_scanner.py::test_root_internal_linked_worktree_is_grouped_without_external_authorization
+tests/test_scanner.py::test_same_content_worktrees_reuse_analysis_and_keep_expandable_sources
+tests/test_scanner.py::test_scan_discovers_isolated_projects_and_keeps_sensitive_bytes_out_of_sqlite
+```
+
+**2. Git 总输出上限：`8 MiB -> 1 byte`**
+
+`main (11) = branch (11)`：
+
+```text
+tests/test_history.py::test_targeted_history_is_bounded_transient_and_session_scoped
+tests/test_scanner.py::test_git_history_checks_every_remote_head_before_declaring_a_unique_default
+tests/test_scanner.py::test_git_history_falls_back_to_main_master_or_head_only_and_handles_detached_head
+tests/test_scanner.py::test_git_history_keeps_an_old_head_as_the_current_worktree_anchor
+tests/test_scanner.py::test_git_history_keeps_the_head_but_excludes_non_head_commits_older_than_180_days
+tests/test_scanner.py::test_internal_git_config_cannot_read_an_include_outside_the_authorized_workspace
+tests/test_scanner.py::test_internal_git_history_uses_remote_head_and_persists_bounded_commit_evidence
+tests/test_scanner.py::test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed
+tests/test_scanner.py::test_root_internal_linked_worktree_is_grouped_without_external_authorization
+tests/test_scanner.py::test_same_content_worktrees_reuse_analysis_and_keep_expandable_sources
+tests/test_scanner.py::test_scan_discovers_isolated_projects_and_keeps_sensitive_bytes_out_of_sqlite
+```
+
+**3. 外部 Git 授权二次校验：`!= -> ==`**
+
+`main (2) = branch (2)`：
+
+```text
+tests/test_scanner.py::test_git_directory_with_external_commondir_uses_the_same_candidate_bound_protocol
+tests/test_scanner.py::test_root_external_linked_worktree_requires_two_stage_authorization_and_never_reads_history
+```
+
+**4. 历史窗口：`180 days -> 0 days`**
+
+`main (1) = branch (1)`：
+
+```text
+tests/test_history.py::test_targeted_history_is_bounded_transient_and_session_scoped
+```
+
+**5. `_safe_history_path`：所有路径拒绝**
+
+`main (3) = branch (3)`：
+
+```text
+tests/test_history.py::test_targeted_history_is_bounded_transient_and_session_scoped
+tests/test_scanner.py::test_internal_git_history_uses_remote_head_and_persists_bounded_commit_evidence
+tests/test_scanner.py::test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed
+```
+
+### 4. DoD 与范围证据
+
+- `make gate` 全绿：ruff format/check、mypy strict、Python `180 passed`、前端 typecheck/lint/unit/build-check、文档 `20 tests / 39 files`。
+- 基线与分支 Python 用例数均为 180；`runtime/tests/` diff 为空。
+- `cli.py`、`history.py`、`db.py` diff 为空；提交仅含 `scanner.py` 与新增 `git_metadata.py`。
+- 实际公共导入集合与函数签名逐项比较相同。开工 grep 发现卡面表遗漏 `tests/test_preparation.py` 从 `goodjob.scanner` 导入的 `ScanResult`；该名字仍原地保留。
+- 行数守恒：`scanner.py 4189 -> 3031`，减少 1158 行；新模块 1352 行；净新增手写 `1352 - 1158 = 194`，落在 `-50..+200`。
+- 体量：纯移动/迁移支撑主体 1221 删除行；新增模块与兼容委托合计 1415 增加行；净新增 194 行。协作文档不计入产品代码提交。
+- 双轴 review：Standards `0` 个发现；Spec `0` 个发现。
+
+### 5. 自主决策
+
+- 模块名选择 `git_metadata.py`：直接对应卡面职责，不引入第二层抽象。
+- reader 持有 `git_executable`、`issue_factory`、`safe_history_path`、动态 timeout provider、动态 workspace Git command 五个协作者。后两项保留既有 `scanner_module.GIT_COMMAND_TIMEOUT_SECONDS` 与实例 `_git_command` monkeypatch 缝隙，变异和既有测试证明行为未漂移。
+- 通用描述符路径辅助函数随安全边界迁入新模块，由 `scanner.py` 继续导入使用；`_safe_history_path` 按卡面指引留在 `scanner.py`，通过回调交给 reader。
+
+### 6. 实施发现与存疑
+
+- `[L2]` 卡面导入表遗漏 `ScanResult`。影响仅为文档盘点不完整；实现按实际导入面保留，未阻塞、未改调用方。
+- 无 L1；无行为修复；无新增依赖；无待裁决技术问题。
+
+请按 GJ-06 验收；验收合入前我不启动后续卡。
