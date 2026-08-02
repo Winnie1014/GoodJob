@@ -4,6 +4,7 @@
 > 权威范围：任务状态的唯一事实源（谁在做、做到哪、裁决落在哪）
 > 上游：[验收基线](acceptance-baseline.md)、[决策账本](../30-decisions/decision-log.md)
 > 维护者：Architect。Implementer 只读，状态变更走[信道](../collab/channel.md)。
+> **2026-08-02 起 Architect 由 Sol 担任**（信道 #36 交接）；Claude Opus 5 退出日常，仅做最终验收。
 
 任务卡在 [docs/collab/tasks/](../collab/tasks/)。本表只记状态与归属，不复制卡面内容。
 
@@ -127,6 +128,73 @@ GJ-06 验收裁决要点（信道 #31）：契约 1-7 逐条成立。`runtime/te
 **观察（不出卡）**：`_unsupported_issue` 内联复制了 `_issue()` 的构造步骤，两份已有一处不同——`_issue` 为 `relative_path=_short(relative_path) if relative_path else None`，副本为 `relative_path=_short(source)`。`source` 恒非空故今日无行为差异，但 `_issue` 将来变更时副本不会跟随。属「抄一份 vs 指向事实源」同族，暂不处理。
 
 **本卡违反 `anti-patterns.md` 的「一张任务卡塞多个目标」，系 Owner 明确要求的合并。**允许理由：三项互不依赖、各自可独立验收、均不在红区、合计体量小于一张常规卡。卡面已写明：任一项长出超预期复杂度即按 L2 上报，由 Architect 拆卡，不得为「一张卡装得下」而压缩测试。
+
+## 发布验收缺口盘点（2026-08-02，Architect 交接前实测）
+
+> 本节是**交接给下一任 Architect 的工作面**，数据全部实测，非估计。
+> 权威的「做完」定义是[验收基线 §6 发布条件](acceptance-baseline.md)，共六条。
+
+### 结论先行
+
+- **产品功能 FR-01~15：15/15 实现完成。**每条功能需求都有对应命令；2026-07-28 真实产出过 3 份中文包（报告 + 简历 + 141 KB 离线看板）与 1 份英文导出。
+- **自动化测试 334 条**：Python 182 + 跨引擎行为 132 + 文档检查器 20。
+- **发布条件 6 条只满足 1 条。**
+- 一句话：**代码基本写完了，验收这道闸门一步没走。**M1（批次 A–F）修的是评审查出的实现缺陷，功能在 M1 开始前就已造完。
+
+### 发布条件逐条状态
+
+| 条件 | 内容 | 状态 | 依据 |
+| --- | --- | --- | --- |
+| 1 | DOC-01~07 由 Owner 核对 | ❌ 未做 | `index.md` 中 13 项「待 Owner 核对」，5 项已接受。**只有 Owner 能做** |
+| 2 | IMP-01~28 有可复现本地证据 | ⚠️ 5/28 | 测试文件中**零处 IMP 标注**，无法逐条指认。可追溯的 5 项来自 M1 卡面：IMP-04、IMP-13、IMP-14、IMP-22、IMP-28 |
+| 3 | CodeRoute 与 SliverShield 只读验收 | ❌ 未做 | 从未执行。**且基线 §4 已过期**——点名的 `CodeRoute-t30`/`CodeRoute-t55` 工作树在本机已不存在，实际为主仓 + 一个位于 `/private/tmp/cr-t61` 的 linked worktree，「三工作树归并」场景无法按原文复现 |
+| 4 | DASH-01~12 全部通过 + 视觉验收 | ⚠️ 6/12 | 见下表；视觉验收需 Owner 人工 |
+| 5 | 仓库无个人数据 / 密钥 / 真实源码副本 | ✅ 满足 | 批次 A–F 每轮 diff 均核，零泄漏 |
+| 6 | 安装后调用可复现同一版本报告契约 | ❌ 未做 | 从未验证 |
+
+### DASH-01~12 逐条（6 有 / 3 部分 / 3 空白）
+
+证据来源为 `runtime/frontend/scripts/verify.mjs`（132 断言 × Chromium + WebKit）与 Python 侧测试。
+
+| ID | 场景 | 状态 | 证据 |
+| --- | --- | --- | --- |
+| DASH-01 | 断网零外部请求 | ✅ | `clean-external-requests`，2 引擎 × 9 视图 |
+| DASH-02 | 双引擎零 CSP 违规 + 阳性对照 | ✅ | `clean-console-errors`/`clean-page-errors`/`csp-style-positive-control`/`csp-connect-probe`/`probe-errors-separated` |
+| DASH-03 | 注入语料以文本呈现 | ✅ | Python 侧参数化用例 + GJ-09 转义集合独立锚点 |
+| DASH-04 | 多宽度无横向滚动 | ✅ | `no-horizontal-overflow`，5 宽 × 9 视图 = 45 切点 |
+| DASH-05 | `partial` 快照首屏降级带 | ❌ | **无任何断言** |
+| DASH-06 | 两次交互内到达完整证据 | ❌ | **无任何断言** |
+| DASH-07 | 打印分支 | ✅ | `print-controls-hidden`/`print-details-expanded`/`print-full-locator` |
+| DASH-08 | 纯键盘全流程 | ⚠️ | 有 `coverage-scope-link-focusable`/`deferred-search-focus`/`focused-project-enter-activation`；未覆盖「切视图 → 检索 → 筛选 → 展开证据 → 复制 locator」全链 |
+| DASH-09 | `forced-colors` 五组状态可辨 | ✅ | 5 条 `forced-colors-*` 状态断言 + `forced-colors-media-active` |
+| DASH-10 | 双快照身份条 + 跨版本深链 | ⚠️ | `version-mismatch` 视图已覆盖；两份快照并存的身份条区分未验 |
+| DASH-11 | 复习三态可区分 | ⚠️ | `review-target` 视图与 `continued`/`developing` 夹具存在，无专门断言 |
+| DASH-12 | Markdown 与 HTML 逐条一致 | ❌ | **无任何断言** |
+
+### 端到端实测（2026-08-02，当前主干）
+
+M1 全部工作完成后**首次**真实端到端运行，用合成工作区 + 临时数据目录，未触碰 Owner 真实状态：
+
+```text
+bootstrap           -> schema_version 10
+authorize           -> receipt
+validate_job_input  -> validation_sha256
+scan                -> status completed / fresh_projects 1 / modules 1 / indexed_files 3 / role_lens_context 存在
+scan（加排除规则）  -> status completed / fresh_projects 0 / excluded_projects 1 / indexed_files 0
+```
+
+第二次运行同时验证了两件刚合入的事：**GJ-03 的项目排除真实生效**（未读源码、未建快照），以及 **GJ-12 的终态修复首次在真实运行中兑现**（全排除时终态为 `completed` 而非 `failed`，修复前该运行会被 `history.py` 的 `status IN ('completed','partial')` 整个过滤掉）。
+
+**后半条链未验**：`prepare_start` → 上下文访谈 → `record_analysis` → `render` → 英文导出，自 2026-07-28 起未在真实环境跑过重构后的形态。它有 182 个单测与跨引擎门禁覆盖，但单测证明的是部件行为不变，端到端证明的是串起来还对——两者不等价。
+
+### 建议的推进顺序（供下一任 Architect 参考，非指令）
+
+1. **IMP 追溯盘点**——性价比最高。把 28 项逐条对到现有测试并标注。大概率能把条件 2 从 5/28 推到 20+/28，剩下真缺的再出卡。**这不是缺功能，是缺一层标注。**
+2. **补 DASH 三条空白（05/06/12）与两条部分（08/10/11）**——条件 4 的机检部分。
+3. **裁定基线 §4 怎么办**——`t30`/`t55` 已不存在，需 Owner 定：重建工作树复现原场景，还是改为描述当前实际形态。这是**权威文档变更，需 Owner 核对**。
+4. **完整端到端跑通**（含后半条链）——它同时是条件 3 的前置。
+5. **安装后可复现性验证**（条件 6）。
+6. **Owner 核对 13 份文档**（条件 1）。
 
 ### 机动池（未出卡）
 
