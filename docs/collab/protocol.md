@@ -11,12 +11,14 @@
 | 角色 | 承担者 | 职责 | 专属权力 |
 | --- | --- | --- | --- |
 | **Owner** | 人类 | 方向决策、产品验收、真机测试、花钱的事 | 最终决策权;信道触发权(零内容搬运) |
-| **Architect** | agent 甲 | 出任务卡、定接口契约、review、裁决实施发现、维护 backlog 与设计文档 | 契约制定权、裁决权、merge 权 |
-| **Implementer** | agent 乙 | 按任务卡实现、自检、交付报告、上报实施发现 | 绿区自主决策权(见 §6) |
+| **Architect** | Sol（自信道 #36 起） | 出任务卡、定接口契约、review、裁决实施发现、维护 backlog 与设计文档 | 契约制定权、裁决权、merge 权 |
+| **Implementer** | Owner 新配置的 agent；首次领卡时自报提交尾注身份 | 按任务卡实现、自检、交付报告、上报实施发现 | 绿区自主决策权(见 §6) |
 
 **权力铁三角**:契约 Architect 定;发现 Implementer 报;**裁决之前一律按契约实现**。任何一环越权都是协作事故。
 
 Owner 不搬运内容:两个 agent 之间的沟通全部走信道(§3),Owner 只用固定短语触发(如"看信道"),需要 Owner 决策的事项(产品分歧、范围变更、花钱、安全敏感)不走信道,直接找 Owner。
+
+Claude Opus 5 自信道 #36 起退出日常协作，只在 Owner 确认全部发布条件就绪后承担最终验收；其不领取实现卡、不参与日常裁决，也不与 Architect 形成并行契约源。
 
 ## 2. 任务生命周期
 
@@ -28,11 +30,23 @@ backlog 取任务 → Architect 出任务卡 → 信道派卡 → Implementer �
 
 任务卡是**唯一事实源**:自包含 + 硬边界 + 机器可验收 DoD。派活提示词只指向卡面路径,不复制内容。
 
+### 2.1 验收强度分档
+
+**强度由“这段代码面对谁”决定，不由“它有多重要”决定。**Architect 在出卡时定档并同步 backlog，Implementer 不自行升降档。
+
+| 档 | 适用 | 威胁模型 | 验收动作 |
+| --- | --- | --- | --- |
+| **常规** | 只处理仓库自身产生的输入：工程基座、内部 schema、状态机、计算逻辑、内部工具、协作文档 | 写错了 | 门禁全绿、正反例成立、契约一致 |
+| **对抗** | 处理外部或不可信输入：Owner 工作区/JD、Git 元数据、用户回答、外部路径、渲染数据或安全边界本身 | 被恶意或畸形输入攻击 | 常规全部，外加恶意输入矩阵、边界绕过与失败关闭证明 |
+
+判据是一个具体问题：**谁会攻击这段代码？**没有外部输入或攻击面的内部证据盘点就是常规档；扫描 Owner 工作区、消费 JD、处理 capability、渲染工作区派生数据等任务属于对抗档。不得用“更重要所以更严”临场升档，也不得因实现体量小而给安全边界降档。
+
 ## 3. 信道协议
 
 双 agent 通过项目仓库内共享 markdown 文件异步通信。**GoodJob 信道路径:`docs/collab/channel.md`**。
 
 - **只追加**:消息永不修改、永不删除;用 `git diff` 读增量。
+- **追加方式**:写自己的消息只能在物理 EOF 追加，不整篇重写、不对全文做模糊替换；文件越长，全文改写越容易误伤历史消息。
 - **编号**:消息编号 `#N` 全局严格递增,回复引用编号(如"就 #12 的 L1")。
 - **消息头格式**:`## #N ｜ <发件人> → <收件人> ｜ <日期> ｜ <主题>`
 - **消息类型**:派卡 / 交付报告 / L1 裁决请求 / 裁决 / 验收结论 / 收口通知 / 技术问答 / 形态探测。
@@ -134,7 +148,7 @@ backlog 取任务 → Architect 出任务卡 → 信道派卡 → Implementer �
 | 类型安全 | Python:`mypy` strict,覆盖 `src`/`tests`/`scripts`。TypeScript:`strict` + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`,禁隐式 `any` |
 | 错误处理 | 显式错误类型;本地命令边界只返回 `goodjob.errors` 中带稳定 `code` 的错误,不向外泄露栈或路径细节 |
 | 注释/文案 | **代码注释、docstring、`ScanIssue` 文案沿用运行时既有的英文**;协作文档、任务卡、信道消息、看板 UI 文案与产品文档用简体中文。注释解释"为什么"而非"是什么" |
-| 提交 | Conventional Commits(feat/fix/docs/refactor/test/chore + 中文描述);**commit 描述尾注执行者身份**(如 `(Sol)` / `(Claude Opus 5)`)——双 agent 同仓提交,审计必需 |
+| 提交 | Conventional Commits(feat/fix/docs/refactor/test/chore + 中文描述);**commit 描述尾注执行者身份**(Architect 用 `(Sol)`；Implementer 用首次领卡时自报的稳定身份)——双 agent 同仓提交,审计必需 |
 | 分支 | `task/<ID>-短描述`;单卡一分支;批量模式:统一分支、按卡独立 commit |
 | 依赖 | **运行时 Python 侧 `dependencies = []` 是刻意的供应链边界,任何新增运行时依赖一律红区 L1**。dev 依赖与前端 devDependencies 需卡面明确批准并列 companion 闭包 |
 | 平台 | 运行时当前是 macOS-only(`sandbox-exec` + BSD `ps`),见 README 环境要求;不引入新的平台假设。**`O_NOFOLLOW`、descriptor-relative 的既有写法只约束运行时**(`runtime/src/` 下、会被安装、会读 Owner 任意工作区的代码)——该条的立法意图是保护"读别人的目录"这件事。仓库根的 dev 工具(`scripts/`、`prototypes/`)只读本仓库自身内容,不受此条约束,按普通脚本写即可;已写的加固保留,不回退。(裁定来源:GJ-07 验收,该条字面覆盖到 dev 脚本,致其多背 40 行 descriptor walk;Owner 2026-08-02 裁定收窄) |
