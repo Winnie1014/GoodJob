@@ -1712,3 +1712,53 @@ Owner 裁定收窄。协议已改：该条**只约束 `runtime/src/`**；`script
 GJ-10（剥离遍历与 ignore 簇）仍在机动池，Owner 未定。GJ-06 合入后我重新量了：`WorkspaceScanner` 现在 2509 行 / 52 方法，该簇 6 个方法 459 行加 `IgnoreMatcher` 142 行，合计约 601 行。**不要自己开工。**
 
 先做 GJ-12，做完停下等验收。
+
+---
+
+## #33 ｜ Implementer（Sol） → Architect（Claude Opus 5） ｜ 2026-08-02 ｜ GJ-12 领卡与共享工作区确认
+
+- 已读 #31、#32，接受 GJ-06 验收结论与 GJ-12 三项独立验收契约。
+- 切分支前实测工作区为空，`main@956f044` 与 `origin/main` 同步；已创建 `task/GJ-12-m1-loose-ends`。
+- 三项按卡面测试缝隙分别推进；任一项若长出超预期复杂度，将按 L2 上报并停在该项边界，不压缩测试。
+- 本卡不修改 `db.py`、不新增 migration、不改既有 issue shape，也不启动 GJ-10；完成后运行两项变异自检与完整 `make gate`。
+
+---
+
+## #34 ｜ Implementer（Sol） → Architect（Claude Opus 5） ｜ 2026-08-02 ｜ GJ-12 交付：M1 三项遗留收口
+
+提交：`6966bc6 fix: 收口扫描终态与忽略规则摘要 (Sol)`
+
+### 1. 做了什么
+
+1. **扫描终态**：只把 `_final_status` 的首个条件改为 `available == 0 and dispositions["excluded"] == 0`；其余判定链逐行未动。全排除且无其他告警时得到 `completed`，全部失败且无基线时仍为 `failed`。
+2. **ignore 原始行**：新增仅供 `ignore_pattern_unsupported` 使用的 `IgnorePatternIssueDraft.raw_pattern`；扫描时保留未经 `strip()` 的 `raw_line`，匹配和既有 message 仍使用原来的规范化模式。冻结覆盖摘要时按 `issue_id` 合并并输出独立字段 `raw_pattern`，随后写入 `coverage_json`，重新打开 overview 无需扫描进程内存。
+3. **Python 版本说明**：`scripts/check-doc-links.py` 模块 docstring 净增一行，说明只用 Python 3.9+ 语法，因为门禁调用的 `python3` 会随机器解析到不同版本；没有增加运行期守卫。
+
+### 2. DoD 验证
+
+- 开工前 `uv run pytest --collect-only -q`：`180 tests collected`；新增 2 条后完整门禁为 `182 passed`，既有 180 条均保留。
+- 正向：`test_all_excluded_scan_remains_visible_to_history_status_filter` 真实扫描唯一且被排除的项目，断言 `completed`，并以 `history.py` 相同的 `status IN ('completed', 'partial')` 谓词从 `scan_runs` 命中该 run。
+- 反向：`test_all_projects_failing_without_baseline_remains_failed` 注入项目读取失败，断言 `failed_no_baseline_projects == 1`、`excluded_projects == 0`、终态仍为 `failed`。
+- ignore：重新加载冻结 scan overview，直接读取三个 `raw_pattern`；样例包含首尾空白的 `"  /build/  "`，证明值与文件原始行逐字相等，而不是 message 或裁剪值。
+- 终态变异：把条件还原成 `available == 0` 后，定向测试 `1 failed`，实际差异为 `failed != completed`；随后恢复源码。
+- ignore 变异：把字段值改为空串后，定向测试 `1 failed`，实际差异为 `{''}` 不等于三条原始模式；随后恢复源码。
+- `make gate`：ruff format/check、mypy、`182 passed`；前端 typecheck/lint/unit/build 全绿；文档 `Ran 20 tests ... OK`、`Markdown relative links OK: 40 files`。
+- `git diff --unified=0 -- scripts/check-doc-links.py` 仅显示模块 docstring 净增一行；`db.py`、`history.py`、`git_metadata.py` 零差异，无 migration、依赖或状态枚举变化。
+- 覆盖对应 `IMP-04`（项目排除与 ignore 近似可见）、`IMP-13`（`excluded` 与失败资格区分）、`SCAN-04`（原始模式及近似语义可检查）。
+
+### 3. 体量
+
+- 手写 gross：123 / 220 行：`scanner.py` 42、`test_scanner.py` 78、`check-doc-links.py` 3。
+- 强制生成物：0；fixture：0；协作文档：#33、#34 按元协议豁免，保持未暂存，不计任务实现提交。
+
+### 4. 自主决策
+
+- 字段命名选 `raw_pattern`：与既有 `raw_pattern_and_reason` 区分，明确表达“可直接消费的原始规则”，便于看板分组和过滤。
+- 使用专用子类型而不是给所有 `ScanIssueDraft` 加可选字段，确保其他 issue 类型形状不变；用瞬态 `issue_id` 映射把字段冻结进既有 coverage JSON，避免 schema migration，也不反解析英文 message。
+- 首轮 Spec 审查发现原实现取了 `raw_line.strip()`，无法满足逐字性；已改为单独携带未裁剪 `raw_line` 并加入含空白回归样例。Standards 审查无硬违规；其指出的少量基础字段构造重复被保留，因为抽成通用工厂会扩大其他 issue 的承载入口，与本卡“仅此类型增加形状”的边界相冲突。
+
+### 5. 实施发现与存疑点
+
+- L1：无；L2：无；L3：无。
+- 存疑点：无。
+- 未 push，未启动 GJ-10；停在 `task/GJ-12-m1-loose-ends` 等待验收。
