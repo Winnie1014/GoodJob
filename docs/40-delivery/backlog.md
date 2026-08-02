@@ -116,9 +116,15 @@ GJ-06 验收裁决要点（信道 #31）：契约 1-7 逐条成立。`runtime/te
 
 | 任务 | 卡面 | 状态 | 体量上限 | 验收项 |
 | --- | --- | --- | --- | --- |
-| GJ-12 · M1 遗留小项收口 | [GJ-12](../collab/tasks/GJ-12.md) | 待派发 | 220 | `IMP-04`、`IMP-13`、`SCAN-04` |
+| GJ-12 · M1 遗留小项收口 | [GJ-12](../collab/tasks/GJ-12.md) | ✅ 已验收合入（信道 #35，merge `9dfdd09`） | 123/220 | `IMP-04`、`IMP-13`、`SCAN-04` |
 
 出卡缘由：Owner 2026-08-02 一次性裁定「待 Owner 裁决」区的三条观察，并要求合并为一张卡。三项为——(1) 全部项目被排除时终态不再 `failed`（`available == 0` 且 `excluded == 0` 才判 `failed`，不新增枚举、不做 migration）；(2) `ignore_pattern_unsupported` 的原始模式行提为独立字段；(3) `check-doc-links.py` docstring 写明只用 3.9+ 语法。
+
+验收裁决要点（信道 #35）：契约 1-6 逐条成立，体量 123/220，禁区文件零改动，无 migration、无新增依赖、无状态枚举变化。`_final_status` 确认只改一个条件表达式、其后判定链一行未动；`check-doc-links.py` diff 仅 docstring。Architect 独立复现两次变异自检，均单条命中；`make gate` 全绿 `182 passed`（180 既有 + 2 新增）。三处实现判断认可：`IgnorePatternIssueDraft` 用专用子类型守住契约 5；保留未 `strip()` 的 `raw_line` 并以 `"  /build/  "` 带空白样例证明逐字性（Spec 首轮抓到原实现取了 `.strip()`）；测试从 `result.coverage` 改读 `overview`，证明字段熬过冻结与重新加载。
+
+**Architect 实测发现（不影响验收，记账）**：`_overview_coverage` 在 `scan_run_overviews` 无行时（扫描中断、未走到 `_finish_run`）走重建分支，`_coverage(..., {})` 传空字典，导致 `ignore_pattern_issues` 条目上 **`raw_pattern` 键整个缺失**（其余六个键均在），消费方写 `issue["raw_pattern"]` 会 KeyError。已在临时库上实测复现。**非实现缺陷**——契约 4 只写了「进入覆盖摘要时成为独立字段」，未提降级路径，且 GJ-03 的 `project_exclusions` 在同一路径上同样为空并已被接受。**留待下一张触及覆盖摘要形状的卡一并定「降级路径字段一致性」；明确不得并入 GJ-10（纯重构卡，卡面禁止顺手改对）。**
+
+**观察（不出卡）**：`_unsupported_issue` 内联复制了 `_issue()` 的构造步骤，两份已有一处不同——`_issue` 为 `relative_path=_short(relative_path) if relative_path else None`，副本为 `relative_path=_short(source)`。`source` 恒非空故今日无行为差异，但 `_issue` 将来变更时副本不会跟随。属「抄一份 vs 指向事实源」同族，暂不处理。
 
 **本卡违反 `anti-patterns.md` 的「一张任务卡塞多个目标」，系 Owner 明确要求的合并。**允许理由：三项互不依赖、各自可独立验收、均不在红区、合计体量小于一张常规卡。卡面已写明：任一项长出超预期复杂度即按 L2 上报，由 Architect 拆卡，不得为「一张卡装得下」而压缩测试。
 
