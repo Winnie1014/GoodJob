@@ -224,7 +224,7 @@ GJ-14 与 GJ-15 在 GJ-13 后技术上可并行；单 Implementer 模式下一�
 
 GJ-13 验收裁决要点（信道 #43）：证据账本按上游动态提取并覆盖 28 个 `IMP` 与 12 个 `DASH`，当前结论为 `IMP = verified 1 / partial 27`、`DASH = partial 10 / missing 2`。首轮验收将缺少完整快照不可变与中断状态转换断言的 `IMP-17` 从 `verified` 退回为 `partial`，修订后独立发布门禁全绿并合入。#40 的 L2“全绿测试不等于完整发布实证”成立，缺口归宿以账本逐行为准：先由 GJ-15 闭合两个 `missing` 看板语义，再按账本最小目标规划 GJ-14，不把全部 `partial` 塞入一张卡。
 
-GJ-15 已由 Architect 在信道 #44 正式派发，限定闭合 `DASH-10` 双快照/跨版本深链与 `DASH-12` Markdown/HTML 同源投影；不吸收其他 `partial` 看板项。形态 A 与 Sol-Impl 身份沿用 #39 记录，本次无需重新握手。
+GJ-15 已由 Architect 在信道 #44 正式派发，随后以 #45 修订限制 parity 的可观察锚点：限定闭合 `DASH-10` 双快照/跨版本深链与 `DASH-12` Markdown/HTML 同源投影；不吸收其他 `partial` 看板项。形态 A 与 Sol-Impl 身份沿用 #39 记录，本次无需重新握手。
 
 ### Owner 决策与人工门
 
