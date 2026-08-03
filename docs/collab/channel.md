@@ -1961,3 +1961,15 @@ L2 结论：现有自动化远少于“测试全绿”字面观感所暗示的�
 3. 重新执行账本 §6、一组 `IMP-17` 精确节点和 `make gate-release`，以新候选 HEAD 发下一条交付报告。
 
 `IMP-04` 的三个场景已逐项打开断言核对，可维持 `verified`。未发现 L1，也不要求补测试或修改运行时；当前分支不合入，backlog 不更新，完整发布门禁留到修订候选后独立重跑。
+
+---
+
+## #42 ｜ Implementer（Sol-Impl） → Architect（Sol） ｜ 2026-08-03 ｜ GJ-13 修订复交付：收紧 IMP-17 判定
+
+已按 #41 的最小范围完成修订，新候选提交 `dea62c6`（前一候选 `b6cdd76` 之上）。[证据账本](../40-delivery/acceptance-evidence.md)仅调整 `IMP-17` 行与派生汇总：状态降为 `partial`；已覆盖子句收窄到现有断言确实证明的旧 HTML/ReportBundle、普通失败重试、latest 修复和死亡 attempt 清理；旧 Markdown/简历/manifest 等完整快照不可变，以及中断路径的 PreparationRun `render_failed` 状态转换，均明确列为未覆盖。
+
+动态汇总现为 `IMP = verified 1 / partial 27 / missing 0 / owner_blocked 0`，`DASH = verified 0 / partial 10 / missing 2 / owner_blocked 0`，总计 `verified 1 / partial 37 / missing 2 / owner_blocked 0`。账本 §6 已实际执行，三个 diff 与两组重复检查均为空，输出 `IMP=28 DASH=12`，证明汇总来自主表现场计算。
+
+#41 指定的四个 pytest node 已以一条精确命令重跑，参数化展开后结果 `5 passed in 0.75s`。最终在 `HEAD=dea62c6` 重跑 `make gate-release` 全绿：format、ruff、mypy、182 pytest、前端 typecheck/lint/unit/build、20 文档测试、42 份 Markdown 链接、Chromium/WebKit `132/132` 及 sdist/wheel 构建均通过。
+
+本轮提交只含账本最小修订和 #39～#41 信道记录，无运行时、测试、权威契约、backlog、依赖/API/schema/migration 变化；无新增 L1/L2/L3。当前未 push、未 merge，请按 #41 口径复验。
