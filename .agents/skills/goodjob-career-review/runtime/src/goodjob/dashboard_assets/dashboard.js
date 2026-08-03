@@ -200,6 +200,12 @@
       parent.append(node);
     }
   }
+  function mirrorLimitationData(item, limitation) {
+    item.dataset.limitationId = limitation.limitation_id;
+    item.dataset.kind = limitation.kind;
+    item.dataset.severity = limitation.severity;
+    item.dataset.projectId = limitation.project_id ?? "";
+  }
   function statusTag(value, label = statusLabel(value)) {
     const tag = element("span", "status-tag");
     tag.dataset.status = value;
@@ -322,7 +328,12 @@
       const main = element("main");
       main.id = "main";
       if (route.version !== "v1") {
-        main.append(this.renderRouteError("\u8BE5\u94FE\u63A5\u5C5E\u4E8E\u5176\u4ED6\u5951\u7EA6\u7248\u672C\uFF0C\u5F53\u524D\u5FEB\u7167\u53EA\u652F\u6301 v1\u3002"));
+        main.append(
+          this.renderRouteError(
+            "\u8BE5\u94FE\u63A5\u5C5E\u4E8E\u5176\u4ED6\u5951\u7EA6\u7248\u672C\uFF0C\u5F53\u524D\u5FEB\u7167\u53EA\u652F\u6301 v1\u3002",
+            "contract-version-mismatch"
+          )
+        );
       } else if (route.view === "overview") {
         main.append(this.renderOverview());
       } else if (route.view === "project") {
@@ -342,6 +353,9 @@
     renderForensicStrip() {
       const strip = element("div", "forensic-strip");
       strip.setAttribute("aria-label", "\u51BB\u7ED3\u5FEB\u7167\u8EAB\u4EFD");
+      strip.dataset.packageStatus = this.bundle.package_status;
+      strip.dataset.preparationRunId = this.bundle.preparation_run_id;
+      strip.dataset.bundleSha256 = this.bundle.bundle_sha256;
       strip.append(
         statusTag(this.bundle.package_status),
         element("span", void 0, `run ${this.bundle.preparation_run_id.slice(0, 12)}`),
@@ -459,7 +473,7 @@
         const list = element("ul", "degradation-list");
         for (const limitation of limitations) {
           const item = element("li", "degradation-item");
-          item.dataset.severity = limitation.severity;
+          mirrorLimitationData(item, limitation);
           const label = element("div", "hanging-label");
           label.append(statusTag(limitation.severity), element("span", void 0, limitation.kind));
           const copy = element("div", "degradation-copy");
@@ -636,7 +650,7 @@
       const list = element("ul", "degradation-list");
       for (const limitation of limitations) {
         const item = element("li", "degradation-item");
-        item.dataset.severity = limitation.severity;
+        mirrorLimitationData(item, limitation);
         const label = element("div", "hanging-label");
         label.append(statusTag(limitation.severity), element("span", void 0, limitation.kind));
         const copy = element("div", "degradation-copy");
@@ -842,6 +856,8 @@
       const list = element("div", "claim-list");
       for (const claim of claims) {
         const details = element("details", "claim-item focus-item");
+        details.dataset.claimId = claim.claim_id;
+        details.dataset.facets = JSON.stringify(claim.facets);
         details.tabIndex = 0;
         details.open = forceOpen;
         const summary = element("summary", "claim-summary");
@@ -898,6 +914,11 @@
     }
     renderEvidenceItem(item, relation) {
       const wrapper = element("div");
+      wrapper.dataset.evidenceId = item.evidence_id;
+      wrapper.dataset.relation = relation.relation;
+      wrapper.dataset.validity = item.validity;
+      wrapper.dataset.commitState = item.commit_state;
+      wrapper.dataset.supportedFacets = JSON.stringify(relation.supported_facets);
       const heading = element("div", "evidence-heading");
       heading.append(
         statusTag(item.validity),
@@ -1178,8 +1199,9 @@
       view.append(pitch, questionSection, review);
       return view;
     }
-    renderRouteError(message) {
+    renderRouteError(message, errorKind) {
       const error = element("div", "route-error");
+      if (errorKind) error.dataset.errorKind = errorKind;
       error.append(element("h2", "section-title", "\u65E0\u6CD5\u6253\u5F00\u6DF1\u94FE"), element("p", void 0, message));
       return error;
     }

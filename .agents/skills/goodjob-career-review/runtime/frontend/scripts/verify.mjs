@@ -9,6 +9,8 @@ const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeRoot = resolve(frontendRoot, "..");
 const outputDirectory = resolve(frontendRoot, "verify-out");
 const outputFile = resolve(outputDirectory, "dashboard.html");
+const completedOutputFile = resolve(outputDirectory, "dashboard-completed.html");
+const reportOutputFile = resolve(outputDirectory, "report.zh-CN.md");
 const mutation = process.argv.find((value) => value.startsWith("--mutation="))?.split("=", 2)[1] ?? null;
 
 const widths = [1440, 1280, 1024, 768, 375];
@@ -23,7 +25,20 @@ const views = [
   ["review-target", "#/v1/interview/target/target_continued"],
   ["version-mismatch", "#/v9/overview"],
 ];
+const requiredContractAssertions = [
+  "dash10-completed-snapshot-identity",
+  "dash10-partial-snapshot-identity",
+  "dash10-same-role-distinct-snapshots",
+  "dash10-cross-version-deep-link-rejected",
+  "dash10-cross-version-no-wrong-object",
+  "dash12-claim-evidence-parity",
+  "dash12-limitation-parity",
+  "dash12-no-html-only-conclusions",
+];
 const locatorText = '{"line_end":12,"line_start":10,"path":"src/app.py"}';
+const hostileValue = 'VERIFY" <script> javascript:';
+const hostileBidiValue = `${hostileValue}\u202e`;
+const hostileLimitationId = `limitation_global_${hostileBidiValue}`;
 const statusChannels = {
   fresh: { symbol: "✓", label: "本次新鲜 1" },
   carried_forward: { symbol: "◷", label: "沿用基线 1" },
@@ -148,6 +163,9 @@ const claims = [
   claim("c_user", "user_confirmed", ["e_missing"], "p_carried"),
   claim("c_conflict", "conflicted", ["e_plan"]),
 ];
+claims[1].evidence_relations[0].supported_facets = ["implemented", "verified"];
+claims[1].facets.push(hostileValue);
+claims[1].evidence_relations[0].supported_facets.push(hostileValue);
 for (const item of projects) {
   item.claim_ids = claims.filter((entry) => entry.project_id === item.project_id).map((entry) => entry.claim_id);
 }
@@ -185,16 +203,28 @@ const bundle = {
     disposition_counts: { fresh: 1, carried_forward: 1, failed_no_baseline: 1, excluded: 1 },
     excluded_by_category: { generated_or_dependency: 1 },
     excluded_by_category_available: true,
-    limitations: [{
-      limitation_id: "limitation_primary",
-      kind: "scan_issue:partial_read",
-      severity: "medium",
-      project_id: "p_primary",
-      message_tokens: tokens("主要项目存在一项可定位的扫描限制。"),
-      impact_tokens: tokens("该项目的证据覆盖可能不完整。"),
-      remediation_tokens: tokens("在证据视图按项目核对。"),
-      filter_route: "#/v1/evidence?project=p_primary",
-    }],
+    limitations: [
+      {
+        limitation_id: "limitation_primary",
+        kind: "scan_issue:partial_read",
+        severity: "medium",
+        project_id: "p_primary",
+        message_tokens: tokens("主要项目存在一项可定位的扫描限制。"),
+        impact_tokens: tokens("该项目的证据覆盖可能不完整。"),
+        remediation_tokens: tokens("在证据视图按项目核对。"),
+        filter_route: "#/v1/evidence?project=p_primary",
+      },
+      {
+        limitation_id: hostileLimitationId,
+        kind: "job_context:assumed_level",
+        severity: "low",
+        project_id: null,
+        message_tokens: tokens(`岗位职级来自冻结假设：${hostileBidiValue}`),
+        impact_tokens: tokens("准备角度可能与真实 JD 有偏差。"),
+        remediation_tokens: tokens("补充 JD 后创建新的准备运行。"),
+        filter_route: "#/v1/overview",
+      },
+    ],
   },
   projects,
   claims,
@@ -242,33 +272,251 @@ const bundle = {
       ...evidenceItems.map((item) => ({ item_id: `evidence:${item.evidence_id}`, kind: "evidence", route: `#/v1/evidence?evidence=${item.evidence_id}`, search_text: item.evidence_id, project_id: item.project_id, module_id: item.module_id })),
     ],
   },
-  export_projection: { projection_sha256: "unused-by-dashboard" },
+  export_projection: {
+    contract_version: "export-projection-v1",
+    items: [],
+    projection_sha256: "unused-by-dashboard",
+  },
 };
 
-const python = [
-  "import json, sys",
-  "from goodjob.reporting import render_dashboard_html, report_bundle_sha256",
-  "bundle = json.load(sys.stdin)",
-  "bundle['bundle_sha256'] = report_bundle_sha256(bundle)",
-  "sys.stdout.write(render_dashboard_html(bundle))",
-].join("; ");
+function renderSnapshot(source) {
+  const python = [
+    "import json, sys",
+    "from goodjob.reporting import render_dashboard_html, render_report_markdown, report_bundle_sha256",
+    "bundle = json.load(sys.stdin)",
+    "bundle['bundle_sha256'] = report_bundle_sha256(bundle)",
+    "result = {'bundle': bundle, 'html': render_dashboard_html(bundle), 'markdown': render_report_markdown(bundle)}",
+    "sys.stdout.write(json.dumps(result, ensure_ascii=False))",
+  ].join("; ");
+  const rendered = spawnSync("uv", ["run", "python", "-c", python], {
+    cwd: runtimeRoot,
+    input: JSON.stringify(source),
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (rendered.status !== 0) {
+    process.stderr.write(JSON.stringify({ phase: "render", status: rendered.status, stderr: rendered.stderr }, null, 2));
+    process.exit(1);
+  }
+  try {
+    return JSON.parse(rendered.stdout);
+  } catch (error) {
+    process.stderr.write(JSON.stringify({ phase: "parse-rendered-snapshot", error: String(error) }, null, 2));
+    process.exit(1);
+  }
+}
 
 await mkdir(outputDirectory, { recursive: true });
-const rendered = spawnSync("uv", ["run", "python", "-c", python], {
-  cwd: runtimeRoot,
-  input: JSON.stringify(bundle),
-  encoding: "utf8",
-  maxBuffer: 16 * 1024 * 1024,
-});
-if (rendered.status !== 0) {
-  process.stderr.write(JSON.stringify({ phase: "render", status: rendered.status, stderr: rendered.stderr }, null, 2));
-  process.exit(1);
-}
-let html = rendered.stdout;
+const partialSnapshot = renderSnapshot(bundle);
+const completedSource = structuredClone(bundle);
+completedSource.package_status = "completed";
+completedSource.preparation_run_id = `preparation_verify_browser_gate_completed_${hostileBidiValue}`;
+const completedSnapshot = renderSnapshot(completedSource);
+let html = partialSnapshot.html;
+let reportMarkdown = partialSnapshot.markdown;
 if (mutation === "csp-disabled") {
   html = html.replace(/<meta http-equiv="Content-Security-Policy"[^>]+>\n/, "");
 }
-await writeFile(outputFile, html, "utf8");
+if (mutation === "parity-field") {
+  const mutatedMarkdown = reportMarkdown.replace(
+    "`implementation` · `committed` · `current`",
+    "`implementation` · `committed` · `stale`",
+  );
+  if (mutatedMarkdown === reportMarkdown) throw new Error("parity-field mutation did not alter Markdown");
+  reportMarkdown = mutatedMarkdown;
+}
+await Promise.all([
+  writeFile(outputFile, html, "utf8"),
+  writeFile(completedOutputFile, completedSnapshot.html, "utf8"),
+  writeFile(reportOutputFile, reportMarkdown, "utf8"),
+]);
+
+function requireProjection(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function decodeEntities(value) {
+  return value
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+function inlineCodeValues(line) {
+  return [...line.matchAll(/`([^`\r\n]*)`/gu)].map((match) => decodeEntities(match[1]));
+}
+
+function decodeMarkdownText(value) {
+  return decodeEntities(value)
+    .replace(/\*\*([^*]+)\*\*/gu, "$1")
+    .replace(/`([^`\r\n]*)`/gu, (_, code) => decodeEntities(code))
+    .replace(/\\([\\`*_{}\[\]()#+.!|~:-])/gu, "$1");
+}
+
+function compareStrings(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function limitationContentKey(limitation) {
+  return JSON.stringify([
+    limitation.kind,
+    limitation.severity,
+    limitation.message,
+    limitation.impact,
+    limitation.remediation,
+  ]);
+}
+
+function limitationKey(limitation) {
+  return JSON.stringify([limitation.scope, limitationContentKey(limitation)]);
+}
+
+function reconcileLimitations(overviewLimitations, projectLimitations) {
+  const remaining = [...overviewLimitations];
+  const scoped = [];
+  for (const projectLimitation of projectLimitations) {
+    const key = limitationContentKey(projectLimitation);
+    const matches = remaining
+      .map((limitation, index) => ({ limitation, index }))
+      .filter(({ limitation }) => limitationContentKey(limitation) === key);
+    requireProjection(matches.length === 1, `project limitation has ${matches.length} overview matches: ${key}`);
+    const match = matches[0];
+    remaining.splice(match.index, 1);
+    scoped.push({ ...match.limitation, ...projectLimitation });
+  }
+  const result = [...remaining, ...scoped].sort((left, right) => compareStrings(limitationKey(left), limitationKey(right)));
+  const keys = result.map(limitationKey);
+  requireProjection(new Set(keys).size === keys.length, "limitation semantic keys must be unique");
+  return result;
+}
+
+function normalizeClaims(claims) {
+  requireProjection(claims.length > 0, "claim projection must not be empty");
+  const claimIds = claims.map((claim) => claim.claim_id);
+  requireProjection(claimIds.every(Boolean), "claim projection contains an empty ID");
+  requireProjection(new Set(claimIds).size === claimIds.length, "claim projection contains duplicate IDs");
+  return claims.map((claim) => {
+    requireProjection(Array.isArray(claim.facets) && claim.facets.length > 0, `claim ${claim.claim_id} has no facets`);
+    requireProjection(Array.isArray(claim.evidence_relations) && claim.evidence_relations.length > 0, `claim ${claim.claim_id} has no Evidence relations`);
+    const relations = claim.evidence_relations.map((relation) => {
+      requireProjection(
+        [relation.evidence_id, relation.relation, relation.validity, relation.commit_state].every(Boolean),
+        `claim ${claim.claim_id} has an incomplete Evidence relation`,
+      );
+      requireProjection(
+        Array.isArray(relation.supported_facets) && relation.supported_facets.length > 0,
+        `claim ${claim.claim_id} Evidence ${relation.evidence_id} has no supported facets`,
+      );
+      return relation;
+    }).sort((left, right) => compareStrings(
+      JSON.stringify([left.evidence_id, left.relation]),
+      JSON.stringify([right.evidence_id, right.relation]),
+    ));
+    const relationKeys = relations.map((relation) => JSON.stringify([relation.evidence_id, relation.relation]));
+    requireProjection(new Set(relationKeys).size === relationKeys.length, `claim ${claim.claim_id} has duplicate Evidence relations`);
+    return { claim_id: claim.claim_id, facets: claim.facets, evidence_relations: relations };
+  }).sort((left, right) => compareStrings(left.claim_id, right.claim_id));
+}
+
+function parseLimitation(lines, index, scope) {
+  const match = lines[index].match(/^- \*\*(.+?) · (.+?)\*\*：(.*)$/u);
+  if (!match) return null;
+  const impact = lines[index + 1];
+  const remediation = lines[index + 2];
+  requireProjection(impact?.startsWith("  - 影响："), `limitation impact is missing at line ${index + 2}`);
+  requireProjection(remediation?.startsWith("  - 补救："), `limitation remediation is missing at line ${index + 3}`);
+  return {
+    nextIndex: index + 2,
+    value: {
+      scope,
+      severity: match[1],
+      kind: match[2],
+      message: decodeMarkdownText(match[3]),
+      impact: decodeMarkdownText(impact.slice("  - 影响：".length)),
+      remediation: decodeMarkdownText(remediation.slice("  - 补救：".length)),
+    },
+  };
+}
+
+function parseMarkdownProjection(markdown) {
+  const lines = markdown.split("\n");
+  const claims = [];
+  const claimById = new Map();
+  const overviewLimitations = [];
+  const projectLimitations = [];
+  let currentClaim = null;
+  let currentRelation = null;
+  let currentProjectId = null;
+  let inCoverage = false;
+  let inProjectLimitations = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.startsWith("## ")) {
+      inCoverage = line === "## 覆盖与限制";
+      inProjectLimitations = false;
+    }
+    if (line.startsWith("### ") && !line.startsWith("#### ")) {
+      currentProjectId = null;
+      inProjectLimitations = false;
+    }
+    if (line.startsWith("- Project ID：")) {
+      const values = inlineCodeValues(line);
+      requireProjection(values.length === 1 && values[0].length > 0, `invalid Project ID line ${index + 1}`);
+      currentProjectId = values[0];
+    }
+    if (line.startsWith("#### ")) inProjectLimitations = line === "#### 扫描限制";
+
+    if (inCoverage || inProjectLimitations) {
+      const parsed = parseLimitation(lines, index, inProjectLimitations ? currentProjectId : null);
+      if (parsed) {
+        requireProjection(!inProjectLimitations || currentProjectId !== null, `project limitation lacks Project ID at line ${index + 1}`);
+        (inProjectLimitations ? projectLimitations : overviewLimitations).push(parsed.value);
+        index = parsed.nextIndex;
+        continue;
+      }
+    }
+
+    if (/^#### .+ · Claim `/u.test(line)) {
+      requireProjection(currentRelation === null, `Evidence relation lacks supported facets before line ${index + 1}`);
+      const values = inlineCodeValues(line);
+      requireProjection(values.length === 1 && values[0].length > 0, `invalid Claim heading at line ${index + 1}`);
+      requireProjection(!claimById.has(values[0]), `duplicate Claim ${values[0]}`);
+      currentClaim = { claim_id: values[0], facets: null, evidence_relations: [] };
+      claimById.set(values[0], currentClaim);
+      claims.push(currentClaim);
+      continue;
+    }
+    if (currentClaim && line.startsWith("- Facets：")) {
+      requireProjection(currentClaim.facets === null, `duplicate facets for Claim ${currentClaim.claim_id}`);
+      currentClaim.facets = inlineCodeValues(line);
+      continue;
+    }
+    if (currentClaim && line.startsWith("- Evidence ")) {
+      requireProjection(currentRelation === null, `Evidence relation lacks supported facets before line ${index + 1}`);
+      const values = inlineCodeValues(line);
+      requireProjection(values.length === 5, `invalid Evidence line ${index + 1}`);
+      currentRelation = {
+        evidence_id: values[0],
+        relation: values[1],
+        commit_state: values[3],
+        validity: values[4],
+        supported_facets: null,
+      };
+      currentClaim.evidence_relations.push(currentRelation);
+      continue;
+    }
+    if (currentRelation && line.startsWith("  - Supported facets：")) {
+      currentRelation.supported_facets = inlineCodeValues(line);
+      currentRelation = null;
+    }
+  }
+  requireProjection(currentRelation === null, "final Evidence relation lacks supported facets");
+  return {
+    claims: normalizeClaims(claims),
+    limitations: reconcileLimitations(overviewLimitations, projectLimitations),
+    limitationHooksOk: true,
+  };
+}
 
 const checks = [];
 function record(engine, assertion, ok, details = {}, width = null, view = null) {
@@ -312,24 +560,463 @@ async function taggedGroup(page, statuses) {
   }, expectedEntries);
 }
 
+async function captureProjection(operation) {
+  try {
+    return { ok: true, value: await operation(), error: null };
+  } catch (error) {
+    return { ok: false, value: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function firstDifference(left, right, path = "$") {
+  if (Object.is(left, right)) return null;
+  if (typeof left !== typeof right || left === null || right === null) return { path, left, right };
+  if (typeof left !== "object") return { path, left, right };
+  if (Array.isArray(left) !== Array.isArray(right)) return { path, left, right };
+  if (Array.isArray(left)) {
+    if (left.length !== right.length) return { path: `${path}.length`, left: left.length, right: right.length };
+    for (let index = 0; index < left.length; index += 1) {
+      const difference = firstDifference(left[index], right[index], `${path}[${index}]`);
+      if (difference) return difference;
+    }
+    return null;
+  }
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (JSON.stringify(leftKeys) !== JSON.stringify(rightKeys)) return { path: `${path}.keys`, left: leftKeys, right: rightKeys };
+  for (const key of leftKeys) {
+    const difference = firstDifference(left[key], right[key], `${path}.${key}`);
+    if (difference) return difference;
+  }
+  return null;
+}
+
+function claimProjectionCoverage(claimsProjection) {
+  const relations = claimsProjection.flatMap((claim) => claim.evidence_relations);
+  const validities = new Set(relations.map((relation) => relation.validity));
+  const commitStates = new Set(relations.map((relation) => relation.commit_state));
+  return {
+    ok: (
+      claimsProjection.length >= 4
+      && ["current", "stale", "missing", "plan"].every((value) => validities.has(value))
+      && commitStates.size >= 5
+      && claimsProjection.some((claim) => claim.facets.length > 1)
+      && relations.some((relation) => relation.supported_facets.length > 1)
+    ),
+    claimCount: claimsProjection.length,
+    relationCount: relations.length,
+    validities: [...validities].sort(),
+    commitStates: [...commitStates].sort(),
+  };
+}
+
+function limitationProjectionCoverage(limitationsProjection) {
+  return {
+    ok: (
+      limitationsProjection.length >= 2
+      && limitationsProjection.some((limitation) => limitation.scope === null)
+      && limitationsProjection.some((limitation) => limitation.scope !== null)
+    ),
+    limitationCount: limitationsProjection.length,
+    scopes: limitationsProjection.map((limitation) => limitation.scope),
+  };
+}
+
+function parseJsonStringArray(value, label) {
+  requireProjection(typeof value === "string", `${label} is missing`);
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${label} is not JSON: ${String(error)}`);
+  }
+  requireProjection(Array.isArray(parsed) && parsed.every((item) => typeof item === "string"), `${label} is not a string array`);
+  return parsed;
+}
+
+async function visibleDomLimitations(page) {
+  return page.locator(".degradation-item").evaluateAll((nodes) => nodes.map((node) => {
+    const paragraphs = [...node.querySelectorAll(".degradation-copy > p")];
+    return {
+      limitationId: node.dataset.limitationId ?? null,
+      kind: node.dataset.kind ?? null,
+      severity: node.dataset.severity ?? null,
+      projectIdHook: node.dataset.projectId ?? null,
+      visible: node instanceof HTMLElement && node.getClientRects().length > 0,
+      message: paragraphs[0]?.textContent?.trim() ?? null,
+      impact: paragraphs[1]?.textContent?.trim() ?? null,
+      remediation: paragraphs[2]?.textContent?.trim() ?? null,
+    };
+  }));
+}
+
+function normalizeDomLimitation(raw, scope) {
+  requireProjection(raw.visible, "DOM limitation is not visible");
+  requireProjection([raw.kind, raw.severity, raw.message, raw.impact, raw.remediation].every((value) => typeof value === "string"), "DOM limitation has missing fields");
+  requireProjection(raw.impact.startsWith("影响："), "DOM limitation impact prefix is missing");
+  requireProjection(raw.remediation.startsWith("补救："), "DOM limitation remediation prefix is missing");
+  return {
+    scope,
+    kind: raw.kind,
+    severity: raw.severity,
+    message: raw.message,
+    impact: raw.impact.slice("影响：".length),
+    remediation: raw.remediation.slice("补救：".length),
+    limitationId: raw.limitationId,
+    projectIdHook: raw.projectIdHook,
+  };
+}
+
+async function extractDomProjection(page) {
+  await route(page, "#/v1/evidence");
+  await page.evaluate(() => document.querySelectorAll("details").forEach((item) => { item.open = true; }));
+  const rawClaims = await page.locator(".claim-item").evaluateAll((nodes) => nodes.map((node) => ({
+    claim_id: node.dataset.claimId ?? null,
+    facets: node.dataset.facets ?? null,
+    visible: node instanceof HTMLElement && node.getClientRects().length > 0,
+    evidence_relations: [...node.querySelectorAll("[data-evidence-id]")].map((relation) => ({
+      evidence_id: relation.dataset.evidenceId ?? null,
+      relation: relation.dataset.relation ?? null,
+      validity: relation.dataset.validity ?? null,
+      commit_state: relation.dataset.commitState ?? null,
+      supported_facets: relation.dataset.supportedFacets ?? null,
+      visible: relation instanceof HTMLElement && relation.getClientRects().length > 0,
+    })),
+  })));
+  const claimsProjection = normalizeClaims(rawClaims.map((claim) => {
+    requireProjection(claim.visible, "DOM Claim is not visible");
+    return {
+      claim_id: claim.claim_id,
+      facets: parseJsonStringArray(claim.facets, `Claim ${claim.claim_id ?? "<missing>"} facets`),
+      evidence_relations: claim.evidence_relations.map((relation) => {
+        requireProjection(relation.visible, `Claim ${claim.claim_id ?? "<missing>"} has a hidden Evidence relation`);
+        return {
+          evidence_id: relation.evidence_id,
+          relation: relation.relation,
+          validity: relation.validity,
+          commit_state: relation.commit_state,
+          supported_facets: parseJsonStringArray(
+            relation.supported_facets,
+            `Claim ${claim.claim_id ?? "<missing>"} Evidence ${relation.evidence_id ?? "<missing>"} supported facets`,
+          ),
+        };
+      }),
+    };
+  }));
+
+  await route(page, "#/v1/overview");
+  if (mutation === "limitation-id") {
+    await page.locator(".degradation-item").evaluateAll((nodes) => {
+      for (const node of nodes) node.dataset.limitationId = `mutated_${node.dataset.limitationId ?? ""}`;
+    });
+  }
+  const overviewRaw = await visibleDomLimitations(page);
+  const overviewLimitations = overviewRaw.map((limitation) => normalizeDomLimitation(limitation, null));
+  await route(page, "#/v1/project");
+  const projectRoutes = await page.locator('.project-item a[href^="#/v1/project/"]').evaluateAll((nodes) => (
+    [...new Set(nodes.map((node) => node.getAttribute("href")).filter((href) => /^#\/v1\/project\/[^/?#]+$/u.test(href ?? "")))]
+  ));
+  requireProjection(projectRoutes.length > 0, "DOM project routes must not be empty");
+  const projectLimitations = [];
+  for (const projectRoute of projectRoutes) {
+    await route(page, projectRoute);
+    if (mutation === "limitation-id") {
+      await page.locator(".degradation-item").evaluateAll((nodes) => {
+        for (const node of nodes) node.dataset.limitationId = `mutated_${node.dataset.limitationId ?? ""}`;
+      });
+    }
+    const projectId = decodeURIComponent(projectRoute.split("/")[3]);
+    const raw = await visibleDomLimitations(page);
+    projectLimitations.push(...raw.map((limitation) => normalizeDomLimitation(limitation, projectId)));
+  }
+  const limitationsProjection = reconcileLimitations(overviewLimitations, projectLimitations);
+  const overviewIds = overviewLimitations.map((limitation) => limitation.limitationId);
+  const overviewHooksOk = overviewLimitations.every((limitation) => {
+    const projected = limitationsProjection.find((candidate) => (
+      limitationContentKey(candidate) === limitationContentKey(limitation)
+    ));
+    return (
+      projected !== undefined
+      && limitation.projectIdHook === (projected.scope ?? "")
+      && typeof limitation.limitationId === "string"
+      && limitation.limitationId.length > 0
+    );
+  });
+  const projectHooksOk = projectLimitations.every((limitation) => {
+    const overview = overviewLimitations.find((candidate) => (
+      limitationContentKey(candidate) === limitationContentKey(limitation)
+    ));
+    return (
+      overview !== undefined
+      && limitation.projectIdHook === limitation.scope
+      && limitation.limitationId === overview.limitationId
+    );
+  });
+  const limitationHooksOk = (
+    overviewIds.every((value) => typeof value === "string" && value.length > 0)
+    && new Set(overviewIds).size === overviewIds.length
+    && overviewHooksOk
+    && projectHooksOk
+  );
+  return {
+    claims: claimsProjection,
+    limitations: limitationsProjection.map(({ scope, kind, severity, message, impact, remediation }) => ({
+      scope,
+      kind,
+      severity,
+      message,
+      impact,
+      remediation,
+    })),
+    limitationHooks: overviewLimitations.map((limitation) => ({
+      limitation_id: limitation.limitationId,
+      kind: limitation.kind,
+      severity: limitation.severity,
+      project_id: limitation.projectIdHook,
+    })).sort((left, right) => compareStrings(JSON.stringify(left), JSON.stringify(right))),
+    limitationHooksOk,
+  };
+}
+
 async function runEngine(engineName, engine) {
   const browser = await engine.launch();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
+  const completedPage = await context.newPage();
   const consoleErrors = [];
   const pageErrors = [];
   const externalRequests = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") consoleErrors.push(message.text());
-  });
-  page.on("pageerror", (error) => pageErrors.push(error.message));
-  page.on("request", (request) => {
-    if (!request.url().startsWith("file:")) externalRequests.push(request.url());
-  });
+  for (const observedPage of [page, completedPage]) {
+    observedPage.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    observedPage.on("pageerror", (error) => pageErrors.push(error.message));
+    observedPage.on("request", (request) => {
+      if (!request.url().startsWith("file:")) externalRequests.push(request.url());
+    });
+  }
 
   try {
-    await page.goto(pathToFileURL(outputFile).href, { waitUntil: "load" });
-    await page.waitForSelector(".shell");
+    await Promise.all([
+      page.goto(pathToFileURL(outputFile).href, { waitUntil: "load" }),
+      completedPage.goto(pathToFileURL(completedOutputFile).href, { waitUntil: "load" }),
+    ]);
+    await Promise.all([page.waitForSelector(".shell"), completedPage.waitForSelector(".shell")]);
+
+    if (mutation === "snapshot-identity") {
+      await page.locator(".forensic-strip").evaluate((node, expected) => {
+        Object.assign(node.dataset, expected);
+      }, {
+        packageStatus: completedSnapshot.bundle.package_status,
+        preparationRunId: completedSnapshot.bundle.preparation_run_id,
+        bundleSha256: completedSnapshot.bundle.bundle_sha256,
+      });
+    }
+    const [partialIdentity, completedIdentity] = await Promise.all(
+      [page, completedPage].map((snapshotPage) => snapshotPage.locator(".forensic-strip").evaluate((node) => ({
+        packageStatus: node.dataset.packageStatus ?? null,
+        preparationRunId: node.dataset.preparationRunId ?? null,
+        bundleSha256: node.dataset.bundleSha256 ?? null,
+        roleName: document.querySelector(".role-title")?.textContent ?? null,
+        roleMeta: document.querySelector(".role-meta")?.textContent ?? null,
+        assumptions: document.querySelector(".role-assumptions")?.textContent ?? null,
+      }))),
+    );
+    const expectedPartialIdentity = {
+      packageStatus: partialSnapshot.bundle.package_status,
+      preparationRunId: partialSnapshot.bundle.preparation_run_id,
+      bundleSha256: partialSnapshot.bundle.bundle_sha256,
+    };
+    const expectedCompletedIdentity = {
+      packageStatus: completedSnapshot.bundle.package_status,
+      preparationRunId: completedSnapshot.bundle.preparation_run_id,
+      bundleSha256: completedSnapshot.bundle.bundle_sha256,
+    };
+    const identityMatches = (actual, expected) => (
+      actual.packageStatus === expected.packageStatus
+      && actual.preparationRunId === expected.preparationRunId
+      && actual.bundleSha256 === expected.bundleSha256
+    );
+    record(engineName, "dash10-completed-snapshot-identity", identityMatches(completedIdentity, expectedCompletedIdentity), { actual: completedIdentity, expected: expectedCompletedIdentity });
+    record(engineName, "dash10-partial-snapshot-identity", identityMatches(partialIdentity, expectedPartialIdentity), { actual: partialIdentity, expected: expectedPartialIdentity });
+    const sameRole = (
+      JSON.stringify(partialSnapshot.bundle.role) === JSON.stringify(completedSnapshot.bundle.role)
+      && JSON.stringify(partialSnapshot.bundle.role_lens) === JSON.stringify(completedSnapshot.bundle.role_lens)
+      && partialIdentity.roleName === completedIdentity.roleName
+      && partialIdentity.roleMeta === completedIdentity.roleMeta
+      && partialIdentity.assumptions === completedIdentity.assumptions
+    );
+    const distinctSnapshots = (
+      partialIdentity.packageStatus !== completedIdentity.packageStatus
+      && partialIdentity.preparationRunId !== completedIdentity.preparationRunId
+      && partialIdentity.bundleSha256 !== completedIdentity.bundleSha256
+    );
+    record(engineName, "dash10-same-role-distinct-snapshots", sameRole && distinctSnapshots, { sameRole, distinctSnapshots, partial: partialIdentity, completed: completedIdentity });
+
+    const hostileLimitationHooks = await page.evaluate((expected) => {
+      const limitation = [...document.querySelectorAll(".degradation-item")].find((node) => (
+        node.dataset.limitationId?.includes(expected)
+      ));
+      return {
+        limitationIdPreserved: limitation !== undefined,
+        inertTextVisible: limitation?.textContent?.includes("<script> javascript:") === true,
+        controlMadeVisible: limitation?.textContent?.includes("[U+202E]") === true,
+        noInjectedScriptElement: limitation?.querySelector("script") === null,
+      };
+    }, hostileLimitationId);
+    await route(page, "#/v1/evidence");
+    const hostileEvidenceHooks = await page.evaluate((expected) => ({
+      claimFacetsPreserved: [...document.querySelectorAll(".claim-item")].some((node) => {
+        try { return JSON.parse(node.dataset.facets ?? "[]").includes(expected); } catch { return false; }
+      }),
+      relationFacetsPreserved: [...document.querySelectorAll("[data-evidence-id]")].some((node) => {
+        try { return JSON.parse(node.dataset.supportedFacets ?? "[]").includes(expected); } catch { return false; }
+      }),
+    }), hostileValue);
+    await route(page, "#/v1/overview");
+    const hostileHooks = { ...hostileLimitationHooks, ...hostileEvidenceHooks };
+    const hostileValuesInert = (
+      completedIdentity.preparationRunId === completedSnapshot.bundle.preparation_run_id
+      && Object.values(hostileHooks).every(Boolean)
+      && consoleErrors.length === 0
+      && pageErrors.length === 0
+      && externalRequests.length === 0
+    );
+    record(engineName, "semantic-hooks-inert-untrusted-values", hostileValuesInert, {
+      hooks: hostileHooks,
+      completedPreparationRunIdPreserved: completedIdentity.preparationRunId === completedSnapshot.bundle.preparation_run_id,
+      consoleErrorCount: consoleErrors.length,
+      pageErrorCount: pageErrors.length,
+      externalRequestCount: externalRequests.length,
+    });
+
+    const rejectedRoutes = ["#/v0/overview", "#/v2/overview", "#/v9/overview", "#/%E9%9D%9E%E7%89%88%E6%9C%AC/overview"];
+    const rejectionCases = [];
+    for (const rejectedHash of rejectedRoutes) {
+      await route(page, rejectedHash);
+      if (mutation === "cross-version-fallback") await route(page, "#/v1/overview");
+      rejectionCases.push(await page.evaluate((expectedHash) => {
+        const error = document.querySelector('main .route-error[data-error-kind="contract-version-mismatch"]');
+        const forbidden = document.querySelectorAll("main .view, main .view-title, main .claim-item");
+        return {
+          expectedHash,
+          actualHash: location.hash,
+          errorVisible: error instanceof HTMLElement && error.getClientRects().length > 0,
+          message: error?.textContent ?? null,
+          forbiddenCount: forbidden.length,
+        };
+      }, rejectedHash));
+    }
+    record(engineName, "dash10-cross-version-deep-link-rejected", rejectionCases.every((entry) => (
+      entry.errorVisible
+      && entry.message?.includes("该链接属于其他契约版本")
+      && entry.actualHash === entry.expectedHash
+    )), { cases: rejectionCases });
+    record(engineName, "dash10-cross-version-no-wrong-object", rejectionCases.every((entry) => entry.forbiddenCount === 0), { cases: rejectionCases });
+
+    await route(page, "#/v1/not-a-real-view");
+    const sameVersionUnknown = await page.evaluate(() => {
+      const error = document.querySelector("main .route-error");
+      return {
+        hash: location.hash,
+        visible: error instanceof HTMLElement && error.getClientRects().length > 0,
+        errorKind: error?.getAttribute("data-error-kind"),
+        message: error?.textContent ?? null,
+        forbiddenCount: document.querySelectorAll("main .view, main .view-title, main .claim-item").length,
+      };
+    });
+    record(
+      engineName,
+      "same-version-unknown-deep-link-not-version-mismatch",
+      (
+        sameVersionUnknown.visible
+        && sameVersionUnknown.hash === "#/v1/not-a-real-view"
+        && sameVersionUnknown.errorKind === null
+        && sameVersionUnknown.message?.includes("该深链在当前快照中不存在")
+        && sameVersionUnknown.forbiddenCount === 0
+      ),
+      sameVersionUnknown,
+    );
+
+    const markdownProjection = await captureProjection(() => parseMarkdownProjection(reportMarkdown));
+    const domProjection = await captureProjection(() => extractDomProjection(page));
+    const claimDifference = markdownProjection.ok && domProjection.ok
+      ? firstDifference(markdownProjection.value.claims, domProjection.value.claims)
+      : { markdownError: markdownProjection.error, domError: domProjection.error };
+    const markdownClaimCoverage = markdownProjection.ok
+      ? claimProjectionCoverage(markdownProjection.value.claims)
+      : { ok: false };
+    const domClaimCoverage = domProjection.ok
+      ? claimProjectionCoverage(domProjection.value.claims)
+      : { ok: false };
+    record(
+      engineName,
+      "dash12-claim-evidence-parity",
+      claimDifference === null && markdownClaimCoverage.ok && domClaimCoverage.ok,
+      {
+      firstDifference: claimDifference,
+        markdownCoverage: markdownClaimCoverage,
+        domCoverage: domClaimCoverage,
+      },
+    );
+    const limitationDifference = markdownProjection.ok && domProjection.ok
+      ? firstDifference(markdownProjection.value.limitations, domProjection.value.limitations)
+      : { markdownError: markdownProjection.error, domError: domProjection.error };
+    const markdownLimitationCoverage = markdownProjection.ok
+      ? limitationProjectionCoverage(markdownProjection.value.limitations)
+      : { ok: false };
+    const domLimitationCoverage = domProjection.ok
+      ? limitationProjectionCoverage(domProjection.value.limitations)
+      : { ok: false };
+    const expectedLimitationHooks = partialSnapshot.bundle.coverage.limitations.map((limitation) => ({
+      limitation_id: limitation.limitation_id,
+      kind: limitation.kind,
+      severity: limitation.severity,
+      project_id: limitation.project_id ?? "",
+    })).sort((left, right) => compareStrings(JSON.stringify(left), JSON.stringify(right)));
+    const limitationHookDifference = domProjection.ok
+      ? firstDifference(expectedLimitationHooks, domProjection.value.limitationHooks)
+      : { domError: domProjection.error };
+    record(
+      engineName,
+      "dash12-limitation-parity",
+      (
+        limitationDifference === null
+        && domProjection.value?.limitationHooksOk === true
+        && limitationHookDifference === null
+        && markdownLimitationCoverage.ok
+        && domLimitationCoverage.ok
+      ),
+      {
+        firstDifference: limitationDifference,
+        limitationHooksOk: domProjection.value?.limitationHooksOk ?? false,
+        limitationHookDifference,
+        markdownCoverage: markdownLimitationCoverage,
+        domCoverage: domLimitationCoverage,
+      },
+    );
+    const markdownConclusions = markdownProjection.ok ? {
+      claims: markdownProjection.value.claims.map((claim) => ({
+        claim_id: claim.claim_id,
+        evidence: claim.evidence_relations.map((relation) => `${relation.relation}:${relation.evidence_id}`),
+      })),
+      limitations: markdownProjection.value.limitations.map(limitationKey),
+    } : null;
+    const domConclusions = domProjection.ok ? {
+      claims: domProjection.value.claims.map((claim) => ({
+        claim_id: claim.claim_id,
+        evidence: claim.evidence_relations.map((relation) => `${relation.relation}:${relation.evidence_id}`),
+      })),
+      limitations: domProjection.value.limitations.map(limitationKey),
+    } : null;
+    const conclusionDifference = markdownConclusions && domConclusions
+      ? firstDifference(markdownConclusions, domConclusions)
+      : { markdownError: markdownProjection.error, domError: domProjection.error };
+    record(engineName, "dash12-no-html-only-conclusions", conclusionDifference === null, {
+      firstDifference: conclusionDifference,
+      markdown: markdownConclusions,
+      dom: domConclusions,
+    });
 
     await route(page, "#/v1/overview");
     if (mutation === "role-assumption") {
@@ -499,13 +1186,26 @@ async function runEngine(engineName, engine) {
 await runEngine("chromium", chromium);
 if (mutation === null) await runEngine("webkit", webkit);
 
-const failures = checks.filter((check) => !check.ok);
+const expectedEngines = mutation === null ? ["chromium", "webkit"] : ["chromium"];
+const cardinalityFailures = expectedEngines.flatMap((engine) => requiredContractAssertions.flatMap((assertion) => {
+  const count = checks.filter((check) => check.engine === engine && check.assertion === assertion).length;
+  return count === 1 ? [] : [{
+    engine,
+    width: null,
+    view: null,
+    assertion: "required-assertion-cardinality",
+    ok: false,
+    details: { requiredAssertion: assertion, expected: 1, actual: count },
+  }];
+}));
+const allChecks = [...checks, ...cardinalityFailures];
+const failures = allChecks.filter((check) => !check.ok);
 const result = {
   contract: "goodjob-browser-verification-v1",
   artifact: outputFile,
   renderer: "goodjob.reporting.render_dashboard_html",
   mutation,
-  summary: { passed: checks.length - failures.length, failed: failures.length, total: checks.length },
+  summary: { passed: allChecks.length - failures.length, failed: failures.length, total: allChecks.length },
   failures,
 };
 console.log(JSON.stringify(result, null, 2));

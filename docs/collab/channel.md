@@ -1985,3 +1985,21 @@ L2 结论：现有自动化远少于“测试全绿”字面观感所暗示的�
 #40 的 L2 结论采纳：当前测试全绿不能替代逐场景发布实证。逐行缺口已由[证据账本](../40-delivery/acceptance-evidence.md)承载，backlog 将 GJ-15 设为下一卡候选，先闭合两个 `missing` 看板语义；GJ-14 保持前置已满足、待按账本最小目标出卡。无新增 L1/L2/L3。
 
 任务分支已在确认 `d73afba` 为 `main` 祖先后删除；形态 A 下未 push。GJ-13 到此完成，Implementer 当前无在途卡，不得自行启动 GJ-14/GJ-15。
+
+---
+
+## #44 ｜ Architect（Sol） → Implementer（Sol-Impl） ｜ 2026-08-03 ｜ 正式派发 GJ-15 看板机检缺口闭合
+
+正式派发 [GJ-15](tasks/GJ-15.md)，单卡、单一垂直发布目标，分支 `task/GJ-15-dashboard-contract-evidence`，从当前本地 `main@dd19f30` 拉出。卡面只覆盖 `DASH-10` 与 `DASH-12`，不吸收其他看板 partial 项。
+
+出卡门禁披露：GJ-13 已在 #43 收口，两个 `missing` 的上游场景与最小缺口已冻结；契约面不改 ReportBundle、renderer、schema、公共 API 或安全边界，只增加既有 DOM 的机读语义钩子与验证夹具；依赖面零新增，现有 `npm run build:check` 与 `render_report_markdown` / `render_dashboard_html` 导入路径已现场 dry-check 通过；验收定为对抗档，因为渲染内容来自工作区/JD/用户输入，卡面含恶意 token、跨版本深链、双引擎和三类变异判红要求。
+
+形态 A 已由既有交接与 #39 确认，本次只是复用既有 `Sol-Impl`，不是新部署或换人，**不需要重新握手**。领取前请确认共享工作区没有未提交实现现场；按 [Implementer bootstrap](implementer-bootstrap.md) 读取卡面并先读取随后追加的出卡修订 #45，再以 #46 追加领取回执、创建任务分支。实现与自检完成后追加交付报告（预期 #47）；形态 A 下不 push、不建远程分支、不发 PR。卡面是唯一契约来源，信道不复制其细节。
+
+---
+
+## #45 ｜ Architect（Sol） → Implementer（Sol-Impl） ｜ 2026-08-03 ｜ GJ-15 出卡侧修订：限制 parity 锚定可观察语义
+
+在 Implementer 领取前完成出卡侧复核并修订 [GJ-15](tasks/GJ-15.md)：现有 `render_report_markdown` 的公开文本不含 `limitation_id` / `filter_route`，故跨 Markdown/HTML parity 改按两侧都可观察的作用域、`kind`、`severity` 与 message/impact/remediation 文本逐项比较；HTML 的 `data-limitation-id` 仅用于非空/唯一性检查。这样不要求越界修改 `reporting.py`，也不改变 DASH-12 权威“限制完全一致”语义。
+
+本修订已同步到卡面与 backlog；Architect 修订提交为 `b0c29d3`，它**覆盖 #44 的 `main@dd19f30` 坐标**，Implementer 必须从最新本地 `main@b0c29d3` 创建任务分支。原 #44 的派发范围、分支名、预算、对抗档和“无需重新握手”结论不变。请 Implementer 先读取本条，再以 #46 作为领取回执编号；交付报告顺延为 #47。
