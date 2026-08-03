@@ -55,6 +55,12 @@ const statusChannels = {
   new: { symbol: "○", label: "待首次复习" },
   continued: { symbol: "✓", label: "状态延续" },
   reassess_required: { symbol: "!", label: "需要重评" },
+  completed: { symbol: "○", label: "完整快照" },
+  partial: { symbol: "!", label: "部分快照" },
+  low: { symbol: "○", label: "低" },
+  medium: { symbol: "◷", label: "中" },
+  high: { symbol: "!", label: "高" },
+  critical: { symbol: "!", label: "严重" },
 };
 
 function tokens(value, kind = "text") {
@@ -634,6 +640,16 @@ function parseJsonStringArray(value, label) {
   return parsed;
 }
 
+function expectedStatusText(value) {
+  const channel = statusChannels[value];
+  requireProjection(channel !== undefined, `status ${value} has no visible channel`);
+  return `${channel.symbol}${channel.label}`;
+}
+
+function visibleText(value) {
+  return value.replace(/[\u2028-\u202e\u2066-\u2069]/gu, (control) => `[U+${control.codePointAt(0).toString(16).toUpperCase()}]`);
+}
+
 async function visibleDomLimitations(page) {
   return page.locator(".degradation-item").evaluateAll((nodes) => nodes.map((node) => {
     const paragraphs = [...node.querySelectorAll(".degradation-copy > p")];
@@ -643,6 +659,9 @@ async function visibleDomLimitations(page) {
       severity: node.dataset.severity ?? null,
       projectIdHook: node.dataset.projectId ?? null,
       visible: node instanceof HTMLElement && node.getClientRects().length > 0,
+      visibleChannels: [...node.querySelectorAll(".hanging-label > .status-tag, .hanging-label > span:not(.status-tag)")].every((channel) => channel instanceof HTMLElement && channel.getClientRects().length > 0),
+      visibleKind: node.querySelector(".hanging-label > span:not(.status-tag)")?.textContent?.trim() ?? null,
+      visibleSeverity: node.querySelector(".hanging-label > .status-tag")?.textContent?.trim() ?? null,
       message: paragraphs[0]?.textContent?.trim() ?? null,
       impact: paragraphs[1]?.textContent?.trim() ?? null,
       remediation: paragraphs[2]?.textContent?.trim() ?? null,
@@ -652,7 +671,10 @@ async function visibleDomLimitations(page) {
 
 function normalizeDomLimitation(raw, scope) {
   requireProjection(raw.visible, "DOM limitation is not visible");
+  requireProjection(raw.visibleChannels, "DOM limitation visible channels are hidden");
   requireProjection([raw.kind, raw.severity, raw.message, raw.impact, raw.remediation].every((value) => typeof value === "string"), "DOM limitation has missing fields");
+  requireProjection(raw.visibleKind === visibleText(raw.kind), `DOM limitation kind mirror differs: ${raw.visibleKind} != ${raw.kind}`);
+  requireProjection(raw.visibleSeverity === expectedStatusText(raw.severity), `DOM limitation severity mirror differs: ${raw.visibleSeverity} != ${raw.severity}`);
   requireProjection(raw.impact.startsWith("影响："), "DOM limitation impact prefix is missing");
   requireProjection(raw.remediation.startsWith("补救："), "DOM limitation remediation prefix is missing");
   return {
@@ -670,9 +692,14 @@ function normalizeDomLimitation(raw, scope) {
 async function extractDomProjection(page) {
   await route(page, "#/v1/evidence");
   await page.evaluate(() => document.querySelectorAll("details").forEach((item) => { item.open = true; }));
+  if (mutation === "visible-projection-field") {
+    await page.locator(".claim-meta > span:last-child").first().evaluate((node) => { node.textContent = "mutated-visible-facet"; });
+  }
   const rawClaims = await page.locator(".claim-item").evaluateAll((nodes) => nodes.map((node) => ({
     claim_id: node.dataset.claimId ?? null,
     facets: node.dataset.facets ?? null,
+    visible_facets: [...node.querySelectorAll(".claim-meta > span")].slice(4).map((facet) => facet.textContent?.trim() ?? ""),
+    visible_facets_shown: [...node.querySelectorAll(".claim-meta > span")].slice(4).every((facet) => facet instanceof HTMLElement && facet.getClientRects().length > 0),
     visible: node instanceof HTMLElement && node.getClientRects().length > 0,
     evidence_relations: [...node.querySelectorAll("[data-evidence-id]")].map((relation) => ({
       evidence_id: relation.dataset.evidenceId ?? null,
@@ -680,25 +707,36 @@ async function extractDomProjection(page) {
       validity: relation.dataset.validity ?? null,
       commit_state: relation.dataset.commitState ?? null,
       supported_facets: relation.dataset.supportedFacets ?? null,
+      visible_validity: relation.querySelector(".evidence-heading > .status-tag")?.textContent?.trim() ?? null,
+      visible_relation: relation.querySelector(".evidence-heading")?.children[2]?.textContent?.trim() ?? null,
+      visible_commit_state: relation.querySelector(".evidence-heading > .token-code")?.textContent?.trim() ?? null,
+      visible_supported_facets: [...relation.querySelectorAll(".evidence-fields > dt")].find((field) => field.textContent === "Facets")?.nextElementSibling?.textContent?.trim() ?? null,
+      visible_channels_shown: [...relation.querySelectorAll(".evidence-heading > .status-tag, .evidence-heading > span:nth-child(3), .evidence-heading > .token-code, .evidence-fields > dd")].every((channel) => channel instanceof HTMLElement && channel.getClientRects().length > 0),
       visible: relation instanceof HTMLElement && relation.getClientRects().length > 0,
     })),
   })));
   const claimsProjection = normalizeClaims(rawClaims.map((claim) => {
     requireProjection(claim.visible, "DOM Claim is not visible");
+    requireProjection(claim.visible_facets_shown, `Claim ${claim.claim_id ?? "<missing>"} visible facets are hidden`);
+    const facets = parseJsonStringArray(claim.facets, `Claim ${claim.claim_id ?? "<missing>"} facets`);
+    requireProjection(JSON.stringify(claim.visible_facets) === JSON.stringify(facets.map(visibleText)), `Claim ${claim.claim_id ?? "<missing>"} visible facets differ from mirror`);
     return {
       claim_id: claim.claim_id,
-      facets: parseJsonStringArray(claim.facets, `Claim ${claim.claim_id ?? "<missing>"} facets`),
+      facets,
       evidence_relations: claim.evidence_relations.map((relation) => {
         requireProjection(relation.visible, `Claim ${claim.claim_id ?? "<missing>"} has a hidden Evidence relation`);
+        requireProjection(relation.visible_channels_shown, `Evidence ${relation.evidence_id} visible channels are hidden`);
+        const supportedFacets = parseJsonStringArray(relation.supported_facets, `Claim ${claim.claim_id ?? "<missing>"} Evidence ${relation.evidence_id ?? "<missing>"} supported facets`);
+        requireProjection(relation.visible_validity === expectedStatusText(relation.validity), `Evidence ${relation.evidence_id} visible validity differs from mirror`);
+        requireProjection(relation.visible_relation === visibleText(relation.relation), `Evidence ${relation.evidence_id} visible relation differs from mirror`);
+        requireProjection(relation.visible_commit_state === visibleText(relation.commit_state), `Evidence ${relation.evidence_id} visible commit state differs from mirror`);
+        requireProjection(relation.visible_supported_facets === visibleText(supportedFacets.join(", ")), `Evidence ${relation.evidence_id} visible facets differ from mirror`);
         return {
           evidence_id: relation.evidence_id,
           relation: relation.relation,
           validity: relation.validity,
           commit_state: relation.commit_state,
-          supported_facets: parseJsonStringArray(
-            relation.supported_facets,
-            `Claim ${claim.claim_id ?? "<missing>"} Evidence ${relation.evidence_id ?? "<missing>"} supported facets`,
-          ),
+          supported_facets: supportedFacets,
         };
       }),
     };
@@ -812,11 +850,18 @@ async function runEngine(engineName, engine) {
         bundleSha256: completedSnapshot.bundle.bundle_sha256,
       });
     }
+    if (mutation === "visible-snapshot-identity") {
+      await page.locator(".forensic-strip > span:nth-child(2)").evaluate((node) => { node.textContent = "run erased"; });
+    }
     const [partialIdentity, completedIdentity] = await Promise.all(
       [page, completedPage].map((snapshotPage) => snapshotPage.locator(".forensic-strip").evaluate((node) => ({
         packageStatus: node.dataset.packageStatus ?? null,
         preparationRunId: node.dataset.preparationRunId ?? null,
         bundleSha256: node.dataset.bundleSha256 ?? null,
+        visibleChannels: [...node.children].slice(0, 3).every((channel) => channel instanceof HTMLElement && channel.getClientRects().length > 0),
+        statusText: node.querySelector(":scope > .status-tag")?.textContent?.trim() ?? null,
+        runText: node.children[1]?.textContent?.trim() ?? null,
+        shaText: node.children[2]?.textContent?.trim() ?? null,
         roleName: document.querySelector(".role-title")?.textContent ?? null,
         roleMeta: document.querySelector(".role-meta")?.textContent ?? null,
         assumptions: document.querySelector(".role-assumptions")?.textContent ?? null,
@@ -834,8 +879,12 @@ async function runEngine(engineName, engine) {
     };
     const identityMatches = (actual, expected) => (
       actual.packageStatus === expected.packageStatus
+      && actual.visibleChannels
       && actual.preparationRunId === expected.preparationRunId
       && actual.bundleSha256 === expected.bundleSha256
+      && actual.statusText === expectedStatusText(expected.packageStatus)
+      && actual.runText === visibleText(`run ${expected.preparationRunId.slice(0, 12)}`)
+      && actual.shaText === `sha ${expected.bundleSha256.slice(0, 14)}`
     );
     record(engineName, "dash10-completed-snapshot-identity", identityMatches(completedIdentity, expectedCompletedIdentity), { actual: completedIdentity, expected: expectedCompletedIdentity });
     record(engineName, "dash10-partial-snapshot-identity", identityMatches(partialIdentity, expectedPartialIdentity), { actual: partialIdentity, expected: expectedPartialIdentity });
