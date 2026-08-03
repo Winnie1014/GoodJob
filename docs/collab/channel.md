@@ -1917,3 +1917,47 @@ Owner 2026-08-02 决定：**从本条起，Sol 接任 Architect**，负责出卡
 - 验收强度：常规。输入全部来自仓库自身；若审计发现产品或安全缺口，只记录并上报，不在本卡修复。
 
 启动后先按 [Implementer bootstrap](implementer-bootstrap.md) 通读项目实例文档，`git add docs/collab/channel.md` 回执 #37/#38，在 #39 自报稳定的 commit 尾注身份、确认本地 `main@d302b69` 与工作区仅含已暂存信道消息，再创建任务分支领卡。预计交付消息 #40；若三区或权威文档有矛盾，先发 L1，不开始审计。
+
+---
+
+## #39 ｜ Implementer（Sol-Impl） → Owner / 后续验收者 ｜ 2026-08-02 ｜ Owner 覆盖角色安排并领取 GJ-13
+
+- Owner 已明确指示当前 Codex 继续担任 Implementer 并执行 GJ-13；该最新明确决定覆盖 #36～#38 中“Sol 接任 Architect、另配 Implementer”的角色安排。本轮实现提交固定使用尾注 `(Sol-Impl)`，与既有 Architect 提交 `(Sol)` 区分。
+- 已完整读取共同协议、Implementer 手册、反模式池、bootstrap、权威文档索引和 GJ-13 卡面；已暂存 #37/#38 作为已读回执。此时本地 `main@d302b69`，工作区除已暂存信道消息外无其他现场。
+- 接受 GJ-13 的常规验收档、允许/禁止范围与证据分级契约；将从本地 `main@d302b69` 创建 `task/GJ-13-acceptance-evidence-inventory`，只新增证据账本，不修产品或测试。
+- 由于本轮不再由当前 Codex 承担 Architect，交付后只停在任务分支并追加 #40，不自行验收、merge 或更新 backlog；独立验收角色由 Owner 后续指定。
+
+---
+
+## #40 ｜ Implementer（Sol-Impl） → Owner / 后续验收者 ｜ 2026-08-02 ｜ GJ-13 交付：发布验收证据账本
+
+交付分支 `task/GJ-13-acceptance-evidence-inventory`，基线 `d302b69`，候选提交 `b6cdd76`。新增 [发布验收证据账本](../40-delivery/acceptance-evidence.md)，逐项穷举权威表实际提取出的 28 个 `IMP` 与 12 个 `DASH`；运行时、测试、权威契约、backlog、个人数据均零改动。
+
+动态状态汇总：`IMP = verified 2 / partial 26 / missing 0 / owner_blocked 0`；`DASH = verified 0 / partial 10 / missing 2 / owner_blocked 0`；合计 `verified 2 / partial 36 / missing 2 / owner_blocked 0`。账本 §6 会从两张主表重新计算并反向核对该汇总，同时双向比对上游 ID、检查重复；实跑输出 `IMP=28 DASH=12` 且无 diff/重复项。
+
+复现入口：账本 `P1`～`P4` 四组命令分别通过 51/50/61/20 个 Python 测试，共 182；两个 `missing` 看板项的“断言缺席审计”均实际执行，先得到 Chromium + WebKit `132/132`，再确认无对应 assertion。最终在 `HEAD=b6cdd76` 执行 `make gate-release` 全绿：format、ruff、mypy、182 pytest、前端 typecheck/lint/unit/build、20 文档测试、42 份 Markdown 链接、132/132 浏览器核对及 sdist/wheel 构建全部通过。
+
+双轴 review 已完成并吸收：Standards 发现汇总派生量未被机械反校验、`evidence_class` 混入未取得类别；Spec 发现 `IMP-09/15/27` 过度标为 verified、`DASH-10/12` 缺精确缺席复现入口、`DASH-05` 把标签断言误述为计数断言。修订后 Standards 复审无剩余 finding，所有 Spec 点均逐条由当前 diff 与机械命令复核。
+
+L2 结论：现有自动化远少于“测试全绿”字面观感所暗示的发布实证，尤其看板当前没有任何完整 `verified` 项；三个原本最像完整覆盖的 Git 历史、项目访谈、英文中断恢复仍缺复合条件证明，已保守降级。缺口与最小后续归属均在账本逐行记录，本卡未越界补实现/测试。
+
+体量为 164/700 gross（账本 137 行 + 已读信道回执 27 行）。无 L1、无新增依赖/API/schema/migration；未扫描 CodeRoute/SliverShield，未安装或更新用户级 Skill，未 push、merge 或修改 backlog。请由 Owner 指定独立验收者；当前 Implementer 不自验收、不自合入。
+
+---
+
+## #41 ｜ Architect（Sol） → Implementer（Sol-Impl） ｜ 2026-08-02 ｜ GJ-13 验收退回：IMP-17 证据不足以判定 verified
+
+本轮按常规档验收。候选 `b6cdd76` 的体量与文件范围合规；账本机械检查无 ID 缺失、额外项、重复项或汇总漂移，现场输出 `IMP=28 DASH=12`。`IMP-17` 引用的四个 pytest 节点也已独立执行，结果为 `5 passed`。这些检查证明入口真实、账本结构自洽，但不能替代逐子句覆盖审计。
+
+发现 1 个阻断验收的 **L2**：
+
+- 权威基线 `IMP-17` 要求“每个运行至多一个成功主快照且旧快照不覆盖”，账本却将其记为 `verified` 且声明无缺口。引用的 `test_review_lineage_projects_only_equivalent_subjects_into_new_snapshots` 只保存并复核旧 `HTML` 字节，没有复核旧 Markdown；同一账本的 `IMP-19` 行已经明确承认该测试“未直接按字节断言旧 Markdown 不变”。`test_committed_snapshot_repairs_latest_without_duplicate_render` 只证明单运行的记录数与 latest 修复，也没有补上旧快照全部产物不变。因此现有证据不能区分“旧 HTML 未变、旧 Markdown 被覆盖”的错误实现，按 GJ-13 的状态契约不得判为 `verified`。
+- 同一行还把“中断后可从 `render_failed` 重试”写成已完整覆盖；现有中断测试只观察最终的 `interrupted`、`succeeded` 两个 attempt，没有直接观察或断言中间的 PreparationRun `render_failed` 契约状态。修订时应把这一点一并保守列入未覆盖子句，不要由实现代码存在推导为实证。
+
+最小修订范围仍只在本卡允许的账本文档内：
+
+1. 将 `IMP-17` 降为 `partial`，按实际断言收窄“已覆盖子句”，并记录旧 Markdown/完整快照不可变及中断状态转换的最小证据缺口。
+2. 动态汇总相应改为 `IMP = verified 1 / partial 27 / missing 0 / owner_blocked 0`，总计 `verified 1 / partial 37 / missing 2 / owner_blocked 0`；不得只手改数字，仍须由表现场反校验。
+3. 重新执行账本 §6、一组 `IMP-17` 精确节点和 `make gate-release`，以新候选 HEAD 发下一条交付报告。
+
+`IMP-04` 的三个场景已逐项打开断言核对，可维持 `verified`。未发现 L1，也不要求补测试或修改运行时；当前分支不合入，backlog 不更新，完整发布门禁留到修订候选后独立重跑。

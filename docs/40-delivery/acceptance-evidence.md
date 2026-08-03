@@ -48,7 +48,7 @@
 | IMP-14 | partial | automated, synthetic_e2e | `P2` · `tests/test_analysis.py::test_personal_implementation_requires_and_accepts_bound_role_context`、`::test_skipped_context_requires_a_visible_open_project_gap`；`P3` · `tests/test_reporting.py::test_report_bundle_and_snapshot_are_deterministic_safe_and_idempotent` | 无角色证据时强个人实现归因被拒绝；能力叙事、候选学习与实现方式能安全渲染 | 未证明客观项目结果与全部过去式学习/主导/指标措辞的生成和拒绝矩阵；补叙事端到端夹具 |
 | IMP-15 | partial | automated, synthetic_e2e | `P2` · `tests/test_analysis.py::test_context_interview_appends_facts_and_freezes_them_for_later_runs` | 单项目上下文答案独立持久化、事实冻结并供后续运行复用 | 未证明业务目标/指标/角色缺口由 prepare 阶段跨项目一次性批量提问；补多项目会话级访谈 E2E |
 | IMP-16 | partial | automated, synthetic_e2e | `P3` · `tests/test_exporting.py::test_translation_prepare_reads_one_frozen_projection_without_writing_export_state`、`::test_translation_publish_atomically_creates_one_immutable_derived_export`、`::test_translation_publish_rejects_non_equivalent_candidate_batches_without_writes`、`::test_normal_export_failure_is_diagnostic_and_leaves_no_visible_partial_output` | 英文 prepare 零文件，source/target 与数字/单位/技术锚点等价校验，成功原子发布，失败零半成品且 latest 不变 | 未证明中文工作稿默认不覆盖以及工作稿后再次 prepare 的完整链；补 drafts 生命周期 E2E |
-| IMP-17 | verified | automated, synthetic_e2e | `P3` · `tests/test_reporting.py::test_review_lineage_projects_only_equivalent_subjects_into_new_snapshots`、`::test_render_failure_preserves_latest_and_retries_the_same_bundle`、`::test_committed_snapshot_repairs_latest_without_duplicate_render`、`::test_dead_render_owner_is_interrupted_and_only_registered_paths_are_cleaned` | 多运行不可变快照、失败/中断恢复、同 bundle 重试、成功快照唯一、旧产物不覆盖及 latest 只前移到成功快照均有正反断言 | 无（本基线） |
+| IMP-17 | partial | automated, synthetic_e2e | `P3` · `tests/test_reporting.py::test_review_lineage_projects_only_equivalent_subjects_into_new_snapshots`、`::test_render_failure_preserves_latest_and_retries_the_same_bundle`、`::test_committed_snapshot_repairs_latest_without_duplicate_render`、`::test_dead_render_owner_is_interrupted_and_only_registered_paths_are_cleaned` | 多运行生成不同快照且旧 HTML/ReportBundle hash 不变；普通失败保留 latest、进入 render_failed 并以同 bundle 重试；提交后 latest 可修复且不重复创建快照；死亡 owner 的 attempt 可标 interrupted 并只清登记路径 | 未直接按字节证明旧 Markdown、简历与 manifest 等完整快照均不覆盖；中断路径未断言 PreparationRun 先进入 render_failed 再重试，不能由最终 attempt 状态推导；补完整快照不可变与中断状态转换断言 |
 | IMP-18 | partial | automated, synthetic_e2e | `P3` · `tests/test_reporting.py::test_report_bundle_and_snapshot_are_deterministic_safe_and_idempotent`；`F1` · `clean-external-requests`、全视图 `no-horizontal-overflow` | 单文件 HTML 内联生成、CSP 与零外部请求；file URL 下九视图可加载 | 未执行断网双击、把 HTML 单独复制到其他目录后复测，以及全部筛选/展开/缺口/复习交互；补可搬移离线 E2E |
 | IMP-19 | partial | automated, synthetic_e2e | `P3` · `tests/test_reporting.py::test_review_lineage_projects_only_equivalent_subjects_into_new_snapshots`、`::test_review_sequence_breaks_equal_timestamp_ties_and_freezes_run_cutoff` | Binding、掌握度、薄弱点、摘要、日期持久化；拒存 transcript；同 ScanRun 新建运行且旧 HTML 不变 | 未直接按字节断言旧 Markdown 不变；补旧快照双文件不可变断言 |
 | IMP-20 | partial | automated, synthetic_e2e | `P1` · `tests/test_scanner.py::test_adapter_failures_and_sql_plan_boundaries_are_visible`、`::test_project_failure_carries_forward_its_baseline_and_keeps_other_projects_fresh`、`::test_all_projects_failing_without_baseline_remains_failed` | 单项目/adapter 失败不吞其余项目，失败原因及沿用基线可见 | 未以无权限、损坏仓库、未知语言三者同场证明原因/影响/补救均在最终包可见；补部分失败复合 E2E |
@@ -86,9 +86,9 @@
 
 | 集合 | verified | partial | missing | owner_blocked | 合计 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| IMP | 2 | 26 | 0 | 0 | 28 |
+| IMP | 1 | 27 | 0 | 0 | 28 |
 | DASH | 0 | 10 | 2 | 0 | 12 |
-| 总计 | 2 | 36 | 2 | 0 | 40 |
+| 总计 | 1 | 37 | 2 | 0 | 40 |
 
 建议后续按最小目标分卡，而非把缺口一次性塞进一张卡：
 
