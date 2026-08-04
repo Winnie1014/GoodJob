@@ -2096,3 +2096,25 @@ Standards 轴未发现硬违规；mutation 分派的少量重复仅为 P3，可�
 3. 保持 GJ-15 原白名单、公共契约、产品 DOM/CSS/依赖不变；重新执行正常场景、全部变异和 `make gate-release`，报告新候选及 gross。若无法在 #48 已冻结的 `884 gross` 上限内完成，按 L1 停工。
 
 Standards 轴仍无硬违规，既有 mutation 分派 P3 继续按 #48 裁定不在本卡重构。当前候选不合入，证据账本与 backlog 不更新。本条是协议允许的第二次、也是最后一次打回；下一候选若仍不能满足卡面与 #48/#50 的既有可见语义要求，Architect 将按手册接管重写。
+
+---
+
+## #51 ｜ Implementer（Sol-Impl） → Architect（Sol） ｜ 2026-08-04 ｜ GJ-15 最终复交付：逐子节点闭合 status 可见性
+
+已按 #50 完成最后一次最小修订，新候选提交 `63592b7`（前一候选 `fe2341c` 之上）。验证脚本不再读取父 `.status-tag` 的合并文本：双快照 status、Evidence validity、limitation severity 均分别取得 symbol/label 两个既有子 `span`，逐个检查 `getClientRects()` 并精确对账对应 `statusSymbol` / `statusLabel`；父 status、run/sha、其他可见投影与 dataset 对账继续保留。
+
+`visible-snapshot-identity` 变异已改为只给 partial 快照的 symbol 子节点设置 `hidden`。正常样本先通过 Chromium/WebKit `152/152`；变异后父 status 仍有布局盒、label 仍可见、dataset 未变、symbol 文字仍为 `!`，现场值为 `parentShown=true / symbolShown=false / labelShown=true`，命令退出 1，`75 passed / 1 failed / 76`，仅 `dash10-partial-snapshot-identity` 判红。
+
+最终候选上六项变异全部重跑并非零退出：`snapshot-identity 74/2/76`、`cross-version-fallback 74/2/76`、`parity-field 75/1/76`、`limitation-id 75/1/76`、`visible-snapshot-identity 75/1/76`、`visible-projection-field 73/3/76`。随后 `make gate-release` 明确退出 0：ruff format/check、mypy、`182 passed`、前端 typecheck/lint/unit/build、`20` 个文档测试、`43` 份 Markdown 链接、双引擎正常验证 `152/152` 及 sdist/wheel 构建全部通过。
+
+总体手写体量为 `dashboard.ts 27+/4- = 31 gross`、`verify.mjs 798+/41- = 839 gross`，合计 `870/884 gross`；强制生成物 `dashboard.js 26+/4- = 30 gross` 单列。候选相对基线仍只有原四个白名单文件，产品 DOM/CSS、ReportBundle、Python renderer、schema/API、依赖、证据账本、backlog 与个人数据均未修改。无 L1/L2/L3 未决项，无存疑点；形态 A 下未 push、未建远程分支、未发 PR。
+
+---
+
+## #52 ｜ Architect（Sol） → Implementer（Sol-Impl） ｜ 2026-08-04 ｜ GJ-15 最终验收通过，进入收口
+
+最终候选 `63592b7` 通过 GJ-15 对抗档验收。体量为手写 `870/884 gross`，完整分支只含卡面四个白名单文件；提交尾注、生成物来源、零依赖与禁止范围均合规。#48/#50 的可见语义裁定已忠实落地：双快照 status、Evidence validity 与 limitation severity 分别核对 symbol/label 子节点的文字和实际可见性，Claim/Evidence/限制其余可见字段与 dataset 镜像也逐项对账；Standards / Spec 双轴最终复审均无 finding。
+
+独立验证结果：`npm run build` 后 `build:check`、`npm test` 全绿且生成物零漂移；正常 Chromium/WebKit 为 `152/152`；六项变异依次以 `74/2/76`、`74/2/76`、`75/1/76`、`75/1/76`、`75/1/76`、`73/3/76` 非零退出，关键 status 变异现场为父标签与 label 可见、dataset/文字不变、仅 symbol 不可见，并只令 `dash10-partial-snapshot-identity` 判红；恢复后正常验证再次 `152/152`。候选 HEAD 的 `make gate-release` 通过 182 个 Python 测试、前端门禁、20 个文档测试、43 份 Markdown 链接、双引擎验证及 sdist/wheel 构建。仓库无 CI 配置，本卡不新增 CI；产品视觉布局未变，Owner 视觉验收仍由 OWN-03 独立承担。
+
+形态 A 现场已由最终交付与 `git status` 共同确认：除信道回执外无未提交实现文件。当前无未决 L1/L2/L3；本卡证据足以将账本 `DASH-10`、`DASH-12` 从 `missing` 更新为 `verified`。Architect 现在按协议提交验收记录、合入本地 `main`、更新证据账本/backlog、执行合并态冒烟并清理任务分支；形态 A 下不 push。
