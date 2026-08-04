@@ -1,8 +1,8 @@
 # GoodJob 发布验收证据账本
 
 > 状态：按代码基线冻结的验收记录，不是产品契约
-> 证据基线：`d302b69a1ac5a6b2891c14fe9a17c9d6ed388ecd`
-> 记录日期：2026-08-02
+> 证据基线：`63592b791a596f70b802fefbd39d7e2b768b09da`
+> 记录日期：2026-08-04
 > 适用范围：[验收基线 §3.2](acceptance-baseline.md#32-场景矩阵)与[看板呈现契约 §12](../20-architecture/dashboard-design.md#12-可判定验收规则)
 > 上游：上述两份权威文档；本账本只记录该基线已有的可复现实证与缺口，不改变场景定义。
 
@@ -17,7 +17,7 @@
 
 ## 2. 可复现证据入口
 
-以下命令均于 2026-08-02 在仓库根执行；`P1` 至 `P4` 覆盖下表引用的全部 Python 节点，成功集合分别为 51、50、61、20 条，共 182 条。
+`P1` 至 `P4` 于 2026-08-02 在仓库根执行，覆盖下表引用的全部 Python 节点，成功集合分别为 51、50、61、20 条，共 182 条；`F1` 与 `R1` 于 2026-08-04 在候选 `63592b7` 上独立复验。
 
 | 代号 | 精确命令 | 本次结果 |
 | --- | --- | --- |
@@ -25,8 +25,8 @@
 | `P2` | `cd .agents/skills/goodjob-career-review/runtime && uv run pytest -q tests/test_preparation.py tests/test_analysis.py` | `50 passed` |
 | `P3` | `cd .agents/skills/goodjob-career-review/runtime && uv run pytest -q tests/test_reporting.py tests/test_exporting.py` | `61 passed` |
 | `P4` | `cd .agents/skills/goodjob-career-review/runtime && uv run pytest -q tests/test_cli.py tests/test_auth.py tests/test_db.py tests/test_installation.py` | `20 passed` |
-| `F1` | `cd .agents/skills/goodjob-career-review/runtime/frontend && npm run verify` | Chromium + WebKit，`132 passed / 0 failed` |
-| `R1` | `make gate-release` | format、lint、mypy、182 pytest、前端门禁、20 文档测试、132/132 浏览器核对与 sdist/wheel 构建全部通过；运行 HEAD 为 `d302b69` |
+| `F1` | `cd .agents/skills/goodjob-career-review/runtime/frontend && npm run verify` | Chromium + WebKit，`152 passed / 0 failed` |
+| `R1` | `make gate-release` | format、lint、mypy、182 pytest、前端门禁、20 文档测试、43 份 Markdown 链接、152/152 浏览器核对与 sdist/wheel 构建全部通过；运行 HEAD 为 `63592b7` |
 
 ## 3. IMP 证据矩阵
 
@@ -59,7 +59,7 @@
 | IMP-25 | partial | automated, synthetic_e2e | `P2` · `tests/test_analysis.py::test_verified_review_semantics_survive_wording_only_claim_revision`、`::test_verified_review_semantics_survive_equivalent_source_path_move`；`P3` · `tests/test_reporting.py::test_review_lineage_projects_only_equivalent_subjects_into_new_snapshots` | 措辞变化与等价路径移动延续；语义键/缺口严重度变化触发重评；不直接依赖 Revision/Gap ID | 未穷举顺序/行号/facet/conflict/validity/角色结果锚点/gap 状态及跨项目相似题面不合并；补 canonical projection 参数矩阵 |
 | IMP-26 | partial | automated, synthetic_e2e | `P4` · `tests/test_db.py::test_migration_creates_stable_owner_layout`、`::test_migration_upgrades_populated_v5_without_losing_preparation_evidence`；`P3` · `tests/test_exporting.py::test_translation_publish_atomically_creates_one_immutable_derived_export` | SQLite/artifacts/exports/drafts 稳定布局、已有数据 migration 保留、导出与快照不可变 | 未构造多次扫描/快照/导出/工作稿后升级重装，也未断言每次状态显示字节数和快照数量；补保留与 usage 统计 E2E |
 | IMP-27 | partial | automated, synthetic_e2e | `P3` · `tests/test_exporting.py::test_translation_prepare_reads_one_frozen_projection_without_writing_export_state`、`::test_real_sigkill_export_is_recovered_by_the_next_writer_entry`、`::test_dead_export_owner_recovery_cleans_only_registered_paths_and_retries_fresh`、`::test_export_recovery_does_not_interrupt_or_clean_an_unproven_live_owner` | 候选阶段零文件；三处真实 SIGKILL 可被下一 writer 中断清理；注入中断场景证明只清登记路径、不碰成功/未知目录并以新 attempt 重试且 latest 不变 | 未在同一真实杀进程场景同时放入成功导出、未知目录并完成重试；PID 复用也未与该组合交互，故不能证明复合条件；补真实多状态 SIGKILL E2E |
-| IMP-28 | partial | automated, synthetic_e2e | `F1` · 132 条 Chromium/WebKit 行为断言；`P3` · `tests/test_reporting.py::test_dashboard_renders_markup_like_code_tokens_as_inert_data`、`::test_report_bundle_and_snapshot_are_deterministic_safe_and_idempotent` | 零请求/错误、CSP 阳性对照、多宽度、部分键盘、forced-colors、打印、注入惰性化等子集 | 下方 DASH 矩阵仍有仓库内缺口且未做灰度/色觉与 Owner 视觉、双快照、逐条同源比对；完成全部 DASH 后再重评 |
+| IMP-28 | partial | automated, synthetic_e2e | `F1` · 152 条 Chromium/WebKit 行为断言；`P3` · `tests/test_reporting.py::test_dashboard_renders_markup_like_code_tokens_as_inert_data`、`::test_report_bundle_and_snapshot_are_deterministic_safe_and_idempotent` | 零请求/错误、CSP 阳性对照、多宽度、部分键盘、forced-colors、打印、注入惰性化、双快照身份与逐条同源投影等子集 | 下方 DASH 矩阵仍有仓库内缺口，且未做灰度/色觉与 Owner 视觉；完成全部 DASH 后再重评 |
 
 ## 4. DASH 证据矩阵
 
@@ -76,9 +76,9 @@
 | DASH-07 | partial | automated, synthetic_e2e | `F1` · `print-controls-hidden`、`print-details-expanded`、`print-full-locator` | 打印时隐藏交互控件、展开 details、locator 不截断 | 未断言 hash、快照身份与降级带保留，也未做 PDF/打印视觉核对；补打印语义断言与 Owner 视觉 |
 | DASH-08 | partial | automated, synthetic_e2e | `F1` · `coverage-scope-link-focusable`、`coverage-scope-link-outside-nav`、`deferred-search-focus`、`focused-project-enter-activation` | 若干链接/检索/项目项可聚焦并由 Enter 激活 | 未覆盖切视图→检索→筛选→展开证据→复制 locator 全链、焦点顺序/焦点环及鼠标唯一入口；补单一纯键盘 E2E 与视觉抽验 |
 | DASH-09 | partial | automated, synthetic_e2e | `F1` · `forced-colors-media-active`、`forced-colors-project-disposition`、`forced-colors-evidence-validity`、`forced-colors-support-level`、`forced-colors-commit-state-text-channel`、`forced-colors-review-continuity` | forced-colors 下状态具有图标+文字通道，commit_state 仍可读 | 未测灰度打印、色觉模拟以及分数/覆盖度可读；补媒体模拟自动化与 Owner 视觉 |
-| DASH-10 | missing | automated, synthetic_e2e | `cd .agents/skills/goodjob-career-review/runtime/frontend && npm run verify && ! rg -n 'record\(engineName, ".*(version|snapshot|deep-link)' scripts/verify.mjs`：132/132 通过后确认没有对应 assertion | 无适格语义证据；`F1` 仅访问 `version-mismatch` 路由并测溢出 | 补同岗位 completed/partial 两份真实渲染快照身份区分，并断言跨版本深链明确报错且不落错对象 |
+| DASH-10 | verified | automated, synthetic_e2e | `F1` · `dash10-completed-snapshot-identity`、`dash10-partial-snapshot-identity`、`dash10-same-role-distinct-snapshots`、`dash10-cross-version-deep-link-rejected`、`dash10-cross-version-no-wrong-object`；变异 `visible-snapshot-identity`、`snapshot-identity`、`cross-version-fallback` | 同岗位 completed/partial 两份真实渲染快照分别核对可见与数据镜像中的 status、run ID、snapshot hash；四类跨版本深链明确报错、显示目标 hash 且不落错对象；三项变异均使对应语义判红 | 无（本基线） |
 | DASH-11 | partial | automated, synthetic_e2e | `F1` · `forced-colors-review-continuity` | new/continued/reassess_required 三态的图标与文字可区分 | 未断言冻结时间、可复制 Skill 调用、无写控件与不创建提醒；补复习区只读契约断言 |
-| DASH-12 | missing | automated, synthetic_e2e | `cd .agents/skills/goodjob-career-review/runtime/frontend && npm run verify && ! rg -n 'record\(engineName, ".*(markdown|html-parity|same-source)' scripts/verify.mjs`：132/132 通过后确认没有对应 assertion | 无适格逐条一致性证据；当前双渲染测试未比较指定字段 | 对同一冻结快照比较每条关键 Claim 的 evidence validity、facet、commit_state、限制；任一差异使发布失败 |
+| DASH-12 | verified | automated, synthetic_e2e | `F1` · `dash12-claim-evidence-parity`、`dash12-limitation-parity`、`dash12-no-html-only-conclusions`；变异 `parity-field`、`visible-projection-field`、`limitation-id` | 对同一冻结投影分别提取非空 Markdown 与 HTML，逐条核对 Claim、Evidence validity、facets、commit state 与 limitations；HTML 可见字段同时对账数据镜像；三项变异均使发布判红 | 无（本基线） |
 
 ## 5. 动态汇总与下一批候选
 
@@ -87,12 +87,12 @@
 | 集合 | verified | partial | missing | owner_blocked | 合计 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | IMP | 1 | 27 | 0 | 0 | 28 |
-| DASH | 0 | 10 | 2 | 0 | 12 |
-| 总计 | 1 | 37 | 2 | 0 | 40 |
+| DASH | 2 | 10 | 0 | 0 | 12 |
+| 总计 | 3 | 37 | 0 | 0 | 40 |
 
 建议后续按最小目标分卡，而非把缺口一次性塞进一张卡：
 
-1. 先补两个完全没有适格证据的看板语义：双快照/跨版本深链，以及 Markdown/HTML 关键 Claim 同源比较。
+1. `DASH-10`、`DASH-12` 已由 GJ-15 闭合；下一步按发布路径执行 GJ-14 合成全链路验收，再从账本逐行选择仍为 `partial` 的最小缺口。
 2. 再补看板首屏降级、Claim 到证据、纯键盘与打印/无色通道；自动化闭合后再单独请求 Owner 视觉核对。
 3. 扫描与分析侧优先补工作树冲突、增量删除/读取计数、未知语言、匹配测试结果和完整项目资格五类合成 E2E。
 4. 安装/保留侧单独验证 Skill 升级重装、usage 统计与个人数据不变；不要和运行时行为卡混合。
