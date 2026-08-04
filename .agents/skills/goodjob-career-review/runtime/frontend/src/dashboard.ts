@@ -305,6 +305,13 @@ function appendTokens(parent: HTMLElement, tokens: readonly InlineToken[]): void
   }
 }
 
+function mirrorLimitationData(item: HTMLElement, limitation: Limitation): void {
+  item.dataset.limitationId = limitation.limitation_id;
+  item.dataset.kind = limitation.kind;
+  item.dataset.severity = limitation.severity;
+  item.dataset.projectId = limitation.project_id ?? "";
+}
+
 function statusTag(value: string, label = statusLabel(value)): HTMLElement {
   const tag = element("span", "status-tag");
   tag.dataset.status = value;
@@ -438,7 +445,12 @@ class Dashboard {
     const main = element("main");
     main.id = "main";
     if (route.version !== "v1") {
-      main.append(this.renderRouteError("该链接属于其他契约版本，当前快照只支持 v1。"));
+      main.append(
+        this.renderRouteError(
+          "该链接属于其他契约版本，当前快照只支持 v1。",
+          "contract-version-mismatch",
+        ),
+      );
     } else if (route.view === "overview") {
       main.append(this.renderOverview());
     } else if (route.view === "project") {
@@ -459,6 +471,9 @@ class Dashboard {
   private renderForensicStrip(): HTMLElement {
     const strip = element("div", "forensic-strip");
     strip.setAttribute("aria-label", "冻结快照身份");
+    strip.dataset.packageStatus = this.bundle.package_status;
+    strip.dataset.preparationRunId = this.bundle.preparation_run_id;
+    strip.dataset.bundleSha256 = this.bundle.bundle_sha256;
     strip.append(
       statusTag(this.bundle.package_status),
       element("span", undefined, `run ${this.bundle.preparation_run_id.slice(0, 12)}`),
@@ -581,7 +596,7 @@ class Dashboard {
       const list = element("ul", "degradation-list");
       for (const limitation of limitations) {
         const item = element("li", "degradation-item");
-        item.dataset.severity = limitation.severity;
+        mirrorLimitationData(item, limitation);
         const label = element("div", "hanging-label");
         label.append(statusTag(limitation.severity), element("span", undefined, limitation.kind));
         const copy = element("div", "degradation-copy");
@@ -770,7 +785,7 @@ class Dashboard {
     const list = element("ul", "degradation-list");
     for (const limitation of limitations) {
       const item = element("li", "degradation-item");
-      item.dataset.severity = limitation.severity;
+      mirrorLimitationData(item, limitation);
       const label = element("div", "hanging-label");
       label.append(statusTag(limitation.severity), element("span", undefined, limitation.kind));
       const copy = element("div", "degradation-copy");
@@ -997,6 +1012,8 @@ class Dashboard {
     const list = element("div", "claim-list");
     for (const claim of claims) {
       const details = element("details", "claim-item focus-item") as HTMLDetailsElement;
+      details.dataset.claimId = claim.claim_id;
+      details.dataset.facets = JSON.stringify(claim.facets);
       details.tabIndex = 0;
       details.open = forceOpen;
       const summary = element("summary", "claim-summary");
@@ -1055,6 +1072,11 @@ class Dashboard {
 
   private renderEvidenceItem(item: EvidenceItem, relation: EvidenceRelation): HTMLElement {
     const wrapper = element("div");
+    wrapper.dataset.evidenceId = item.evidence_id;
+    wrapper.dataset.relation = relation.relation;
+    wrapper.dataset.validity = item.validity;
+    wrapper.dataset.commitState = item.commit_state;
+    wrapper.dataset.supportedFacets = JSON.stringify(relation.supported_facets);
     const heading = element("div", "evidence-heading");
     heading.append(
       statusTag(item.validity),
@@ -1343,8 +1365,9 @@ class Dashboard {
     return view;
   }
 
-  private renderRouteError(message: string): HTMLElement {
+  private renderRouteError(message: string, errorKind?: string): HTMLElement {
     const error = element("div", "route-error");
+    if (errorKind) error.dataset.errorKind = errorKind;
     error.append(element("h2", "section-title", "无法打开深链"), element("p", undefined, message));
     return error;
   }
