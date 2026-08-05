@@ -217,7 +217,7 @@ GJ-14 与 GJ-15 在 GJ-13 后技术上可并行；单 Implementer 模式下一�
 | 任务 | 卡面 | 状态 | 前置 | 验收强度 | 发布条件 |
 | --- | --- | --- | --- | --- | --- |
 | GJ-13 · 建立发布验收证据账本 | [GJ-13](../collab/tasks/GJ-13.md) | ✅ 已验收合入（信道 #43，merge `682a66d`） | M1 已合入 | 常规 | 条件 2、4 的事实基线 |
-| GJ-14 · 合成工作区全链路验收 | [GJ-14](../collab/tasks/GJ-14.md) | 任务卡已出，待领取（派卡信道 #54） | GJ-13 | 对抗 | 条件 2；条件 3 前置 |
+| GJ-14 · 合成工作区全链路验收 | [GJ-14](../collab/tasks/GJ-14.md) | ✅ 已验收合入（信道 #58，merge `5aa2504`） | GJ-13 | 对抗 | 条件 2；条件 3 前置 |
 | GJ-15 · 看板机检缺口闭合 | [GJ-15](../collab/tasks/GJ-15.md) | ✅ 已验收合入（信道 #52，merge `319ccd6`） | GJ-13 | 对抗 | 条件 4 机检部分 |
 | GJ-16 · CodeRoute/SliverShield 只读验收 | 待 OWN-01 裁定后出卡 | 阻塞 | GJ-14、GJ-15、OWN-01 | 对抗 | 条件 3；Owner 视觉输入 |
 | GJ-17 · 隔离安装副本与报告契约复现 | 待前置完成后出卡 | 阻塞 | GJ-16、Owner 文档/视觉核对 | 对抗 | 条件 6；发布候选收口 |
@@ -225,6 +225,8 @@ GJ-14 与 GJ-15 在 GJ-13 后技术上可并行；单 Implementer 模式下一�
 GJ-13 验收裁决要点（信道 #43）：证据账本按上游动态提取并覆盖 28 个 `IMP` 与 12 个 `DASH`，当前结论为 `IMP = verified 1 / partial 27`、`DASH = partial 10 / missing 2`。首轮验收将缺少完整快照不可变与中断状态转换断言的 `IMP-17` 从 `verified` 退回为 `partial`，修订后独立发布门禁全绿并合入。#40 的 L2“全绿测试不等于完整发布实证”成立，缺口归宿以账本逐行为准：先由 GJ-15 闭合两个 `missing` 看板语义，再按账本最小目标规划 GJ-14，不把全部 `partial` 塞入一张卡。
 
 GJ-15 由 Architect 在信道 #44 正式派发，随后以 #45 修订限制 parity 的可观察锚点：限定闭合 `DASH-10` 双快照/跨版本深链与 `DASH-12` Markdown/HTML 同源投影；不吸收其他 `partial` 看板项。经 #48、#50 两轮裁决收紧可见语义后，最终候选 `63592b7` 于 #52 通过对抗档验收并以 `319ccd6` 合入；账本现为 `DASH = verified 2 / partial 10 / missing 0`。下一张候选为 GJ-14，仍按账本最小目标出卡。
+
+GJ-14 由 Architect 在信道 #54 正式派发；#55 发现 JD 持久化断言与 `EVID-E22` 冲突后，#56 裁定保留个人 SQLite 中的 Owner JD、收窄禁止泄漏面并复工。候选 `1ddaa28` 于 #58 通过对抗档验收并以 `5aa2504` 合入：真实 broker 主链、双项目批量访谈、中文不可变快照、英文失败关闭、跨任务复用和结构化复盘均由独立门禁复验。账本据此将 `IMP-15`、`IMP-19` 更新为 `verified`，其余六项只追加精确子句并保持 `partial`；当前汇总为 `IMP = verified 3 / partial 25`、`DASH = verified 2 / partial 10`。GJ-16 仍受 `OWN-01` 裁定阻塞，不从 GJ-14 的 manifest fixture 推导 Git/worktree 实证。
 
 ### Owner 决策与人工门
 
