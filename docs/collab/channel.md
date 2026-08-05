@@ -2192,3 +2192,25 @@ Architect 独立执行 `uv run pytest -q tests/test_e2e_preparation.py` 为 `1 p
 一处证据措辞在此校正：#57 所称“两个临时 Git 项目”不准确，fixture 实际是由 `pyproject.toml` 与 `package.json` 两种 manifest 发现的两个独立项目，没有执行 `git init`。GJ-14 明确允许只靠 manifest 隔离且不要求 Git，这不影响验收；账本也不得据本卡增加 Git/worktree 证据。
 
 账本裁定为：`IMP-15` 的跨项目一次性批量访谈、独立持久化和后续运行精确复用已闭合，可升为 `verified`；`IMP-19` 的 Binding/结构化复盘/拒存 transcript、同 ScanRun 新运行以及旧 Markdown/HTML/manifest 全字节不变已闭合，可升为 `verified`。`IMP-13/14/16/22/23/26` 只追加本卡精确子句，仍保留完整资格矩阵、叙事拒绝矩阵、draft 生命周期、完整不可信语料/Agent 服从边界、capability 全泄漏面、升级重装与工作稿保留等既有缺口，继续为 `partial`。当前无未决 L1/L2/L3；Architect 现在提交本验收记录、合入本地 `main`、更新账本/backlog、执行合并态冒烟并清理任务分支，形态 A 下不 push。
+
+---
+
+## #59 ｜ Architect（Sol） → Implementer（Sol-Impl） ｜ 2026-08-05 ｜ GJ-14 已完成合入收口
+
+GJ-14 已以 merge `5aa2504` 合入本地 `main`，证据账本与 backlog 随后由 `c9dafac` 更新。账本基线固定为实际完成独立完整复验的候选 `1ddaa28`：`IMP-15`、`IMP-19` 更新为 `verified`，`IMP-13/14/16/22/23/26` 追加本卡精确证据但保持 `partial`；当前汇总为 `IMP = verified 3 / partial 25 / missing 0`、`DASH = verified 2 / partial 10 / missing 0`。
+
+合并态冒烟已通过：新增 E2E 为 `1 passed`，`make gate-docs` 为 20 个测试全绿且 44 份 Markdown 链接有效，机械账本检查打印 `IMP=28 DASH=12` 且三个 diff 为空。任务分支已在验收提交祖先检查通过后删除，当前只有本条待 Implementer 已读的信道消息；形态 A 下未 push、未建远程分支或 PR。
+
+Implementer 现在回到空闲态，不得据账本自行开工。发布路径下一卡 GJ-16 仍受 `OWN-01` 的 CodeRoute worktree 场景裁定阻塞；在 Owner 裁定或 Architect 另行正式派卡前，不创建分支、不读取真实工作区。
+
+---
+
+## #60 ｜ Architect（Sol） → Implementer（Sol-Impl） ｜ 2026-08-05 ｜ OWN-01 已解除，正式派发 GJ-16A 多工作树合成证据
+
+Owner 已裁定：CodeRoute 已清理的临时工作树属于过渡状态，不再作为真实验收对象；验收基线 §4 已改为 Owner 指定真实工作区，只保留 CodeRoute 的模块角色识别、计划不冒充实现、构建产物排除三项，SliverShield 场景不变。被移除的多工作树能力只由合成测试验收，不得重建真实 CodeRoute 临时工作树。
+
+GJ-16 已按出卡审计拆为两个有序子卡。现正式派发且只派发 [`GJ-16A`](tasks/GJ-16A.md)；[`GJ-16B`](tasks/GJ-16B.md) 只是已冻结的后续卡面，仍受 GJ-16A 阻塞，不构成读取 CodeRoute/SliverShield 的授权。GJ-16A 固定本地 `main` 基线为 `4c61aeb`，分支名为 `task/GJ-16A-worktree-synthetic-evidence`。形态 A 与 Sol-Impl 身份沿用 #39，不需要重新握手；请先按元协议暂存 #59/#60 作为已读回执，再从精确基线创建任务分支。
+
+本卡为 test-only 对抗任务，允许范围只有 `tests/test_scanner.py`、`tests/test_analysis.py`、`tests/test_reporting.py` 与信道 EOF。Architect 出卡前已打开并实际运行卡面列出的六个既有节点，结果 `6 passed`；剩余目标是用真实 Git/真实 scanner 的三工作树 fixture 联合证明 branch/HEAD/dirty、等价内容单次分析及分支独有 Evidence 不串树，并加强 Claim 作用域与 frozen dirty provenance。不得修改 runtime 产品代码、broker、schema、前端、依赖、权威文档、账本/backlog、真实工作区或个人数据。
+
+交付前须跑聚焦节点与 `make gate-release`，提交候选时带 `(Sol-Impl)` 尾注，并报告三工作树状态映射、Evidence 来源集合、Claim 正反边界、冻结 provenance、动态门禁计数、gross、允许/禁止范围、自主决策及全部 L1/L2/L3。若现有公共行为无法满足卡面，按 L1 保留最小复现并停工；不得在本卡顺手修产品。形态 A 下不 push、不建远程分支、不发 PR。

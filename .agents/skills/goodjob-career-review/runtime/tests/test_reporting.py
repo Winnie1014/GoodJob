@@ -972,7 +972,7 @@ def test_carried_forward_evidence_keeps_snapshot_worktree_provenance(
         connection.execute(
             """
             UPDATE worktree_observations
-            SET branch = 'old-frozen-branch', head_commit = ?
+            SET branch = 'old-frozen-branch', head_commit = ?, dirty_state = 'modified'
             WHERE scan_run_id = ? AND worktree_id = ?
             """,
             ("a" * 40, old_scan_run_id, worktree_id),
@@ -999,7 +999,7 @@ def test_carried_forward_evidence_keeps_snapshot_worktree_provenance(
                 external_metadata_receipt_id, external_metadata_confirmed_at,
                 external_metadata_read_fields, observed_at
             )
-            SELECT worktree_id, ?, 'new-current-branch', ?, dirty_state,
+            SELECT worktree_id, ?, 'new-current-branch', ?, 'clean',
                    history_basis, external_git_dir, external_common_dir,
                    external_metadata_receipt_id, external_metadata_confirmed_at,
                    external_metadata_read_fields, '2026-07-27T01:00:00Z'
@@ -1032,14 +1032,18 @@ def test_carried_forward_evidence_keeps_snapshot_worktree_provenance(
         )
 
     bundle = ReportBundleBuilder(database).build(run_id)
-    evidence = [
-        _dict(value) for value in _list(bundle["evidence"]) if _dict(value)["worktree"] is not None
-    ]
+    evidence = [_dict(value) for value in _list(bundle["evidence"])]
     assert evidence
-    worktree = _dict(evidence[0]["worktree"])
-    assert worktree["branch"] == "old-frozen-branch"
-    assert worktree["head_commit"] == "a" * 40
-    assert worktree["observed_scan_run_id"] == old_scan_run_id
+    worktrees = [_dict(item["worktree"]) for item in evidence]
+    assert {
+        (
+            worktree["branch"],
+            worktree["head_commit"],
+            worktree["dirty_state"],
+            worktree["observed_scan_run_id"],
+        )
+        for worktree in worktrees
+    } == {("old-frozen-branch", "a" * 40, "modified", old_scan_run_id)}
     projects = [_dict(value) for value in _list(bundle["projects"])]
     assert projects[0]["snapshot_disposition"] == "carried_forward"
 

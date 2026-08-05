@@ -1663,6 +1663,151 @@ def test_same_content_worktrees_reuse_analysis_and_keep_expandable_sources(
     assert roots == {str(primary), str(linked)}
 
 
+def test_three_worktrees_preserve_branch_state_and_divergent_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    primary = workspace / "primary"
+    linked_a = workspace / "linked-a"
+    linked_b = workspace / "linked-b"
+    primary.mkdir(parents=True)
+    _git_init(primary)
+    _git(primary, "config", "user.name", "Test Author")
+    _git(primary, "config", "user.email", "author@example.test")
+    _git(primary, "branch", "-M", "main")
+    (primary / "pyproject.toml").write_text("[project]\nname='three-worktrees'\n", encoding="utf-8")
+    (primary / "shared.py").write_text(
+        "def shared_value() -> str:\n    return 'shared'\n", encoding="utf-8"
+    )
+    (primary / "tracked.py").write_text(
+        "def tracked_value() -> str:\n    return 'base'\n", encoding="utf-8"
+    )
+    _git(primary, "add", "pyproject.toml", "shared.py", "tracked.py")
+    _git(primary, "commit", "-m", "three-worktree baseline")
+    base_head = _git(primary, "rev-parse", "HEAD").stdout.strip()
+    _git(primary, "worktree", "add", "-b", "linked-a", str(linked_a), base_head)
+    _git(primary, "worktree", "add", "-b", "linked-b", str(linked_b), base_head)
+
+    (linked_b / "branch_only.py").write_text(
+        "def branch_only() -> str:\n    return 'linked-b'\n", encoding="utf-8"
+    )
+    _git(linked_b, "add", "branch_only.py")
+    _git(linked_b, "commit", "-m", "linked-b implementation")
+    linked_b_head = _git(linked_b, "rev-parse", "HEAD").stdout.strip()
+    (linked_a / "tracked.py").write_text(
+        "def tracked_value() -> str:\n    return 'linked-a modified'\n", encoding="utf-8"
+    )
+    (linked_b / "untracked.py").write_text(
+        "def untracked_value() -> str:\n    return 'linked-b untracked'\n", encoding="utf-8"
+    )
+
+    analyze_calls: list[str] = []
+    original_analyze_file = analyze_file
+
+    def counted_analyze_file(
+        *,
+        relative_path: str,
+        text: str,
+        artifact_kind: str,
+        adapter_id: str,
+        base_evidence_kind: str,
+    ) -> AnalysisResult:
+        analyze_calls.append(relative_path)
+        return original_analyze_file(
+            relative_path=relative_path,
+            text=text,
+            artifact_kind=artifact_kind,
+            adapter_id=adapter_id,
+            base_evidence_kind=base_evidence_kind,
+        )
+
+    monkeypatch.setattr("goodjob.scanner.analyze_file", counted_analyze_file)
+    scanner, receipt_id = _direct_scanner(tmp_path / "data", workspace)
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="three-worktrees-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.coverage["projects"] == 1
+    assert result.coverage["fresh_projects"] == 1
+    assert result.coverage["worktrees"] == 3
+    assert result.coverage["external_git_metadata"] == {}
+    assert not any(issue.kind == "external_git_authorization_required" for issue in result.issues)
+    assert analyze_calls.count("shared.py") == 1
+
+    with scanner._database.read_connection() as connection:
+        assert connection.execute("SELECT COUNT(*) AS count FROM projects").fetchone()["count"] == 1
+        observation_rows = connection.execute(
+            """
+            SELECT wt.canonical_root, wo.branch, wo.head_commit, wo.dirty_state
+            FROM worktree_observations AS wo
+            JOIN worktrees AS wt ON wt.worktree_id = wo.worktree_id
+            WHERE wo.scan_run_id = ?
+            ORDER BY wt.canonical_root
+            """,
+            (result.scan_run_id,),
+        ).fetchall()
+        evidence_rows = connection.execute(
+            """
+            SELECT sa.relative_path, wt.canonical_root, e.content_equivalence_key,
+                   e.commit_state, e.evidence_kind
+            FROM evidence AS e
+            JOIN source_revisions AS sr ON sr.source_revision_id = e.source_revision_id
+            JOIN source_artifacts AS sa ON sa.artifact_id = sr.artifact_id
+            JOIN worktrees AS wt ON wt.worktree_id = sa.worktree_id
+            JOIN project_snapshot_evidence AS pse ON pse.evidence_id = e.evidence_id
+            JOIN project_snapshots AS ps ON ps.project_snapshot_id = pse.project_snapshot_id
+            WHERE ps.scan_run_id = ? AND e.origin_kind = 'source_revision'
+            ORDER BY sa.relative_path, wt.canonical_root, e.evidence_kind
+            """,
+            (result.scan_run_id,),
+        ).fetchall()
+
+    observations = {
+        str(row["canonical_root"]): (
+            str(row["branch"]),
+            str(row["head_commit"]),
+            str(row["dirty_state"]),
+        )
+        for row in observation_rows
+    }
+    assert observations == {
+        str(primary.resolve()): ("main", base_head, "clean"),
+        str(linked_a.resolve()): ("linked-a", base_head, "modified"),
+        str(linked_b.resolve()): ("linked-b", linked_b_head, "untracked"),
+    }
+
+    implementation_rows = [row for row in evidence_rows if row["evidence_kind"] == "implementation"]
+    shared_rows = [row for row in implementation_rows if row["relative_path"] == "shared.py"]
+    assert len(shared_rows) == 3
+    assert {str(row["canonical_root"]) for row in shared_rows} == {
+        str(primary.resolve()),
+        str(linked_a.resolve()),
+        str(linked_b.resolve()),
+    }
+    shared_keys = {row["content_equivalence_key"] for row in shared_rows}
+    assert len(shared_keys) == 1
+    shared_key = next(iter(shared_keys))
+    assert isinstance(shared_key, str) and shared_key
+    assert {str(row["commit_state"]) for row in shared_rows} == {"committed"}
+
+    branch_rows = [row for row in implementation_rows if row["relative_path"] == "branch_only.py"]
+    assert {(str(row["canonical_root"]), str(row["commit_state"])) for row in branch_rows} == {
+        (str(linked_b.resolve()), "committed")
+    }
+    modified_rows = [
+        row
+        for row in implementation_rows
+        if row["relative_path"] == "tracked.py" and row["commit_state"] == "modified"
+    ]
+    assert {str(row["canonical_root"]) for row in modified_rows} == {str(linked_a.resolve())}
+    untracked_rows = [row for row in implementation_rows if row["relative_path"] == "untracked.py"]
+    assert {(str(row["canonical_root"]), str(row["commit_state"])) for row in untracked_rows} == {
+        (str(linked_b.resolve()), "untracked")
+    }
+
+
 def test_project_failure_carries_forward_its_baseline_and_keeps_other_projects_fresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
