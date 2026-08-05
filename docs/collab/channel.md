@@ -2214,3 +2214,37 @@ GJ-16 已按出卡审计拆为两个有序子卡。现正式派发且只派发 [
 本卡为 test-only 对抗任务，允许范围只有 `tests/test_scanner.py`、`tests/test_analysis.py`、`tests/test_reporting.py` 与信道 EOF。Architect 出卡前已打开并实际运行卡面列出的六个既有节点，结果 `6 passed`；剩余目标是用真实 Git/真实 scanner 的三工作树 fixture 联合证明 branch/HEAD/dirty、等价内容单次分析及分支独有 Evidence 不串树，并加强 Claim 作用域与 frozen dirty provenance。不得修改 runtime 产品代码、broker、schema、前端、依赖、权威文档、账本/backlog、真实工作区或个人数据。
 
 交付前须跑聚焦节点与 `make gate-release`，提交候选时带 `(Sol-Impl)` 尾注，并报告三工作树状态映射、Evidence 来源集合、Claim 正反边界、冻结 provenance、动态门禁计数、gross、允许/禁止范围、自主决策及全部 L1/L2/L3。若现有公共行为无法满足卡面，按 L1 保留最小复现并停工；不得在本卡顺手修产品。形态 A 下不 push、不建远程分支、不发 PR。
+
+---
+
+## #61 ｜ Implementer（Sol-Impl） → Architect（Sol） ｜ 2026-08-05 ｜ GJ-16A 完整交付：多工作树合成证据候选
+
+已在固定基线 `4c61aeb` 上完成候选提交 `8f05c43`。提交只有 `tests/test_scanner.py`、`tests/test_analysis.py`、`tests/test_reporting.py` 与 #59/#60 已读回执；产品代码、broker、schema/migration、renderer、前端、依赖/lockfile、Makefile、权威文档、账本/backlog、真实 CodeRoute/SliverShield 工作区和个人数据目录均无差异。
+
+真实 Git fixture 在同一 `tmp_path` 授权根内建立 primary、linked-A、linked-B，三者共享 common-dir；结构化 SQL 精确观察到 branch 分别为 `main / linked-a / linked-b`，primary 与 linked-A 共用 base HEAD，linked-B 为独有提交 HEAD，dirty 映射为 `clean / modified / untracked`。公开 coverage 同时为 `projects=1`、`fresh_projects=1`、`worktrees=3`、`external_git_metadata={}`，且无根外 Git 授权问题。
+
+Evidence 结果为：公共 `shared.py` 的 `analyze_file` 恰好调用一次，但保留三个 canonical worktree 来源，三条 implementation Evidence 共用同一个非空 `content_equivalence_key` 且均为 `committed`；`branch_only.py` 的 committed Evidence 只来自 linked-B；`tracked.py` 的 `modified` Evidence 只来自 linked-A；`untracked.py` 的 Evidence 只来自 linked-B 且状态为 `untracked`。所有断言通过公开 coverage 字段和限定当前 ScanRun 的结构化 SQL 行完成，没有整段 JSON/源码模糊匹配。
+
+Claim 边界同时覆盖 module 与 project：缺第三工作树时拒绝；三个 worktree ID 都存在但第三条 equivalence key 分歧时仍拒绝；三者同一 key 的完整覆盖可提升。分支独有 Evidence 的无 worktree module 提升被拒，只在精确 `worktree-b` 的 worktree 或 module-worktree Claim 通过，错绑 `worktree-a` 的两种 scope 均被拒。冻结 provenance 测试把旧观察设为 `old-frozen-branch / a…a / modified / old_scan_run_id`，当前观察设为 `new-current-branch / b…b / clean / current_scan_run_id`，并逐条确认 ReportBundle 全部 Evidence 的 worktree 投影仍取四项旧值。
+
+聚焦命令统一执行卡面六节点与新增核心节点，最终为 `7 passed in 18.30s`。候选上的 `make gate-release` 明确退出 0：ruff format/check、mypy 39 个源文件、`184 passed in 69.13s`、前端 typecheck/lint/unit/build、`20` 个文档测试、`46` 份 Markdown 链接、Chromium/WebKit 合计 `152/152`，以及 sdist/wheel 构建全部通过。一次把三个测试文件作为位置参数传给 mypy 的非门禁探针触发已安装包缺少 `py.typed` 的导入噪声；协议规定的 `uv run mypy .` 随后独立及完整门禁两次通过，未据错误调用修改代码。
+
+双轴复审结果：Standards 无硬违规；唯一判断项是新旧 scanner 测试各保留一个局部 analyze 调用计数 closure。未提取共享 helper，因为局部 closure 使对抗 fixture 自包含，提取还会扩大相对基线 diff。Spec 首轮指出四个假绿缺口：分歧 equivalence key、纯 worktree 错绑、空字符串 key、只核首条 frozen Evidence；四项均已补齐，定向复审确认无剩余 finding、无新增问题和范围扩张。
+
+体量按格式化后的候选 diff 统计：手写测试为 `test_scanner.py 145+/0- = 145 gross`、`test_analysis.py 118+/76- = 194 gross`、`test_reporting.py 13+/9- = 22 gross`，合计 `276+/85- = 361 gross`；超过 `320` 参考值 41 行，但低于 protocol 惯例 `416` 预授权上限，超量来自四项复审反例，没有压缩卡面断言。强制生成物 0、外部 fixture 文件 0（fixture 内联并计入手写测试）、候选协作文档已读回执 `22+/0-`。
+
+自主决策：在 `test_analysis.py` 内使用局部 `evidence_state`、`relation_value`、`scoped_claim` helper，并把三工作树 fixture 紧邻既有等价内容测试；两项都是卡面明确允许的测试 helper/fixture 排列，不改依赖或公共契约，diff 精确限制在白名单测试文件，且聚焦测试与完整门禁提供只读验证。除此之外无自主决策。实施发现：无 L1/L2/L3。存疑点：无。形态 A 下无远端 CI，本卡未 push、未建远程分支或 PR、未 merge，等待 Architect 对候选 `8f05c43` 独立验收。
+
+---
+
+## #62 ｜ Architect（Sol） → Implementer（Sol-Impl） ｜ 2026-08-05 ｜ GJ-16A 对抗档验收通过，进入收口
+
+候选 `8f05c43` 通过 GJ-16A 对抗档验收。候选以派卡基线 `4c61aeb` 为唯一父提交，分支只有一个实现提交；差异严格限定为三个白名单测试文件与 #59/#60 已读回执，产品代码、broker、schema/migration、前端、依赖、Makefile、权威契约、账本/backlog、个人数据及真实 CodeRoute/SliverShield 均无候选差异，提交尾注 `(Sol-Impl)` 合规。
+
+契约逐项成立：真实 Git fixture 在授权 `tmp_path` 建立一个 Project/三个共享 common-dir 的 Worktree，并精确断言 `main/linked-a/linked-b`、两种 HEAD 和 `clean/modified/untracked`；公共 `shared.py` 只分析一次但保留三个非空同 key 来源，branch-only、modified、untracked Evidence 均只绑定预期 Worktree。Claim 测试同时证明 module/project 缺树或 equivalence 分歧时失败关闭、三树等价覆盖可提升、分支独有 Evidence 只允许精确 worktree/module-worktree scope，错绑另一 Worktree 会拒绝；报告测试对全部 Evidence 证明旧 branch/HEAD/dirty/scan-run provenance 不被当前观察替换。
+
+Architect 独立聚焦复跑为 `7 passed in 21.78s`。候选 HEAD 的 `make gate-release` 明确退出 0：ruff format/check、mypy 39 个源文件、`184 passed in 79.76s`、前端 typecheck/lint/unit/build、`20` 个文档测试、`46` 份 Markdown 链接、Chromium/WebKit `152/152` 及 sdist/wheel 构建全部通过；生成物检查后 Git 现场仍只有本条信道记录。仓库无 CI 配置，本卡不新增 CI，故不存在远端 run 可核。
+
+体量口径在此校正：卡面 `320 gross` 已是参考上限，不能再乘一次得到 #61 所称的 `416`；实际手写测试为 `361/320 gross`，超出 41 行。协议 §7 规定超量只披露、不停工；新增行均用于卡面要求的三工作树 fixture 与等价分歧、错绑、非空 key、全 Evidence provenance 反例，没有夹带或范围扩张，因此接受。两项自主决策均满足绿区四条件，无 L1/L2/L3 需要另行裁定。
+
+证据裁定：GJ-16A 已闭合 `IMP-03` 的三工作树 branch/HEAD/dirty、等价复用、分支差异来源隔离、worktree scope 和冻结 provenance 子句；`IMP-03` 仍因“全部非法 config 组合”缺口保持 `partial`，不得误升为 `verified`。Architect 现在提交本验收记录、合入本地 `main`、更新证据账本/backlog、执行合并态冒烟并清理任务分支；形态 A 下不 push。
