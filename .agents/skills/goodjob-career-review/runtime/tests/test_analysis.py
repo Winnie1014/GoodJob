@@ -1298,90 +1298,132 @@ def test_module_claim_requires_worktree_scope_without_equivalent_branch_coverage
             }
         ],
     }
-    state = _EvidenceState(
-        reference="evidence-a",
-        evidence_id="evidence-a",
-        project_id="project",
-        worktree_id="worktree-a",
-        module_id="module",
-        source_revision_id="revision-a",
-        origin_kind="source_revision",
-        evidence_kind="implementation",
-        artifact_kind="source",
-        locator={"relative_path": "src/main.py"},
-        summary="module implementation",
-        commit_state="committed",
-        validity="current",
-        content_equivalence_key="equivalence-a",
-        context_fact_id=None,
-        context_fact_kind=None,
-        anchor_sha256="a" * 64,
-    )
-    relation = EvidenceRelationDraft.from_value(
-        _dict(_list(claim_value["evidence_relations"])[0]),
-        0,
-    )
 
-    project_module_claim = ClaimDraft.from_value(claim_value, 0)
-    with pytest.raises(InvalidInputError, match="every worktree"):
-        AnalysisService._validate_claim(
-            project_module_claim,
-            ((relation, state),),
-            {"worktree-a", "worktree-b"},
+    def evidence_state(
+        reference: str,
+        worktree_id: str,
+        equivalence_key: str,
+    ) -> _EvidenceState:
+        return _EvidenceState(
+            reference=reference,
+            evidence_id=reference,
+            project_id="project",
+            worktree_id=worktree_id,
+            module_id="module",
+            source_revision_id=f"revision-{reference}",
+            origin_kind="source_revision",
+            evidence_kind="implementation",
+            artifact_kind="source",
+            locator={"relative_path": "src/main.py"},
+            summary="module implementation",
+            commit_state="committed",
+            validity="current",
+            content_equivalence_key=equivalence_key,
+            context_fact_id=None,
+            context_fact_kind=None,
+            anchor_sha256="a" * 64,
         )
 
-    second_relation_value = {
-        "evidence_ref": "evidence-b",
-        "relation": "supports",
-        "supported_facets": ["implemented"],
-    }
-    second_relation = EvidenceRelationDraft.from_value(second_relation_value, 1)
-    second_state = _EvidenceState(
-        reference="evidence-b",
-        evidence_id="evidence-b",
-        project_id="project",
-        worktree_id="worktree-b",
-        module_id="module",
-        source_revision_id="revision-b",
-        origin_kind="source_revision",
-        evidence_kind="implementation",
-        artifact_kind="source",
-        locator={"relative_path": "src/main.py"},
-        summary="module implementation",
-        commit_state="committed",
-        validity="current",
-        content_equivalence_key="equivalence-a",
-        context_fact_id=None,
-        context_fact_kind=None,
-        anchor_sha256="a" * 64,
-    )
-    cross_worktree_claim = ClaimDraft.from_value(
-        {
-            **claim_value,
-            "evidence_relations": [
-                _dict(_list(claim_value["evidence_relations"])[0]),
-                second_relation_value,
-            ],
-        },
-        0,
-    )
-    promoted = AnalysisService._validate_claim(
-        cross_worktree_claim,
-        ((relation, state), (second_relation, second_state)),
-        {"worktree-a", "worktree-b"},
-    )
-    assert promoted["conflicted"] is False
+    def relation_value(reference: str) -> dict[str, object]:
+        return {
+            "evidence_ref": reference,
+            "relation": "supports",
+            "supported_facets": ["implemented"],
+        }
 
-    worktree_module_claim = ClaimDraft.from_value(
-        {**claim_value, "worktree_id": "worktree-a"},
-        0,
+    def scoped_claim(
+        scope_kind: str,
+        relation_values: list[dict[str, object]],
+        *,
+        worktree_id: str | None = None,
+    ) -> ClaimDraft:
+        value = {
+            **claim_value,
+            "scope_kind": scope_kind,
+            "evidence_relations": relation_values,
+        }
+        if scope_kind in {"project", "worktree"}:
+            value.pop("module_id")
+        if worktree_id is not None:
+            value["worktree_id"] = worktree_id
+        return ClaimDraft.from_value(value, 0)
+
+    project_worktrees = {"worktree-a", "worktree-b", "worktree-c"}
+    common_relations_values = [
+        relation_value("evidence-a"),
+        relation_value("evidence-b"),
+        relation_value("evidence-c"),
+    ]
+    common_relations = tuple(
+        EvidenceRelationDraft.from_value(value, index)
+        for index, value in enumerate(common_relations_values)
     )
-    validated = AnalysisService._validate_claim(
-        worktree_module_claim,
-        ((relation, state),),
-        {"worktree-a", "worktree-b"},
+    common_states = (
+        evidence_state("evidence-a", "worktree-a", "equivalence-common"),
+        evidence_state("evidence-b", "worktree-b", "equivalence-common"),
+        evidence_state("evidence-c", "worktree-c", "equivalence-common"),
     )
-    assert validated["conflicted"] is False
+    common_relation_states = tuple(zip(common_relations, common_states, strict=True))
+    divergent_relation_states = (
+        *common_relation_states[:2],
+        (
+            common_relations[2],
+            evidence_state("evidence-c", "worktree-c", "equivalence-divergent"),
+        ),
+    )
+
+    for scope_kind in ("module", "project"):
+        incomplete_claim = scoped_claim(scope_kind, common_relations_values[:2])
+        with pytest.raises(InvalidInputError, match="every worktree"):
+            AnalysisService._validate_claim(
+                incomplete_claim,
+                common_relation_states[:2],
+                project_worktrees,
+            )
+
+        with pytest.raises(InvalidInputError, match="every worktree"):
+            AnalysisService._validate_claim(
+                scoped_claim(scope_kind, common_relations_values),
+                divergent_relation_states,
+                project_worktrees,
+            )
+
+        promoted = AnalysisService._validate_claim(
+            scoped_claim(scope_kind, common_relations_values),
+            common_relation_states,
+            project_worktrees,
+        )
+        assert promoted["conflicted"] is False
+
+    branch_relation_value = relation_value("evidence-branch-b")
+    branch_relation = EvidenceRelationDraft.from_value(branch_relation_value, 0)
+    branch_state = evidence_state(
+        "evidence-branch-b",
+        "worktree-b",
+        "equivalence-branch-b",
+    )
+    with pytest.raises(InvalidInputError, match="every worktree"):
+        AnalysisService._validate_claim(
+            scoped_claim("module", [branch_relation_value]),
+            ((branch_relation, branch_state),),
+            project_worktrees,
+        )
+
+    for scope_kind in ("module", "worktree"):
+        scoped = AnalysisService._validate_claim(
+            scoped_claim(scope_kind, [branch_relation_value], worktree_id="worktree-b"),
+            ((branch_relation, branch_state),),
+            project_worktrees,
+        )
+        assert scoped["conflicted"] is False
+
+    for scope_kind in ("module", "worktree"):
+        with pytest.raises(InvalidInputError, match="another worktree"):
+            AnalysisService._validate_claim(
+                scoped_claim(scope_kind, [branch_relation_value], worktree_id="worktree-a"),
+                ((branch_relation, branch_state),),
+                project_worktrees,
+            )
 
 
 def test_verified_review_semantics_survive_equivalent_source_path_move(
