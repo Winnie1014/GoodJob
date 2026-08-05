@@ -152,6 +152,8 @@ GJ-06 验收裁决要点（信道 #31）：契约 1-7 逐条成立。`runtime/te
 | 5 | 仓库无个人数据 / 密钥 / 真实源码副本 | ✅ 满足 | 批次 A–F 每轮 diff 均核，零泄漏 |
 | 6 | 安装后调用可复现同一版本报告契约 | ❌ 未做 | 从未验证 |
 
+> 本节是 2026-08-02 交接快照。表内 CodeRoute 临时工作树与“待裁定”描述已由 2026-08-05 的 `OWN-01` 取代；当前权威状态见下方 M2 任务池与[验收基线 §4](acceptance-baseline.md)。
+
 ### DASH-01~12 逐条（6 有 / 3 部分 / 3 空白）
 
 证据来源为 `runtime/frontend/scripts/verify.mjs`（132 断言 × Chromium + WebKit）与 Python 侧测试。
@@ -205,9 +207,9 @@ scan（加排除规则）  -> status completed / fresh_projects 0 / excluded_pro
 ```text
 GJ-13 证据盘点
   ├─ GJ-14 合成全链路验收 ─┐
-  └─ GJ-15 看板缺口闭合 ───┼─ GJ-16 真实工作区只读验收 ─ Owner 视觉/文档核对
-OWN-01 CodeRoute 场景裁定 ──┘                                  └─ GJ-17 安装副本可复现
-                                                                        └─ Claude Opus 5 最终验收
+  └─ GJ-15 看板缺口闭合 ───┼─ GJ-16A 多工作树合成证据 ─ GJ-16B 真实工作区只读验收
+OWN-01 CodeRoute 场景裁定 ✅ ┘                                      ├─ Owner 视觉/文档核对
+                                                                     └─ GJ-17 安装副本可复现
 ```
 
 GJ-14 与 GJ-15 在 GJ-13 后技术上可并行；单 Implementer 模式下一次只派一张，避免共享工作区内两个实现现场互相污染。真实工作区与安装验收发现产品缺陷时，按 L1 停止验收并另开缺陷卡，不在验收卡内顺手修。
@@ -219,20 +221,23 @@ GJ-14 与 GJ-15 在 GJ-13 后技术上可并行；单 Implementer 模式下一�
 | GJ-13 · 建立发布验收证据账本 | [GJ-13](../collab/tasks/GJ-13.md) | ✅ 已验收合入（信道 #43，merge `682a66d`） | M1 已合入 | 常规 | 条件 2、4 的事实基线 |
 | GJ-14 · 合成工作区全链路验收 | [GJ-14](../collab/tasks/GJ-14.md) | ✅ 已验收合入（信道 #58，merge `5aa2504`） | GJ-13 | 对抗 | 条件 2；条件 3 前置 |
 | GJ-15 · 看板机检缺口闭合 | [GJ-15](../collab/tasks/GJ-15.md) | ✅ 已验收合入（信道 #52，merge `319ccd6`） | GJ-13 | 对抗 | 条件 4 机检部分 |
-| GJ-16 · CodeRoute/SliverShield 只读验收 | 待 OWN-01 裁定后出卡 | 阻塞 | GJ-14、GJ-15、OWN-01 | 对抗 | 条件 3；Owner 视觉输入 |
-| GJ-17 · 隔离安装副本与报告契约复现 | 待前置完成后出卡 | 阻塞 | GJ-16、Owner 文档/视觉核对 | 对抗 | 条件 6；发布候选收口 |
+| GJ-16A · 多工作树合成证据补齐 | [GJ-16A](../collab/tasks/GJ-16A.md) | 🟡 已出卡，待领取 | GJ-14、GJ-15、OWN-01 | 对抗 | 条件 2；条件 3 前置 |
+| GJ-16B · CodeRoute/SliverShield 真实只读验收 | [GJ-16B](../collab/tasks/GJ-16B.md) | 已出卡，阻塞 | GJ-16A | 对抗 | 条件 3；Owner 视觉输入 |
+| GJ-17 · 隔离安装副本与报告契约复现 | 待前置完成后出卡 | 阻塞 | GJ-16B、Owner 文档/视觉核对 | 对抗 | 条件 6；发布候选收口 |
 
 GJ-13 验收裁决要点（信道 #43）：证据账本按上游动态提取并覆盖 28 个 `IMP` 与 12 个 `DASH`，当前结论为 `IMP = verified 1 / partial 27`、`DASH = partial 10 / missing 2`。首轮验收将缺少完整快照不可变与中断状态转换断言的 `IMP-17` 从 `verified` 退回为 `partial`，修订后独立发布门禁全绿并合入。#40 的 L2“全绿测试不等于完整发布实证”成立，缺口归宿以账本逐行为准：先由 GJ-15 闭合两个 `missing` 看板语义，再按账本最小目标规划 GJ-14，不把全部 `partial` 塞入一张卡。
 
 GJ-15 由 Architect 在信道 #44 正式派发，随后以 #45 修订限制 parity 的可观察锚点：限定闭合 `DASH-10` 双快照/跨版本深链与 `DASH-12` Markdown/HTML 同源投影；不吸收其他 `partial` 看板项。经 #48、#50 两轮裁决收紧可见语义后，最终候选 `63592b7` 于 #52 通过对抗档验收并以 `319ccd6` 合入；账本现为 `DASH = verified 2 / partial 10 / missing 0`。下一张候选为 GJ-14，仍按账本最小目标出卡。
 
-GJ-14 由 Architect 在信道 #54 正式派发；#55 发现 JD 持久化断言与 `EVID-E22` 冲突后，#56 裁定保留个人 SQLite 中的 Owner JD、收窄禁止泄漏面并复工。候选 `1ddaa28` 于 #58 通过对抗档验收并以 `5aa2504` 合入：真实 broker 主链、双项目批量访谈、中文不可变快照、英文失败关闭、跨任务复用和结构化复盘均由独立门禁复验。账本据此将 `IMP-15`、`IMP-19` 更新为 `verified`，其余六项只追加精确子句并保持 `partial`；当前汇总为 `IMP = verified 3 / partial 25`、`DASH = verified 2 / partial 10`。GJ-16 仍受 `OWN-01` 裁定阻塞，不从 GJ-14 的 manifest fixture 推导 Git/worktree 实证。
+GJ-14 由 Architect 在信道 #54 正式派发；#55 发现 JD 持久化断言与 `EVID-E22` 冲突后，#56 裁定保留个人 SQLite 中的 Owner JD、收窄禁止泄漏面并复工。候选 `1ddaa28` 于 #58 通过对抗档验收并以 `5aa2504` 合入：真实 broker 主链、双项目批量访谈、中文不可变快照、英文失败关闭、跨任务复用和结构化复盘均由独立门禁复验。账本据此将 `IMP-15`、`IMP-19` 更新为 `verified`，其余六项只追加精确子句并保持 `partial`；当前汇总为 `IMP = verified 3 / partial 25`、`DASH = verified 2 / partial 10`。
+
+`OWN-01` 于 2026-08-05 解除：CodeRoute 已清理的临时工作树属于过渡状态，不再作为真实验收对象；验收基线 §4 改为 Owner 指定真实工作区，只保留模块角色、计划不冒充实现、构建产物排除三项 CodeRoute 判据，SliverShield 不变。Architect 出卡前实际运行六个相关测试节点，结果 `6 passed`：现有证据已覆盖根内归并、根外两阶段授权、相同内容复用、工作树 Claim 提升门槛及冻结 branch/HEAD；尚缺同一合成场景对三工作树 branch/HEAD/dirty 与分支差异来源隔离的联合断言。因此 GJ-16 拆为 test-only 的 GJ-16A 和真实验收 GJ-16B，先闭合前者，不重建真实临时工作树。
 
 ### Owner 决策与人工门
 
 | 门 | 状态 | 说明 |
 | --- | --- | --- |
-| OWN-01 · CodeRoute worktree 验收场景 | 待 Owner 裁定 | 验收基线 §4 固定点名的 `CodeRoute-t30`/`CodeRoute-t55` 已不存在；交接时记录的 `/private/tmp/cr-t61` 也已不存在。Architect 建议把一次性路径改为可重复的语义场景夹具，同时保留当前真实 CodeRoute 主工作树只读验收；裁定前不改权威基线 |
+| OWN-01 · CodeRoute worktree 验收场景 | ✅ Owner 已裁定（2026-08-05） | 已清理的临时工作树不再作为真实验收对象；相关能力由合成测试承担，缺口先由 GJ-16A 补齐；§4 只写 Owner 指定真实工作区，SliverShield 不变 |
 | OWN-02 · DOC-01~07 权威文档核对 | 待 M2 行为缺口稳定后 | 只由 Owner 完成；若 GJ-14/GJ-15 揭示契约需改，先修契约再核对，避免重复验收 |
 | OWN-03 · 离线 HTML 视觉验收 | 待 GJ-15/GJ-16 产物 | Owner 检查桌面与窄窗口、可读性、遮挡、反馈与整体准备包体验；自动化不能替代 |
 

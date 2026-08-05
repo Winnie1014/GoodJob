@@ -90,12 +90,13 @@
 
 ### CodeRoute
 
-- /Users/damien/Projects/CodeRoute、CodeRoute-t30、CodeRoute-t55 必须归并为一个项目。
-- 若任一工作树的 git-dir/common-dir 位于本次授权根外，必须先只检查根内 `.git` 标记，再对显示的 marker kind 与候选取得 relation-probe 回执，随后展示解析后的精确路径、目录身份和字段并取得 metadata 回执；任一替换或拒绝仍扫描其余根内源码并显示缺口。外部阶段不启动 Git，最终只直接读取关系、HEAD/ref，不读取 index/dirty、config、根外历史或对象。
-- 输出必须保留三个工作树各自的分支、HEAD 和 dirty 状态；相同内容复用分析并折叠展示但可展开全部来源，分支差异不得合成一个虚假的当前实现。
+真实验收对象为 Owner 指定的真实工作区；本节不固定已清理的过渡工作树或任何一次性路径。
+
 - 必须识别 pnpm workspace、Tauri/Rust、React/TypeScript、内容工具和课程内容的不同模块角色。
 - 文档中的计划服务端不能在缺少实现证据时写成已交付能力。
 - node_modules、dist 和 Rust target 不进入证据。
+
+多工作树归并、根外 Git 授权和工作树差异保真继续按 `IMP-03` 与第 5 节由合成工作区验证，不再要求为真实 CodeRoute 验收重建已清理的过渡状态。
 
 ### SliverShield
 
