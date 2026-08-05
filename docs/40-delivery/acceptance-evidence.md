@@ -1,7 +1,7 @@
 # GoodJob 发布验收证据账本
 
 > 状态：按代码基线冻结的验收记录，不是产品契约
-> 证据基线：`1ddaa28826cda5c240b11c83c6a2b4ecaeec41f0`
+> 证据基线：`8f05c43aa7d757966781cb3b3a869ccad14fb43f`
 > 记录日期：2026-08-05
 > 适用范围：[验收基线 §3.2](acceptance-baseline.md#32-场景矩阵)与[看板呈现契约 §12](../20-architecture/dashboard-design.md#12-可判定验收规则)
 > 上游：上述两份权威文档；本账本只记录该基线已有的可复现实证与缺口，不改变场景定义。
@@ -17,7 +17,7 @@
 
 ## 2. 可复现证据入口
 
-`P1` 至 `P4` 于 2026-08-02 在仓库根执行，覆盖下表引用的既有 Python 节点，成功集合分别为 51、50、61、20 条，共 182 条；`E1`、`F1` 与 `R1` 于 2026-08-05 在候选 `1ddaa28` 上由 Architect 独立复验。
+`P1` 至 `P4` 于 2026-08-02 在仓库根执行，覆盖下表引用的既有 Python 节点，成功集合分别为 51、50、61、20 条，共 182 条；`E1` 于 2026-08-05 在候选 `1ddaa28` 上复验；`W1`、`F1` 与 `R1` 于 2026-08-05 在候选 `8f05c43` 上由 Architect 独立复验。
 
 | 代号 | 精确命令 | 本次结果 |
 | --- | --- | --- |
@@ -26,8 +26,9 @@
 | `P3` | `cd .agents/skills/goodjob-career-review/runtime && uv run pytest -q tests/test_reporting.py tests/test_exporting.py` | `61 passed` |
 | `P4` | `cd .agents/skills/goodjob-career-review/runtime && uv run pytest -q tests/test_cli.py tests/test_auth.py tests/test_db.py tests/test_installation.py` | `20 passed` |
 | `E1` | `cd .agents/skills/goodjob-career-review/runtime && uv run pytest -q tests/test_e2e_preparation.py` | `1 passed in 3.77s`；真实 JSONL broker、双项目主链与三个失败关闭请求 |
+| `W1` | `cd .agents/skills/goodjob-career-review/runtime && uv run pytest -q tests/test_scanner.py::test_root_external_linked_worktree_requires_two_stage_authorization_and_never_reads_history tests/test_scanner.py::test_root_internal_linked_worktree_is_grouped_without_external_authorization tests/test_scanner.py::test_git_directory_with_external_commondir_uses_the_same_candidate_bound_protocol tests/test_scanner.py::test_same_content_worktrees_reuse_analysis_and_keep_expandable_sources tests/test_scanner.py::test_three_worktrees_preserve_branch_state_and_divergent_evidence tests/test_analysis.py::test_module_claim_requires_worktree_scope_without_equivalent_branch_coverage tests/test_reporting.py::test_carried_forward_evidence_keeps_snapshot_worktree_provenance` | `7 passed in 21.78s`；真实 Git 三工作树、作用域失败关闭与冻结 provenance |
 | `F1` | `cd .agents/skills/goodjob-career-review/runtime/frontend && npm run verify` | Chromium + WebKit，`152 passed / 0 failed` |
-| `R1` | `make gate-release` | format、lint、mypy、183 pytest、前端门禁、20 文档测试、44 份 Markdown 链接、152/152 浏览器核对与 sdist/wheel 构建全部通过；运行 HEAD 为 `1ddaa28` |
+| `R1` | `make gate-release` | format、lint、mypy 39 个源文件、184 pytest、前端门禁、20 文档测试、46 份 Markdown 链接、152/152 浏览器核对与 sdist/wheel 构建全部通过；运行 HEAD 为 `8f05c43` |
 
 ## 3. IMP 证据矩阵
 
@@ -35,7 +36,7 @@
 | --- | --- | --- | --- | --- | --- |
 | IMP-01 | partial | automated, synthetic_e2e | `P2` · `tests/test_preparation.py::test_jd_file_and_level_override_are_frozen`、`::test_bad_jd_creates_no_job_lens_or_run`、`::test_explicit_continue_without_bad_jd_creates_a_visible_assumption_run`；`P4` · `tests/test_cli.py::test_job_input_preflight_blocks_bad_jd_before_scan_state` | 无 JD、文本/文件 JD、职级覆盖、缺失/目录/坏编码拒绝、继续假设及坏 JD 零业务写入 | 未证明显式 Skill 对话只追问缺失项；补 Skill 入口合成会话验收 |
 | IMP-02 | partial | automated, synthetic_e2e | `P1` · `tests/test_scanner.py::test_scan_discovers_isolated_projects_and_keeps_sensitive_bytes_out_of_sqlite`；`P2` · `tests/test_preparation.py::test_normally_failed_empty_scan_creates_a_failed_preparation_without_bundle` | Git/嵌套 Git/manifest 项目发现及空工作区失败、不产准备包 | 未用单一夹具覆盖 `.git` 指针混合发现、重复扫描 identity 稳定和完整下一步提示；补扫描器合成 E2E |
-| IMP-03 | partial | automated, synthetic_e2e | `P1` · `tests/test_scanner.py::test_root_external_linked_worktree_requires_two_stage_authorization_and_never_reads_history`、`::test_root_internal_linked_worktree_is_grouped_without_external_authorization`、`::test_same_content_worktrees_reuse_analysis_and_keep_expandable_sources` | 根外两阶段授权、根内归并、相同内容复用且保留来源、根外禁读历史 | 未证明同一场景中的分支差异生成 worktree-scope/冲突 Claim，以及全部非法 config 组合；补工作树复合 E2E |
+| IMP-03 | partial | automated, synthetic_e2e | `W1` · `tests/test_scanner.py::test_root_external_linked_worktree_requires_two_stage_authorization_and_never_reads_history`、`::test_root_internal_linked_worktree_is_grouped_without_external_authorization`、`::test_git_directory_with_external_commondir_uses_the_same_candidate_bound_protocol`、`::test_same_content_worktrees_reuse_analysis_and_keep_expandable_sources`、`::test_three_worktrees_preserve_branch_state_and_divergent_evidence`；`tests/test_analysis.py::test_module_claim_requires_worktree_scope_without_equivalent_branch_coverage`；`tests/test_reporting.py::test_carried_forward_evidence_keeps_snapshot_worktree_provenance` | 根内工作树归并；根外 file/directory marker 两阶段授权与禁读历史；三工作树 branch/HEAD/dirty；相同内容单次分析且保留全部来源；分支独有 Evidence 隔离；module/project 提升与精确 worktree scope 失败关闭；冻结 branch/HEAD/dirty/scan-run provenance | 未穷举 `IMP-03` 要求的全部非法 external config/candidate 组合；补根外 Git 非法配置专项矩阵 |
 | IMP-04 | verified | automated, synthetic_e2e | `P1` · `tests/test_scanner.py::test_scan_discovers_isolated_projects_and_keeps_sensitive_bytes_out_of_sqlite`、`::test_unsupported_ignore_patterns_report_source_raw_line_and_approximation`、`::test_relative_project_exclusion_precedes_snapshot_and_stays_distinct_from_failure` | 父 ignore 不吞嵌套 Git、内层应用自身 ignore；不支持模式显式给出原行/近似语义；Owner 排除与失败分离并进入覆盖摘要 | 无（本基线） |
 | IMP-05 | partial | automated, synthetic_e2e | `P1` · `tests/test_scanner.py::test_scan_discovers_isolated_projects_and_keeps_sensitive_bytes_out_of_sqlite`、`::test_descriptor_reader_rejects_a_file_or_directory_symlink`；`P2` · `tests/test_preparation.py::test_bad_jd_creates_no_job_lens_or_run` | 根外 symlink 不跟随，秘密/依赖/生成目录及坏 JD 排除，敏感字节不落库 | 未证明 symlink 环终止、目录别名实路径去重和显式根外 JD 仅输入的组合场景；补路径安全 E2E |
 | IMP-06 | partial | automated, synthetic_e2e | `P1` · `tests/test_scanner.py::test_refresh_fast_rebuilds_evidence_when_an_untracked_file_becomes_committed` | untracked 到 committed 转换会重建证据并更新 `commit_state` | 未同时断言 committed/modified/untracked 的代码与文档都可入证据；补当前状态矩阵测试 |
@@ -95,9 +96,9 @@
 
 1. GJ-14 已闭合 `IMP-15`、`IMP-19` 并为六项 `partial` 增加主链证据；GJ-15 已闭合 `DASH-10`、`DASH-12`。下一卡继续从本表逐行选择最小剩余缺口。
 2. 再补看板首屏降级、Claim 到证据、纯键盘与打印/无色通道；自动化闭合后再单独请求 Owner 视觉核对。
-3. 扫描与分析侧优先补工作树冲突、增量删除/读取计数、未知语言、匹配测试结果和完整项目资格五类合成 E2E。
+3. 扫描与分析侧优先补根外 Git 非法配置矩阵、增量删除/读取计数、未知语言、匹配测试结果和完整项目资格五类合成 E2E。
 4. 安装/保留侧单独验证 Skill 升级重装、usage 统计与个人数据不变；不要和运行时行为卡混合。
-5. 真实 CodeRoute/SliverShield 与用户级安装不属于本账本执行范围；只有仓库内缺口闭合且 Owner 重新裁定动态路径后，才可使用 `real_workspace` 或 `owner_blocked` 结论。
+5. `OWN-01` 已裁定且 GJ-16A 已闭合工作树合成证据；下一步由 GJ-16B 对 Owner 指定的真实 CodeRoute/SliverShield 取得 `real_workspace` 证据，用户级安装仍由 GJ-17 单独验证。
 
 ## 6. 机械一致性检查
 

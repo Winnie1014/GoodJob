@@ -1,12 +1,12 @@
 # 任务卡 GJ-16B：CodeRoute / SliverShield 真实工作区只读验收
 
-- 状态：已出卡但未派发，受 GJ-16A 阻塞 ｜ 实现：Sol-Impl ｜ 出卡/评审：Sol
+- 状态：待领取，GJ-16A 前置已满足 ｜ 实现：Sol-Impl ｜ 出卡/评审：Sol
 - 对应 backlog：里程碑 M2 · 批次 G · GJ-16B
-- 前置任务：GJ-16A 经 Architect 验收合入并完成 `IMP-03` 证据裁定
+- 前置任务：GJ-16A 已通过信道 #62 验收并以 merge `b7be588` 合入，`IMP-03` 证据裁定已完成
 - 分支：`task/GJ-16B-real-workspace-readonly-acceptance`，仅在后续派卡消息指定基线后创建
 - **验收强度**：对抗（[protocol §2.2](../protocol.md)）——真实仓库包含未提交/未跟踪内容、项目文档、提示注入面和大量生成目录；验收必须证明只读、证据不越权且不把计划冒充实现
 
-> 本卡现在只冻结后续契约，不构成开工授权。Implementer 在收到独立正式派卡前不得读取 CodeRoute/SliverShield；GJ-16A 未验收时不得提前执行本卡。
+> 本卡必须由独立信道消息正式派发。Implementer 在收到该消息前不得读取 CodeRoute/SliverShield；收到后按消息指定基线与本卡契约执行。
 
 ## Owner 输入与目标
 
