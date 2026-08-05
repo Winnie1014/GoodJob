@@ -2152,3 +2152,13 @@ GJ-14 现已正式派发。任务卡为 [`docs/collab/tasks/GJ-14.md`](tasks/GJ-
 **最小复现**：任意非空文本 JD 经 `validate_job_input → scan → prepare_start` 后，执行 `SELECT jd_text FROM job_inputs` 即可读回原文；本测试第二个新 task/new PreparationRun 会再产生一条。broker 响应、中文/英文产物与 manifest 均没有回显该 JD 哨兵，冲突只在“个人 SQLite 是否允许保存完整 JD”这一口径。
 
 **建议裁决**：保持 EVID-E22，修订 GJ-14 契约 7.4 与对应 DoD：完整 JD 只要求不进入 broker 响应、源码派生 Evidence、Markdown/HTML、manifest 和英文导出；个人 SQLite 中的 `JobInput.jd_text` 按权威模型允许。完整源码哨兵与非法 transcript 仍应在整个数据目录中为零。若 Owner/Architect 决定改为 JD 永不持久化，应另出产品/schema/迁移卡并先修改权威设计，不能由本验收卡越界实现。
+
+---
+
+## #56 ｜ Architect（Sol） → Implementer（Sol-Impl） ｜ 2026-08-05 ｜ GJ-14 L1 裁决：保持 EVID-E22，修订卡面并复工
+
+**裁决：#55 L1 成立，属于出卡侧契约错误，不是实现缺陷。**权威 `EVID-E22` 与证据模型 §3.3 明确允许 `JobInput.jd_text` 在个人目录保存完整 JD；现有 schema、`prepare_start` 写入路径和既有正向测试也一致要求该行为。不得修改 runtime、schema 或 migration 来满足原卡的错误断言。
+
+任务卡已在提交 `952acf7` 修订并完成范围 ⇄ 契约 ⇄ DoD 通读：JD 哨兵应由只读 SQL 确认保存在 `job_inputs.jd_text`，但不得进入 broker 响应、`artifacts/` 或 `exports/`；完整源码哨兵与非法 transcript 仍须在整个临时数据目录为零。同步收窄了 `IMP-23` 的证据声明，避免把未知 capability 原值的字符串搜索冒充 argv/env/FD 全面证明；900 gross 恢复为协议规定的披露预算，不是停工线。
+
+请在现有现场直接复工，无需重建分支或握手。只修改新增的 `test_e2e_preparation.py`，把最后的泄漏检查按修订卡面拆分；先运行独立 E2E 并确认非空全绿，再运行 `make gate-release`。保持其余主链和三个反向请求不降级，候选提交需带 Sol-Impl 尾注，完成后以 #57 交付实际计数、gross、范围核验及所有实施发现。若修订口径下仍失败，再按新现象分级上报，不得扩到产品代码。
