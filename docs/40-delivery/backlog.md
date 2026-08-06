@@ -245,7 +245,7 @@ GJ-16A 由 Architect 在信道 #60 正式派发，候选 `8f05c43` 于 #62 通�
 | GJ-19 · `*.env` 后缀漏判修复与判定基线锚定 | [GJ-19](../collab/tasks/GJ-19.md) | 🟡 已按 #81 预审修订，待派发 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
 | GJ-20 · 敏感文件排除的 `FR-15` 合规 | 待出卡（设计问题未定，见下） | 阻塞 | GJ-19 | 对抗 | 条件 2（`FR-15` 证据） |
 
-GJ-18 源于信道 [#69](../collab/channel.md) 与 [#73](../collab/channel.md) 裁决：`IgnoreMatcher.matches()` 缺少多段路径模式的前缀匹配规则，多段目录模式只匹配目录自身、不匹配后代；`_iter_project_files` 无目录剪枝故无兜底；该失效不触发任何 ScanIssue，违反 GJ-05 的「近似必须可见」。Architect 出卡前实测静默失效模式数为 SliverShield 14 条、CodeRoute 0 条、GoodJob 本仓 2 条。本轮 SliverShield 后果为 5 个生成文件进入 `source_revisions`、产生 8 条 Evidence、**支撑 0 条 Claim**，故 Claim 层未污染、两份 ArtifactSnapshot 不作废。
+GJ-18 源于信道 [#69](../collab/channel.md) 与 [#73](../collab/channel.md) 裁决：`IgnoreMatcher.matches()` 缺少多段路径模式的前缀匹配规则，多段目录模式只匹配目录自身、不匹配后代；`_iter_project_files` 无目录剪枝故无兜底；该失效不触发任何 ScanIssue，违反 GJ-05 的「近似必须可见」。静默失效模式数经两轮核算：SliverShield **14 条**（复核确认无一被 `HARD_EXCLUDED_DIRECTORIES` 兜住）、CodeRoute 0 条、GoodJob 本仓 **1 条**（`prototypes/dashboard/out/`）。**出卡侧更正**：初次统计称本仓 2 条并引「`node_modules` 下 174 个文件会进证据」为例，该说法不成立——`node_modules` 在硬排除集合中，`_iter_project_files` 在目录层即不下钻，其文件永远到不了 `IgnoreMatcher`。Implementer 以信道 [#83](../collab/channel.md) L1 停工指出，并实测本仓真正泄入 `source_artifacts` 的为 **1 个文件**（`prototypes/dashboard/out/dashboard.html`）。根因是测出失效模式后未核上游是否已有兜底，把一个环节的观测当成全链路结论；GJ-18 的 D5 已按 [#85](../collab/channel.md) 裁决重写。本轮 SliverShield 后果为 5 个生成文件进入 `source_revisions`、产生 8 条 Evidence、**支撑 0 条 Claim**，故 Claim 层未污染、两份 ArtifactSnapshot 不作废。
 
 GJ-19 源于同一轮调查的独立发现（[#73 七](../collab/channel.md)）：`_is_sensitive` 的 `.env` 未纳入既有后缀分支，`production.env` 等常见命名漏判。**卡面已更正 #71/#73 对该函数结构的描述**——四种判定形态（精确名/前缀/名字集合/后缀）本已齐备，缺口是成员覆盖而非机制缺失。该更正本身属「未验证断言当事实」，故本卡按 [protocol §2.1](../collab/protocol.md) 送 Reviewer 预审一轮后再派。
 
