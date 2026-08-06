@@ -384,7 +384,29 @@ class ScanResult:
 
 
 class IgnoreMatcher:
-    """A deliberately small, deterministic subset of .gitignore semantics."""
+    """A deterministic subset of ``gitignore(5)`` PATTERN FORMAT semantics.
+
+    Git semantic | Runtime behavior | Disposition
+    blank line | skipped | support
+    unescaped leading ``#`` | treated as a comment | support
+    backslash escapes for ``#``, ``!``, or trailing space | retained literally | disclose
+    unescaped trailing spaces | stripped | support
+    leading or non-space trailing whitespace | stripped though Git keeps it significant | disclose
+    leading ``!`` and last match | toggles inclusion | support
+    reinclusion below an excluded parent | last match incorrectly reincludes | disclose
+    leading ``/`` | stripped and may become unanchored | disclose
+    internal ``/`` | anchored to the ignore-file directory | support
+    no ``/`` | matches any component below the ignore-file directory | support
+    trailing ``/`` | matches directory ancestors, not the final file | support
+    a pattern matching a directory | matches that directory's descendants | support
+    ``*``, ``?``, or ranges without ``/`` | Python fnmatch per component | support
+    ``*`` or ``?`` with ``/`` | Python fnmatch may cross separators | disclose
+    a character range with ``/`` | a negated Python range may match a separator | disclose
+    leading ``**/`` | treated as repeated ``*`` | disclose
+    trailing ``/**`` | treated as repeated ``*`` | disclose
+    middle ``/**/`` | treated as repeated ``*`` | disclose
+    other consecutive ``**`` | treated as repeated ``*`` | disclose
+    """
 
     def __init__(self, patterns: tuple[tuple[str, str, bool, bool], ...]) -> None:
         self._patterns = patterns
@@ -416,65 +438,125 @@ class IgnoreMatcher:
             parent = PurePosixPath(relative).parent
             base = "." if str(parent) == "." else parent.as_posix()
             for raw_line in text.splitlines():
+                git_space_trimmed = raw_line.rstrip(" ")
                 line = raw_line.strip()
-                if not line or line.startswith("#"):
+                whitespace_approximated = bool(git_space_trimmed) and line != git_space_trimmed
+                if not line:
+                    if whitespace_approximated:
+                        issues.append(
+                            cls._unsupported_issue(
+                                relative,
+                                git_space_trimmed,
+                                (
+                                    "surrounding whitespace is stripped even though Git only "
+                                    "ignores unescaped trailing spaces"
+                                ),
+                                source_line=raw_line,
+                            )
+                        )
+                    continue
+                if line.startswith("#") and not whitespace_approximated:
                     continue
                 raw_pattern = line
-                include = line.startswith("!")
-                if include:
-                    line = line[1:]
-                if line.startswith("/"):
+                additional_approximations: list[str] = []
+                if whitespace_approximated:
+                    additional_approximations.append(
+                        "surrounding whitespace is stripped even though Git only ignores "
+                        "unescaped trailing spaces"
+                    )
+                if "\\" in line:
+                    additional_approximations.append(
+                        "backslash escapes remain literal after surrounding whitespace is stripped"
+                    )
+                if line.startswith("#"):
                     issues.append(
                         cls._unsupported_issue(
                             relative,
                             raw_pattern,
-                            (
-                                'the leading "/" is removed and the remaining pattern may '
-                                "match the same name at any depth"
-                            ),
+                            "; ".join(additional_approximations),
                             source_line=raw_line,
                         )
                     )
+                    continue
+                include = line.startswith("!")
+                if include:
+                    line = line[1:]
+                approximation_reported = False
+                if line.startswith("/"):
+                    approximation = (
+                        'the leading "/" is removed and the remaining pattern may '
+                        "match the same name at any depth"
+                    )
+                    issues.append(
+                        cls._unsupported_issue(
+                            relative,
+                            raw_pattern,
+                            "; ".join((approximation, *additional_approximations)),
+                            source_line=raw_line,
+                        )
+                    )
+                    approximation_reported = True
                 directory_only = line.endswith("/")
                 line = line.strip("/")
                 if line:
                     if include and cls._reincludes_ignored_descendant(patterns, base, line):
+                        approximation = (
+                            "last matching rule wins, so this entry is re-included even "
+                            "though Git keeps files below an excluded directory ignored"
+                        )
                         issues.append(
                             cls._unsupported_issue(
                                 relative,
                                 raw_pattern,
-                                (
-                                    "last matching rule wins, so this entry is re-included even "
-                                    "though Git keeps files below an excluded directory ignored"
-                                ),
+                                "; ".join((approximation, *additional_approximations)),
                                 source_line=raw_line,
                             )
                         )
+                        approximation_reported = True
                     if "**" in line:
+                        approximation = (
+                            'Python fnmatch treats "**" as repeated "*"; stars may '
+                            'match "/" and have no special Git double-star semantics'
+                        )
                         issues.append(
                             cls._unsupported_issue(
                                 relative,
                                 raw_pattern,
-                                (
-                                    'Python fnmatch treats "**" as repeated "*"; stars may '
-                                    'match "/" and have no special Git double-star semantics'
-                                ),
+                                "; ".join((approximation, *additional_approximations)),
                                 source_line=raw_line,
                             )
                         )
-                    elif "/" in line and any(character in line for character in "*?"):
+                        approximation_reported = True
+                    elif "/" in line and any(character in line for character in "*?["):
+                        if any(character in line for character in "*?"):
+                            approximation = (
+                                'Python fnmatch allows "*" and "?" in path patterns to '
+                                'match "/", unlike Git wildcards'
+                            )
+                        else:
+                            approximation = (
+                                "Python fnmatch character classes in path patterns may match "
+                                '"/", unlike Git FNM_PATHNAME ranges'
+                            )
                         issues.append(
                             cls._unsupported_issue(
                                 relative,
                                 raw_pattern,
-                                (
-                                    'Python fnmatch allows "*" and "?" in path patterns to '
-                                    'match "/", unlike Git wildcards'
-                                ),
+                                "; ".join((approximation, *additional_approximations)),
                                 source_line=raw_line,
                             )
                         )
+                        approximation_reported = True
                     patterns.append((base, line, include, directory_only))
+                if additional_approximations and not approximation_reported:
+                    issues.append(
+                        cls._unsupported_issue(
+                            relative,
+                            raw_pattern,
+                            "; ".join(additional_approximations),
+                            source_line=raw_line,
+                        )
+                    )
         return cls(tuple(patterns)), issues
 
     @staticmethod
@@ -504,16 +586,19 @@ class IgnoreMatcher:
     ) -> bool:
         parts = PurePosixPath(pattern).parts
         matcher = cls(tuple(patterns))
-        if base != "." and matcher.matches(base):
+        if base != "." and matcher._matches(base, candidate_is_directory=True):
             return True
         for length in range(1, len(parts)):
             parent = PurePosixPath(*parts[:length]).as_posix()
             candidate = parent if base == "." else f"{base}/{parent}"
-            if matcher.matches(candidate):
+            if matcher._matches(candidate, candidate_is_directory=True):
                 return True
         return False
 
     def matches(self, relative_path: str) -> bool:
+        return self._matches(relative_path, candidate_is_directory=False)
+
+    def _matches(self, relative_path: str, *, candidate_is_directory: bool) -> bool:
         ignored = False
         for base, pattern, include, directory_only in self._patterns:
             if base == ".":
@@ -523,11 +608,17 @@ class IgnoreMatcher:
             else:
                 continue
             parts = candidate.split("/")
-            matched = fnmatch.fnmatchcase(candidate, pattern)
-            if not matched and "/" not in pattern:
-                matched = any(fnmatch.fnmatchcase(part, pattern) for part in parts)
-            if not matched and directory_only:
-                matched = any(fnmatch.fnmatchcase(part, pattern) for part in parts[:-1])
+            terminal_matches = not directory_only or candidate_is_directory
+            if "/" in pattern:
+                matched = terminal_matches and fnmatch.fnmatchcase(candidate, pattern)
+                if not matched:
+                    matched = any(
+                        fnmatch.fnmatchcase("/".join(parts[:length]), pattern)
+                        for length in range(1, len(parts))
+                    )
+            else:
+                matchable_parts = parts if terminal_matches else parts[:-1]
+                matched = any(fnmatch.fnmatchcase(part, pattern) for part in matchable_parts)
             if matched:
                 ignored = not include
         return ignored
