@@ -257,7 +257,7 @@ GJ-16B 在两卡合入前维持停工；其 ArtifactSnapshot 现场已由 Implem
 | OWN-01 · CodeRoute worktree 验收场景 | ✅ Owner 已裁定（2026-08-05） | 已清理的临时工作树不再作为真实验收对象；相关能力由合成测试承担，缺口先由 GJ-16A 补齐；§4 只写 Owner 指定真实工作区，SliverShield 不变 |
 | OWN-02 · DOC-01~07 权威文档核对 | 待 M2 行为缺口稳定后 | 只由 Owner 完成；若 GJ-14/GJ-15 揭示契约需改，先修契约再核对，避免重复验收 |
 | OWN-03 · 离线 HTML 视觉验收 | 🟡 部分关闭（2026-08-06，信道 #71 六） | Owner 已打开 GJ-16B 两份产物目视复核并在断网状态下复开，`DASH-01` 实测通过，发布条件 4 的「视觉验收」分句关闭；`DASH-05`/`DASH-06` 由 Owner 决定本轮按通过计，**账本记 `owner_waived`，不得升为 `verified`**，两项自动化缺口维持挂账，条件 4 的账本分句仍未满足 |
-| OWN-04 · 只读验收判据修订 | 🔴 待 Owner 裁定 | 信道 [#70](../collab/channel.md) 撞出：现判据「最终 branch/HEAD/status digest/计数与首读前完全一致」所证为「无人写入」，强于所需证明的「GoodJob 未写入」，在 Owner 活跃使用的仓库上不可达——而活跃仓库正是本产品目标场景。[#73](../collab/channel.md) 裁决建议拆为三条：(a) GoodJob 未写入；(b) 分析基线自洽；(c) 外部漂移记为观察不作 fail。修订涉及[验收基线 §4](acceptance-baseline.md)，属权威契约，**Architect 不单方修改**。裁定前 GJ-16B 的 CodeRoute 只读项记 `blocked-on-criterion`，不记 `fail` |
+| OWN-04 · 只读验收判据修订 | ✅ Owner 已裁定（2026-08-06） | 原判据「前后 branch/HEAD/status digest/计数逐项相同」所证为「无人写入」，强于所需证明的「GoodJob 未写入」，在 Owner 活跃使用的仓库上不可达——而活跃仓库正是本产品目标场景。Owner 裁定拆为三条并落入[验收基线 §4「只读证明」](acceptance-baseline.md)：(a) GoodJob 未写入（Git 写命令、写模式描述符、`.git` inode/mtime 三项**机器可验**，不接受声称）；(b) 分析基线自洽（HEAD 与深读文件哈希全程不变）；(c) 外部漂移按是否进入分析分类——影响分析基线的必须为空且点名路径，未进入分析的只记计数与状态类别，全量清单落仓库外。**出卡侧更正**：该判据原先只存在于 GJ-16B 卡面，`acceptance-baseline.md` 中并无，故本次不是修改既有权威条款而是首次补入；「Architect 不单方修改」的先前描述不准确。GJ-16B 卡面已改为指向 §4 不复述，`blocked-on-criterion` 状态解除 |
 
 ### 收口原则
 
