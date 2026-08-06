@@ -455,7 +455,7 @@ class IgnoreMatcher:
                             )
                         )
                     continue
-                if line.startswith("#") and not whitespace_approximated:
+                if raw_line.startswith("#"):
                     continue
                 raw_pattern = line
                 additional_approximations: list[str] = []

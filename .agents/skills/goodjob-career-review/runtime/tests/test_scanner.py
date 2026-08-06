@@ -2295,6 +2295,7 @@ def test_git_disclosed_semantics_emit_visible_issue(
     [
         "\n",
         "# comment\n",
+        "# comment\t\n",
         "literal.py   \n",
         "*.tmp\n!important.tmp\n",
         "src/module.py\n",
