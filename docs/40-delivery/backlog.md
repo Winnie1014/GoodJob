@@ -242,13 +242,22 @@ GJ-16A 由 Architect 在信道 #60 正式派发，候选 `8f05c43` 于 #62 通�
 | 任务 | 卡面 | 状态 | 前置 | 验收强度 | 发布条件 |
 | --- | --- | --- | --- | --- | --- |
 | GJ-18 · IgnoreMatcher 多段路径模式失效 | [GJ-18](../collab/tasks/GJ-18.md) | 🟡 已出卡，待派发 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
-| GJ-19 · 敏感文件判定覆盖缺口 | [GJ-19](../collab/tasks/GJ-19.md) | 🟡 已出卡，待 Reviewer 预审 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
+| GJ-19 · `*.env` 后缀漏判修复与判定基线锚定 | [GJ-19](../collab/tasks/GJ-19.md) | 🟡 已按 #81 预审修订，待派发 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
+| GJ-20 · 敏感文件排除的 `FR-15` 合规 | 待出卡（设计问题未定，见下） | 阻塞 | GJ-19 | 对抗 | 条件 2（`FR-15` 证据） |
 
 GJ-18 源于信道 [#69](../collab/channel.md) 与 [#73](../collab/channel.md) 裁决：`IgnoreMatcher.matches()` 缺少多段路径模式的前缀匹配规则，多段目录模式只匹配目录自身、不匹配后代；`_iter_project_files` 无目录剪枝故无兜底；该失效不触发任何 ScanIssue，违反 GJ-05 的「近似必须可见」。Architect 出卡前实测静默失效模式数为 SliverShield 14 条、CodeRoute 0 条、GoodJob 本仓 2 条。本轮 SliverShield 后果为 5 个生成文件进入 `source_revisions`、产生 8 条 Evidence、**支撑 0 条 Claim**，故 Claim 层未污染、两份 ArtifactSnapshot 不作废。
 
 GJ-19 源于同一轮调查的独立发现（[#73 七](../collab/channel.md)）：`_is_sensitive` 的 `.env` 未纳入既有后缀分支，`production.env` 等常见命名漏判。**卡面已更正 #71/#73 对该函数结构的描述**——四种判定形态（精确名/前缀/名字集合/后缀）本已齐备，缺口是成员覆盖而非机制缺失。该更正本身属「未验证断言当事实」，故本卡按 [protocol §2.1](../collab/protocol.md) 送 Reviewer 预审一轮后再派。
 
-GJ-16B 在两卡合入前维持停工；其 ArtifactSnapshot 现场已由 Implementer 持久另存至 `~/.codex/goodjob-career-review/acceptance/GJ-16B-2026-08-06/`（信道 #74），作为修复后前后对比基准。
+GJ-19 经 Reviewer 预审（信道 [#81](../collab/channel.md)）**四项发现全部成立，卡面已大幅收窄**，裁决见 [#83](../collab/channel.md)。删除的三条契约各自的病因：「成员来源」把"生态惯例"列为可接受来源，而它没有发布者、定位与版本，与同一契约禁止的"凭经验补几个"无法机械区分；「排除可见」与权威 `FR-15` 冲突，且按 `FR-15` 实现必然超出卡面允许范围，按计数实现则在生产代码零改动下即可通过——是**出卡侧造出的假绿出口**；「假阴性优先」对一个只接收 filename 的纯函数给了判定方向却没有判定域，实为把安全分类权下放给 Implementer。收窄后本卡只做已证实的 `.env` 后缀成员，另加独立 oracle 与四项变异门槛。
+
+**GJ-20 待出卡，三个设计问题未定，定完再写卡**（仓促出卡正是本轮 GJ-19 四项缺陷的共同来源）：
+
+1. **`FR-15` 六类的实际合规面**——`FR-15` 列举权限不足、仓库损坏、无法识别项目、语言不支持、敏感文件排除、单个模块读取失败共六类，出卡前须**逐条核对现码是否已产生合规 ScanIssue**，不得只按本轮撞见的"敏感文件排除"一类出卡（门禁 9）；
+2. **路径披露粒度**——敏感文件的路径本身可能即是敏感信息（如 `deploy/prod-aws-root.key`）。`FR-15` 要求"路径/范围"，须裁定何时给完整路径、何时只给范围，并与发布条件 5 对齐；
+3. **消费点范围**——`_is_sensitive` 有两个消费方向，`scanner.py:1579` 工作树索引与 `scanner.py:236` `_safe_history_path`。后者过滤 Git 历史路径，逐条产生 ScanIssue 可能产生数量级噪声；须裁定是否纳入、以及如何聚合。
+
+GJ-16B 在 GJ-18、GJ-19 合入前维持停工；其 ArtifactSnapshot 现场已由 Implementer 持久另存至 `~/.codex/goodjob-career-review/acceptance/GJ-16B-2026-08-06/`（信道 #74），作为修复后前后对比基准。
 
 ### Owner 决策与人工门
 
