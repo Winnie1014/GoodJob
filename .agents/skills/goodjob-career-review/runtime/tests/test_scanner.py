@@ -2257,28 +2257,31 @@ def test_git_directory_suffix_does_not_match_same_named_file() -> None:
 
 
 @pytest.mark.parametrize(
-    ("source_line", "raw_pattern"),
+    ("source_line", "raw_pattern", "approximation"),
     [
-        (" literal.py\n", " literal.py"),
-        ("literal.py\t\n", "literal.py\t"),
-        ("\t\n", "\t"),
-        ("\\#literal.py\n", "\\#literal.py"),
-        ("\\!literal.py\n", "\\!literal.py"),
-        ("literal\\ \n", "literal\\ "),
-        ("/root.py\n", "/root.py"),
-        ("ignored/\n!ignored/keep.py\n", "!ignored/keep.py"),
-        ("src/*.py\n", "src/*.py"),
-        ("src/[!a].py\n", "src/[!a].py"),
-        ("**/cache\n", "**/cache"),
-        ("cache/**\n", "cache/**"),
-        ("cache/**/data\n", "cache/**/data"),
-        ("cache***data\n", "cache***data"),
+        (" literal.py\n", " literal.py", "surrounding whitespace"),
+        ("literal.py\t\n", "literal.py\t", "surrounding whitespace"),
+        ("\t\n", "\t", "surrounding whitespace"),
+        ("\\#literal.py\n", "\\#literal.py", "backslash escapes"),
+        ("\\!literal.py\n", "\\!literal.py", "backslash escapes"),
+        ("literal\\ \n", "literal\\ ", "backslash escapes"),
+        ("/root.py\n", "/root.py", 'the leading "/"'),
+        ("ignored/\n!ignored/keep.py\n", "!ignored/keep.py", "last matching rule wins"),
+        ("src/*.py\n", "src/*.py", 'allows "*" and "?"'),
+        ("src/[!a].py\n", "src/[!a].py", "character classes in path patterns"),
+        ("[^a].txt\n", "[^a].txt", 'does not treat "^"'),
+        ("[[:digit:]].log\n", "[[:digit:]].log", "POSIX named character classes"),
+        ("**/cache\n", "**/cache", 'treats "**"'),
+        ("cache/**\n", "cache/**", 'treats "**"'),
+        ("cache/**/data\n", "cache/**/data", 'treats "**"'),
+        ("cache***data\n", "cache***data", 'treats "**"'),
     ],
 )
 def test_git_disclosed_semantics_emit_visible_issue(
     tmp_path: Path,
     source_line: str,
     raw_pattern: str,
+    approximation: str,
 ) -> None:
     (tmp_path / ".gitignore").write_text(source_line, encoding="utf-8")
 
@@ -2288,6 +2291,7 @@ def test_git_disclosed_semantics_emit_visible_issue(
     assert len(unsupported) == 1
     assert isinstance(unsupported[0], scanner_module.IgnorePatternIssueDraft)
     assert unsupported[0].raw_pattern == raw_pattern
+    assert approximation in unsupported[0].remediation
 
 
 @pytest.mark.parametrize(

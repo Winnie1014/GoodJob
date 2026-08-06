@@ -399,7 +399,8 @@ class IgnoreMatcher:
     no ``/`` | matches any component below the ignore-file directory | support
     trailing ``/`` | matches directory ancestors, not the final file | support
     a pattern matching a directory | matches that directory's descendants | support
-    ``*``, ``?``, or ranges without ``/`` | Python fnmatch per component | support
+    ``*``, ``?``, or simple ranges without ``/`` | Python fnmatch per component | support
+    ``^``-negated or POSIX named ranges | Python fnmatch lacks the Git bracket syntax | disclose
     ``*`` or ``?`` with ``/`` | Python fnmatch may cross separators | disclose
     a character range with ``/`` | a negated Python range may match a separator | disclose
     leading ``**/`` | treated as repeated ``*`` | disclose
@@ -518,6 +519,25 @@ class IgnoreMatcher:
                             'Python fnmatch treats "**" as repeated "*"; stars may '
                             'match "/" and have no special Git double-star semantics'
                         )
+                        issues.append(
+                            cls._unsupported_issue(
+                                relative,
+                                raw_pattern,
+                                "; ".join((approximation, *additional_approximations)),
+                                source_line=raw_line,
+                            )
+                        )
+                        approximation_reported = True
+                    elif "[^" in line or "[[:" in line:
+                        if "[^" in line:
+                            approximation = (
+                                'Python fnmatch does not treat "^" as Git range negation'
+                            )
+                        else:
+                            approximation = (
+                                "Python fnmatch does not implement Git POSIX named "
+                                "character classes"
+                            )
                         issues.append(
                             cls._unsupported_issue(
                                 relative,
