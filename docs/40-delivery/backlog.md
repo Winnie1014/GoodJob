@@ -235,13 +235,29 @@ GJ-14 由 Architect 在信道 #54 正式派发；#55 发现 JD 持久化断言�
 
 GJ-16A 由 Architect 在信道 #60 正式派发，候选 `8f05c43` 于 #62 通过对抗档验收并以 `b7be588` 合入：真实 Git 三工作树联合证明 branch/HEAD/dirty、等价内容单次分析与全部来源、分支独有 Evidence 隔离、module/project 提升边界、精确 worktree scope 及冻结 provenance。独立聚焦节点为 `7 passed`，完整门禁为 184 个 Python 测试与 Chromium/WebKit `152/152`；账本只闭合上述子句，`IMP-03` 因全部非法 external config/candidate 组合仍缺证据而保持 `partial`。GJ-16B 前置现已满足。
 
+### 批次 H · 证据完整性缺陷修复
+
+由 GJ-16B 真实工作区验收撞出的两个产品缺陷，按收口原则「验收卡内不顺手修」另开。两者**相互独立、互不兜底**，分别修复分别回归。
+
+| 任务 | 卡面 | 状态 | 前置 | 验收强度 | 发布条件 |
+| --- | --- | --- | --- | --- | --- |
+| GJ-18 · IgnoreMatcher 多段路径模式失效 | [GJ-18](../collab/tasks/GJ-18.md) | 🟡 已出卡，待派发 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
+| GJ-19 · 敏感文件判定覆盖缺口 | [GJ-19](../collab/tasks/GJ-19.md) | 🟡 已出卡，待 Reviewer 预审 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
+
+GJ-18 源于信道 [#69](../collab/channel.md) 与 [#73](../collab/channel.md) 裁决：`IgnoreMatcher.matches()` 缺少多段路径模式的前缀匹配规则，多段目录模式只匹配目录自身、不匹配后代；`_iter_project_files` 无目录剪枝故无兜底；该失效不触发任何 ScanIssue，违反 GJ-05 的「近似必须可见」。Architect 出卡前实测静默失效模式数为 SliverShield 14 条、CodeRoute 0 条、GoodJob 本仓 2 条。本轮 SliverShield 后果为 5 个生成文件进入 `source_revisions`、产生 8 条 Evidence、**支撑 0 条 Claim**，故 Claim 层未污染、两份 ArtifactSnapshot 不作废。
+
+GJ-19 源于同一轮调查的独立发现（[#73 七](../collab/channel.md)）：`_is_sensitive` 的 `.env` 未纳入既有后缀分支，`production.env` 等常见命名漏判。**卡面已更正 #71/#73 对该函数结构的描述**——四种判定形态（精确名/前缀/名字集合/后缀）本已齐备，缺口是成员覆盖而非机制缺失。该更正本身属「未验证断言当事实」，故本卡按 [protocol §2.1](../collab/protocol.md) 送 Reviewer 预审一轮后再派。
+
+GJ-16B 在两卡合入前维持停工；其 ArtifactSnapshot 现场已由 Implementer 持久另存至 `~/.codex/goodjob-career-review/acceptance/GJ-16B-2026-08-06/`（信道 #74），作为修复后前后对比基准。
+
 ### Owner 决策与人工门
 
 | 门 | 状态 | 说明 |
 | --- | --- | --- |
 | OWN-01 · CodeRoute worktree 验收场景 | ✅ Owner 已裁定（2026-08-05） | 已清理的临时工作树不再作为真实验收对象；相关能力由合成测试承担，缺口先由 GJ-16A 补齐；§4 只写 Owner 指定真实工作区，SliverShield 不变 |
 | OWN-02 · DOC-01~07 权威文档核对 | 待 M2 行为缺口稳定后 | 只由 Owner 完成；若 GJ-14/GJ-15 揭示契约需改，先修契约再核对，避免重复验收 |
-| OWN-03 · 离线 HTML 视觉验收 | 待 GJ-16B 产物 | Owner 检查桌面与窄窗口、可读性、遮挡、反馈与整体准备包体验；自动化不能替代 |
+| OWN-03 · 离线 HTML 视觉验收 | 🟡 部分关闭（2026-08-06，信道 #71 六） | Owner 已打开 GJ-16B 两份产物目视复核并在断网状态下复开，`DASH-01` 实测通过，发布条件 4 的「视觉验收」分句关闭；`DASH-05`/`DASH-06` 由 Owner 决定本轮按通过计，**账本记 `owner_waived`，不得升为 `verified`**，两项自动化缺口维持挂账，条件 4 的账本分句仍未满足 |
+| OWN-04 · 只读验收判据修订 | 🔴 待 Owner 裁定 | 信道 [#70](../collab/channel.md) 撞出：现判据「最终 branch/HEAD/status digest/计数与首读前完全一致」所证为「无人写入」，强于所需证明的「GoodJob 未写入」，在 Owner 活跃使用的仓库上不可达——而活跃仓库正是本产品目标场景。[#73](../collab/channel.md) 裁决建议拆为三条：(a) GoodJob 未写入；(b) 分析基线自洽；(c) 外部漂移记为观察不作 fail。修订涉及[验收基线 §4](acceptance-baseline.md)，属权威契约，**Architect 不单方修改**。裁定前 GJ-16B 的 CodeRoute 只读项记 `blocked-on-criterion`，不记 `fail` |
 
 ### 收口原则
 
