@@ -241,15 +241,20 @@ GJ-16A 由 Architect 在信道 #60 正式派发，候选 `8f05c43` 于 #62 通�
 
 | 任务 | 卡面 | 状态 | 前置 | 验收强度 | 发布条件 |
 | --- | --- | --- | --- | --- | --- |
-| GJ-18 · IgnoreMatcher 多段路径模式失效 | [GJ-18](../collab/tasks/GJ-18.md) | 🟡 已出卡，待派发 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
+| GJ-18 · IgnoreMatcher 多段路径模式失效 | [GJ-18](../collab/tasks/GJ-18.md) | ✅ 已验收合入（终审 [#89](../collab/channel.md)） | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
 | GJ-19 · `*.env` 后缀漏判修复与判定基线锚定 | [GJ-19](../collab/tasks/GJ-19.md) | 🟡 已按 #81 预审修订，待派发 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
 | GJ-20 · 敏感文件排除的 `FR-15` 合规 | 待出卡（设计问题未定，见下） | 阻塞 | GJ-19 | 对抗 | 条件 2（`FR-15` 证据） |
+| GJ-21 · ignore 来源枚举不完整 | 待出卡 | 挂账 | GJ-18 | 对抗 | 条件 3 前置 |
 
 GJ-18 源于信道 [#69](../collab/channel.md) 与 [#73](../collab/channel.md) 裁决：`IgnoreMatcher.matches()` 缺少多段路径模式的前缀匹配规则，多段目录模式只匹配目录自身、不匹配后代；`_iter_project_files` 无目录剪枝故无兜底；该失效不触发任何 ScanIssue，违反 GJ-05 的「近似必须可见」。静默失效模式数经两轮核算：SliverShield **14 条**（复核确认无一被 `HARD_EXCLUDED_DIRECTORIES` 兜住）、CodeRoute 0 条、GoodJob 本仓 **1 条**（`prototypes/dashboard/out/`）。**出卡侧更正**：初次统计称本仓 2 条并引「`node_modules` 下 174 个文件会进证据」为例，该说法不成立——`node_modules` 在硬排除集合中，`_iter_project_files` 在目录层即不下钻，其文件永远到不了 `IgnoreMatcher`。Implementer 以信道 [#83](../collab/channel.md) L1 停工指出，并实测本仓真正泄入 `source_artifacts` 的为 **1 个文件**（`prototypes/dashboard/out/dashboard.html`）。根因是测出失效模式后未核上游是否已有兜底，把一个环节的观测当成全链路结论；GJ-18 的 D5 已按 [#85](../collab/channel.md) 裁决重写。本轮 SliverShield 后果为 5 个生成文件进入 `source_revisions`、产生 8 条 Evidence、**支撑 0 条 Claim**，故 Claim 层未污染、两份 ArtifactSnapshot 不作废。
 
 GJ-19 源于同一轮调查的独立发现（[#73 七](../collab/channel.md)）：`_is_sensitive` 的 `.env` 未纳入既有后缀分支，`production.env` 等常见命名漏判。**卡面已更正 #71/#73 对该函数结构的描述**——四种判定形态（精确名/前缀/名字集合/后缀）本已齐备，缺口是成员覆盖而非机制缺失。该更正本身属「未验证断言当事实」，故本卡按 [protocol §2.1](../collab/protocol.md) 送 Reviewer 预审一轮后再派。
 
-GJ-19 经 Reviewer 预审（信道 [#81](../collab/channel.md)）**四项发现全部成立，卡面已大幅收窄**，裁决见 [#83](../collab/channel.md)。删除的三条契约各自的病因：「成员来源」把"生态惯例"列为可接受来源，而它没有发布者、定位与版本，与同一契约禁止的"凭经验补几个"无法机械区分；「排除可见」与权威 `FR-15` 冲突，且按 `FR-15` 实现必然超出卡面允许范围，按计数实现则在生产代码零改动下即可通过——是**出卡侧造出的假绿出口**；「假阴性优先」对一个只接收 filename 的纯函数给了判定方向却没有判定域，实为把安全分类权下放给 Implementer。收窄后本卡只做已证实的 `.env` 后缀成员，另加独立 oracle 与四项变异门槛。
+**GJ-18 已于 [#89](../collab/channel.md) 终审通过并合入**。终审在初审（[#88](../collab/channel.md)）之外另做三项独立验证：先经两次校准的 Git 原生差分探针（26 组规则 × 69 条路径）得 **0 条静默差异**，坐实契约 2；取 `bbec1b1` 旧实现同矩阵对拍得 **12 处行为变更全部向 Git 收敛、0 处偏离**，其中 4 处为收窄，实测本仓证据集**新增 0 条、剔除 1 条**；D5 以同 HEAD 仅变异代码重做，`out 1→0`、`node_modules 0→0`、`hard_excluded 14→14` 逐项复现。三条实施发现均定性为 L3：**①** 交付方的 D5 前后两次扫描 `head_commit` 分别为 `18edb17` 与 `bbec1b1`，语料未受控（Reviewer 读同两份现场故继承同一盲点），结论经终审同 HEAD 重做后确认成立——**属出卡侧缺陷**，已追加[出卡门禁](../collab/architect.md) §1.3 第 11 条与[反模式池](../collab/anti-patterns.md)条目；**②** 行为收窄面在交付报告中未穷举，记录不打回；**③** 见下 GJ-21。
+
+**GJ-21（挂账，源于 GJ-18 终审）**：运行时只读取遍历中发现的 `.gitignore`，`.git/info/exclude`（`.git` 在硬排除内故永不可达）与 `core.excludesFile` 全局忽略**从不读取且无任何披露**——与 GJ-18 同为「既不生效也不披露」，但属**忽略来源**而非**模式语法**。GJ-18 契约 1 把枚举范围界定在 `gitignore(5)` PATTERN FORMAT，**该边界是出卡侧划的**，不计交付缺陷。出卡前须先裁定：读取全局/仓库级 exclude 是否越出既有文件系统边界（protocol §8），若不读则披露形态为何。
+
+GJ-19 经 Reviewer 预审（信道 [#81](../collab/channel.md)）**四项发现全部成立，卡面已大幅收窄**，裁决见 [#84](../collab/channel.md)。删除的三条契约各自的病因：「成员来源」把"生态惯例"列为可接受来源，而它没有发布者、定位与版本，与同一契约禁止的"凭经验补几个"无法机械区分；「排除可见」与权威 `FR-15` 冲突，且按 `FR-15` 实现必然超出卡面允许范围，按计数实现则在生产代码零改动下即可通过——是**出卡侧造出的假绿出口**；「假阴性优先」对一个只接收 filename 的纯函数给了判定方向却没有判定域，实为把安全分类权下放给 Implementer。收窄后本卡只做已证实的 `.env` 后缀成员，另加独立 oracle 与四项变异门槛。
 
 **GJ-20 待出卡，三个设计问题未定，定完再写卡**（仓促出卡正是本轮 GJ-19 四项缺陷的共同来源）：
 
