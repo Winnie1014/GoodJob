@@ -2230,6 +2230,97 @@ def test_ignore_syntax_capabilities_are_structurally_enumerated() -> None:
     } <= capabilities.keys()
 
 
+def test_git_multi_segment_directory_pattern_matches_descendant() -> None:
+    matcher = IgnoreMatcher(((".", "build/outputs", False, True),))
+
+    assert matcher.matches("build/outputs/apk/app.apk") is True
+
+
+def test_nested_git_multi_segment_directory_pattern_matches_descendant() -> None:
+    matcher = IgnoreMatcher((("apps/mobile/ios", "Flutter/ephemeral", False, True),))
+
+    assert matcher.matches("apps/mobile/ios/Flutter/ephemeral/Packages/x/Package.swift") is True
+
+
+def test_git_multi_segment_pattern_remains_anchored_to_ignore_file() -> None:
+    matcher = IgnoreMatcher(((".", "build/outputs", False, True),))
+
+    assert matcher.matches("build/outputsX/a.txt") is False
+    assert matcher.matches("other/build/outputs/a.txt") is False
+
+
+def test_git_directory_suffix_does_not_match_same_named_file() -> None:
+    matcher = IgnoreMatcher(((".", "cache", False, True),))
+
+    assert matcher.matches("cache") is False
+    assert matcher.matches("cache/data.py") is True
+
+
+@pytest.mark.parametrize(
+    ("source_line", "raw_pattern", "approximation"),
+    [
+        (" literal.py\n", " literal.py", "surrounding whitespace"),
+        ("literal.py\t\n", "literal.py\t", "surrounding whitespace"),
+        ("\t\n", "\t", "surrounding whitespace"),
+        ("\\#literal.py\n", "\\#literal.py", "backslash escapes"),
+        ("\\!literal.py\n", "\\!literal.py", "backslash escapes"),
+        ("literal\\ \n", "literal\\ ", "backslash escapes"),
+        ("/root.py\n", "/root.py", 'the leading "/"'),
+        ("ignored/\n!ignored/keep.py\n", "!ignored/keep.py", "last matching rule wins"),
+        ("src/*.py\n", "src/*.py", 'allows "*" and "?"'),
+        ("src/[!a].py\n", "src/[!a].py", "character classes in path patterns"),
+        ("[^a].txt\n", "[^a].txt", 'does not treat "^"'),
+        ("[[:digit:]].log\n", "[[:digit:]].log", "POSIX named character classes"),
+        ("**/cache\n", "**/cache", 'treats "**"'),
+        ("cache/**\n", "cache/**", 'treats "**"'),
+        ("cache/**/data\n", "cache/**/data", 'treats "**"'),
+        ("cache***data\n", "cache***data", 'treats "**"'),
+    ],
+)
+def test_git_disclosed_semantics_emit_visible_issue(
+    tmp_path: Path,
+    source_line: str,
+    raw_pattern: str,
+    approximation: str,
+) -> None:
+    (tmp_path / ".gitignore").write_text(source_line, encoding="utf-8")
+
+    _, issues = IgnoreMatcher.load(tmp_path, [".gitignore"])
+
+    unsupported = [issue for issue in issues if issue.kind == "ignore_pattern_unsupported"]
+    assert len(unsupported) == 1
+    assert isinstance(unsupported[0], scanner_module.IgnorePatternIssueDraft)
+    assert unsupported[0].raw_pattern == raw_pattern
+    assert approximation in unsupported[0].remediation
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "\n",
+        "# comment\n",
+        "# comment\t\n",
+        "literal.py   \n",
+        "*.tmp\n!important.tmp\n",
+        "src/module.py\n",
+        "module.py\n",
+        "cache/\n",
+        "doc/frotz\n",
+        "*.py\n",
+        "file?.[ch]\n",
+    ],
+)
+def test_git_supported_semantics_do_not_emit_unsupported_issue(
+    tmp_path: Path,
+    source_text: str,
+) -> None:
+    (tmp_path / ".gitignore").write_text(source_text, encoding="utf-8")
+
+    _, issues = IgnoreMatcher.load(tmp_path, [".gitignore"])
+
+    assert all(issue.kind != "ignore_pattern_unsupported" for issue in issues)
+
+
 def test_git_root_anchor_is_currently_approximated_at_any_depth(tmp_path: Path) -> None:
     (tmp_path / ".gitignore").write_text("/build/\n", encoding="utf-8")
 
