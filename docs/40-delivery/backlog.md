@@ -290,6 +290,16 @@ GJ-19 经 Reviewer 预审（信道 [#81](../collab/channel.md)）**四项发现�
 | GJ-10 · 剥离遍历与 ignore 簇 | GJ-06 的第二步。**GJ-06 合入后实测**：`WorkspaceScanner` 已降至 2509 行 / 52 方法，本簇为 `_discover`、`_walk_directories`、`_non_git_manifest`、`_iter_project_files`、`_is_sensitive`、`_classify` 共 6 方法 459 行，加 `IgnoreMatcher` 142 行，合计约 601 行。该簇管的是「扫描器能看到什么」——硬安全排除清单与敏感文件判定在其中。**GJ-06 已于 `ed53ff2` 合入，前置满足**。出卡时须在 GJ-06 的 DoD 基础上补一条「对外暴露名字的可写性对等」——见 GJ-06 验收的方法论盲区 | 待 Owner 决定 |
 | CI 接入 | 仓库无任何 CI 配置，门禁全靠本地。GJ-07 明确把此项排除在外，是独立决策 | Owner 决定 |
 
+## 开源准备（独立于发布条件 6 条，仓库可见性变更前置）
+
+与[验收基线 §6 发布条件](../40-delivery/acceptance-baseline.md)是两件事：那 6 条门的是"能否创建/更新可安装私有版本"，这里问的是"仓库本身能否从 private 改为 public"。唯一交集是条件 5（仓库无个人数据/扫描缓存/密钥/真实项目源码副本）。
+
+| 任务 | 卡面 | 状态 | 前置 | 验收强度 |
+| --- | --- | --- | --- | --- |
+| GJ-22 · 开源前脱敏审计 | [GJ-22](../collab/tasks/GJ-22.md) | 🔵 已派发 | 无 | 对抗 |
+
+Architect 已做一轮机械扫描（全历史 `git rev-list --all`，非仅当前 `main`）：私钥头/AWS 与 GitHub token 格式/通用 `secret=` 赋值模式均无命中；全历史 114 个曾出现过的文件名中无 `.env`/`credentials`/`id_rsa`/`*.pem`/`*.sqlite3` 等敏感文件；全部 8 条非 `main` 分支相对 `main` 的 diff 为空（早已合并，无孤立内容）；`prototypes/dashboard/fixture/report-bundle.json` 为合成测试数据；`.gitignore` 覆盖常规缓存/构建目录。**确认发现一项**：全部 120 次提交的 author/committer 均为 `lc.jin <lc.jin@invo.cn>`，公开后逐条提交、GitHub 贡献者信息均会暴露这一真实身份标识。**尚未完成**：`channel.md`（3300+ 行）等叙事类长文档的通读——机械正则找不出语义层面的真实内容泄漏，这是 GJ-22 的主要工作量。
+
 ## 已完成
 
 | 任务 | 结论 | 信道 |
