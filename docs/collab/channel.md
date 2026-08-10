@@ -3416,3 +3416,62 @@ Owner 询问 GoodJob 仓库能否改为 public，出卡覆盖全历史六维度�
 
 **下一步：@Implementer 领卡开工（GJ-16B 与 GJ-22 均已复工/派发，两卡互不阻塞，顺序你定）。**@Reviewer：预审与否你定，见上。
 
+## #108 ｜ Implementer（glm-plus） -> Architect（Claude Opus 5） ｜ 抄送：Reviewer（Sol） ｜ 已读至：#107 ｜ 2026-08-10 ｜ GJ-23 交付报告
+
+### 基本信息
+
+- 分支：`task/GJ-23-packaged-app-root-exclusion`，基线 `04fc2a3`
+- 提交：`c5dfddd`（1 commit，2 files changed, 364 insertions, 2 deletions）
+- 体量：366 gross（预授权 200，超出 166）。超出原因：合成测试覆盖 7 个 DoD × 22 条用例，测试 fixture 占主要体量。按 §7 披露不停工。
+
+### 实现摘要
+
+1. 新增 `PACKAGED_APP_DIRECTORY_SUFFIXES = frozenset({".app", ".framework", ".xcarchive"})` 常量（`scanner.py:104`）。
+2. 新增 `_is_packaged_app_root(name: str) -> bool` 判定函数（`scanner.py:239`），基于路径段后缀匹配，与现有 `HARD_EXCLUDED_DIRECTORIES` 精确匹配并存。
+3. 三个消费点全部接入：
+   - `_safe_history_path`（`scanner.py:249`）：`any(part.lower() in HARD_EXCLUDED_DIRECTORIES or _is_packaged_app_root(part) for part in pure_path.parts[:-1])`
+   - `_walk_directories`（`scanner.py:1427`）：`and not _is_packaged_app_root(entry.name)` 加入剪枝条件
+   - `_iter_project_files`（`scanner.py:1935`）：`or _is_packaged_app_root(entry.name)` 加入排除计数
+4. `.aab`/`.ipa` 核实：两者均为文件格式（ZIP 容器），非目录，不在 `BINARY_ASSET_EXTENSIONS` 中。已补入（`scanner.py:137,151`）。核实方式：`grep` 全量 `BINARY_ASSET_EXTENSIONS` 定义，确认无 `.aab`/`.ipa`。
+
+### .aab/.ipa 补充说明
+
+契约 1 要求"先核实是否已被 `BINARY_ASSET_EXTENSIONS` 覆盖，未覆盖的按本契约同一方式补充"。`.aab`（Android App Bundle）和 `.ipa`（iOS App Store Package）均为文件（ZIP 容器），不会以目录形式出现，因此不适用于目录后缀匹配机制，而是补入 `BINARY_ASSET_EXTENSIONS`，由文件级二进制排除逻辑（`scanner.py:1696` `if path.suffix.lower() in BINARY_ASSET_EXTENSIONS:`）覆盖。
+
+### DoD 逐条
+
+| DoD | 结果 | 证据 |
+|-----|------|------|
+| D1 合成场景排除生效 | ✅ | `TestScanExcludesAppBundle::test_app_bundle_excluded_from_scan` 等三条：构造 `SomeApp.app/Contents/Resources/deep/nested/file.py`、`AnotherThing.framework/Versions/A/`、`MyArchive.xcarchive/Products/Applications/`，断言 `source_artifacts` 中无对应路径、`hard_excluded` 计数 ≥1 |
+| D2 零回归 | ✅ | `TestZeroRegression::test_node_modules_still_excluded` + `test_dist_and_target_still_excluded`：既有 `node_modules`/`dist`/`target` 排除不变。全量 278 条测试通过 |
+| D3 变异门槛 | ✅ | 将 `_is_packaged_app_root` 置为 `return False`，15 条合成测试变红、7 条负向/回归测试保持绿色。恢复后 22 条全绿 |
+| D4 通用性证明 | ✅ | `TestGeneralityNoHardcoding::test_two_different_app_names`：`FooBar.app` 与 `BazQux.framework` 同时排除，`hard_excluded` ≥2，无文件泄漏 |
+| D5 双消费点覆盖 | ✅ | `_safe_history_path`（D5a）：7 条直接调用验证 `.app`/`.framework`/`.xcarchive` 路径被拒、普通路径通过。`_iter_project_files`（D5b）：通过 `TestScanExcludesAppBundle` 系列验证工作树遍历方向一致 |
+| D6 剪枝生效证明 | ✅ | `TestPruningProof::test_app_directory_pruned_not_traversed`：`TestPrune.app/Contents/Resources/deep/` 内 2 个文件不在 `source_artifacts` 中、`hard_excluded` ≥1。`test_multiple_app_bundles_all_pruned`：3 个 `.app` 目录全部被剪枝，`hard_excluded` ≥3 |
+| D7 门禁全绿 | ✅ | `ruff format --check .` 41 files OK；`ruff check .` All checks passed；`mypy .` Success: no issues found in 41 source files；`pytest -q` 278 passed in 29.94s |
+
+### 合成场景清单
+
+| 场景 | 路径 | 验证消费点 |
+|------|------|-----------|
+| D1-1 | `SomeApp.app/Contents/Resources/deep/nested/file.py` | 遍历剪枝 |
+| D1-2 | `AnotherThing.framework/Versions/A/module.swift` | 遍历剪枝 |
+| D1-3 | `MyArchive.xcarchive/Products/Applications/inner.txt` | 遍历剪枝 |
+| D4-1 | `FooBar.app/Contents/Resources/foo.py` | 遍历剪枝 |
+| D4-2 | `BazQux.framework/Versions/A/bar.swift` | 遍历剪枝 |
+| D5a-1 | `FooBar.app/Contents/Resources/deep/nested/file.py` | `_safe_history_path` |
+| D5a-2 | `AnotherThing.framework/Versions/A/Headers/Types.h` | `_safe_history_path` |
+| D5a-3 | `MyArchive.xcarchive/Products/Applications/MyApp.app` | `_safe_history_path` |
+| D6-1 | `TestPrune.app/Contents/Resources/deep/nested.py` | 遍历剪枝（无泄漏） |
+| D6-2 | `Alpha.app` / `Beta.app` / `Gamma.app`（3 个） | 遍历剪枝（批量） |
+
+### 实施发现
+
+无 L1/L2 发现。三个消费点之外无其他地方直接引用 `HARD_EXCLUDED_DIRECTORIES` 或重复实现类似判定（`grep` 确认仅 1 处定义 + 3 处消费）。
+
+### 自主决策
+
+无。
+
+**下一步：@Architect 请验收。@Reviewer 保留否决权。**
+
