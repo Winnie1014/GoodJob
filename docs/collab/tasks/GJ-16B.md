@@ -1,6 +1,6 @@
 # 任务卡 GJ-16B：CodeRoute / SliverShield 真实工作区只读验收
 
-- 状态：待领取（复工，见「复工说明」；GJ-16A / GJ-18 / GJ-19 前置均已合入） ｜ 实现：Sol-Impl ｜ 出卡/评审：Sol，复工修订：Architect（Claude Opus 5）
+- 状态：待领取（复工，见「复工说明」；GJ-16A / GJ-18 / GJ-19 前置均已合入；复工卡面经 [#103](../channel.md) 预审二次修订） ｜ 实现：Sol-Impl ｜ 出卡/评审：Sol，复工修订：Architect（Claude Opus 5）
 - 对应 backlog：里程碑 M2 · 批次 G · GJ-16B
 - 前置任务：GJ-16A 已通过信道 #62 验收并以 merge `b7be588` 合入，`IMP-03` 证据裁定已完成
 - 分支：`task/GJ-16B-real-workspace-readonly-acceptance`，仅在后续派卡消息指定基线后创建
@@ -19,8 +19,7 @@
 - **允许写入**：
   - 新增 `docs/40-delivery/real-workspace-acceptance.md`，只记录脱敏结构化证据、哈希、计数、结论和未通过项，不复制源码/JD/上下文原文；
   - 一个由 `mktemp -d` 创建、位于仓库外的临时 GoodJob data directory；保留到 Architect 验收与 Owner 视觉核对结束，再由 Architect 明确收口；
-  - `docs/collab/channel.md` 物理 EOF 追加协作消息（元协议豁免）；
-  - 「复工说明」要求的 `~/.codex/goodjob-career-review/acceptance/GJ-16B-<本次日期>/` 存档（同 [#74](../channel.md) 先例，仓库外、只拷贝脱敏产物，不修改不入库）。
+  - `docs/collab/channel.md` 物理 EOF 追加协作消息（元协议豁免）。
 - **只读输入**：Owner 派卡时指定的 CodeRoute 与 SliverShield 根；允许按 Skill 契约打开已通过 `verify_source_revision` 的少量源码和文档。
 - **禁止**：修改/暂存/提交真实工作区任何文件；运行项目代码、测试、构建、包安装、hook、fetch/checkout/clean/gc；访问网络；修改 GoodJob runtime、测试、schema、前端、依赖、权威契约、backlog 或用户级安装；把真实源码、完整 diff、密钥、环境值或个人上下文写入仓库。
 
@@ -48,16 +47,16 @@
 
 临时 data directory 与产物不得位于 GoodJob 或真实工作区内。提交前递归检查 GoodJob diff 与两个输入仓库状态；仓库证据文档只允许 Evidence locator、短摘要、ID、hash 和计数，不含源码正文、完整 diff、密钥、环境变量值、原始 SessionCapability 或 Owner 回答原文。
 
-## 复工说明（2026-08-10，GJ-18/GJ-19 已合入，卡面在原有基础上增补）
+## 复工说明（2026-08-10，GJ-18/GJ-19 已合入；2026-08-10 按 [#103](../channel.md) 预审二次修订）
 
 本卡于 [#73](../channel.md) 因 `IgnoreMatcher` 多段路径模式失效（GJ-18）与 `_is_sensitive` 的 `.env` 后缀漏判（GJ-19）两项产品缺陷停工；两项均已终审合入（[#89](../channel.md)、[#100](../channel.md)）。2026-08-06 停工前的中途现场已由 Implementer 持久另存（[#74](../channel.md)，路径 `~/.codex/goodjob-career-review/acceptance/GJ-16B-2026-08-06/`），本节规定如何使用它。
 
-**该存档不构成可用于聚合计数前后对比的受控语料**：其 `manifest.json` 记录的是 GoodJob 内部运行标识（`scan_run_id`/`preparation_run_id`）与脱敏统计（`excluded_by_category` 等），**未记录 CodeRoute/SliverShield 两个真实工作区自身的 canonical root、branch 或 HEAD**。按 [architect.md 门禁 11](../architect.md)，做不到语料受控就不能声称对比结论——因此：
+**该存档不构成、也不打算成为可用于聚合计数前后对比的受控语料**：其 `manifest.json` 只记录 GoodJob 内部运行标识与脱敏统计，未记录 CodeRoute/SliverShield 两个真实工作区自身的 canonical root、branch 或 HEAD。按 [architect.md 门禁 11](../architect.md)，做不到语料受控就不能声称对比结论——因此：
 
 - **不要求、也不得在交付报告中声称**"本次扫描计数相比 2026-08-06 现场的差值证明了 GJ-18/GJ-19 生效"。两个真实工作区在此期间是否发生变更是未知量，聚合计数的任何变化都可能是产品修复、也可能是仓库内容本身变化，混在一起时无法拆分归因。
-- **验收判据仍以下方 CodeRoute 三项、SliverShield 四项为准**，本次扫描独立判定 pass/fail,不依赖与旧现场的比较。
-- **具体路径级观察可以作为佐证，不是 DoD 必须项**：[#73 三](../channel.md) 点名 SliverShield 有 5 个 `apps/mobile/ios/Flutter/ephemeral/` 下的文件（含 `flutter_native_integration.env`）因两项缺陷进入过 `source_artifacts`/`source_revisions`。若该路径在当前 SliverShield 工作区仍存在，交付报告可以如实说明它这次的处理结果作为修复生效的直接证据；若该路径已不存在（可能已被 Owner 删除/改动），如实报告"路径不存在，无法核查"即可，不得假定它还在或编造结果。
-- **弥补存档缺口**：本次「只读与隐私证明」章节要求采集的 canonical root/HEAD/status，除按原有判据使用外，另存一份到 `~/.codex/goodjob-career-review/acceptance/GJ-16B-<本次日期>/`，作为下一次若需要复跑时的基准——不要重复这次"旧现场没留 HEAD"的缺口。
+- **验收判据仍以下方 CodeRoute 三项、SliverShield 四项为准**，本次扫描独立判定 pass/fail，不依赖与旧现场的比较。
+- **`canonical root/HEAD/status` 只是「只读与隐私证明」章节原有的单次运行内部判据（(a)/(b)/(c)），不构成、也不再尝试构成跨运行的稳定 corpus identity**（[#103](../channel.md) 一 指出：`git status --porcelain` 的 untracked 行不含内容哈希，tracked 内容变化时状态行也可能不变，相同 root/HEAD/status 仍可能对应不同输入字节；CodeRoute 当前实测 835 个 untracked 条目，风险是实测规模不是理论边界）。**本卡不新建、也不要求另存任何"供未来复跑使用的基准"**——若未来确有需要做严格前后对比，那是一个独立问题，需要专门设计可复核的内容清单指纹算法（对文件路径+内容哈希做聚合摘要，同时把被测 GoodJob commit 列为独立维度），不在本卡内勉强拼凑。
+- **具体路径级观察是可选佐证，不构成对比证明，也不是 DoD 必须项**：[#73 三](../channel.md) 点名 SliverShield 有 5 个 `apps/mobile/ios/Flutter/ephemeral/` 下的文件（含 `flutter_native_integration.env`）因两项缺陷进入过 `source_artifacts`/`source_revisions`。**路径本身存在不能证明该路径下的内容集合与 2026-08-06 时相同**（[#103](../channel.md) 一 指出：Sol 本轮只读枚举该路径已是 7 个文件，非 #73 记录的 5 个）——因此这类观察只能表述为"本次扫描时，该路径下当前存在的文件被正确处理"这一**当前状态的独立证据**，不得表述或暗示为"与旧现场对比后确认修复生效"。若不想做这个可选核查，直接跳过，不视为漏报。
 
 ## 真实验收判据
 
@@ -97,7 +96,7 @@
 - [ ] 临时 data directory、仓库证据和信道均不含完整源码/diff、密钥、环境值、capability 或 Owner 回答原文；真实源码副本不进入 Git。
 - [ ] `make gate-release` 在未修改 runtime 的候选 HEAD 全绿；交付报告给出动态计数和真实扫描终态。
 - [ ] 若发现产品缺陷，立即 L1 停工并保留最小只读现场；不在真实验收卡顺手修产品或改契约。
-- [ ] 「复工说明」三条均遵守：不声称与 2026-08-06 现场的聚合计数对比结论；`apps/mobile/ios/Flutter/ephemeral/` 路径若存在须报告本次处理结果，不存在须如实说明；本次 canonical root/HEAD/status 另存一份含 HEAD 的新基准存档。
+- [ ] 「复工说明」遵守：不声称与 2026-08-06 现场的聚合计数对比结论；不新建/不另存任何"供未来复跑使用的基准"；`apps/mobile/ios/Flutter/ephemeral/` 路径级观察若做了，只能表述为当前状态的独立证据，不得表述为与旧现场的对比证明——该观察本身是可选的，不做不算漏报。
 
 ## 交付与暂停点
 
