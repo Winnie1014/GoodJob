@@ -1953,7 +1953,7 @@ class WorkspaceScanner:
                 "secrets.yml",
                 "tokens.json",
             }
-            or lower.endswith((".key", ".p12", ".pem", ".pfx"))
+            or lower.endswith((".env", ".key", ".p12", ".pem", ".pfx"))
         )
 
     @staticmethod
