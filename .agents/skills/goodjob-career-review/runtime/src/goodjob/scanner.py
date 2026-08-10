@@ -101,6 +101,13 @@ HARD_EXCLUDED_DIRECTORIES = frozenset(
         "venv",
     }
 )
+PACKAGED_APP_DIRECTORY_SUFFIXES = frozenset(
+    {
+        ".app",
+        ".framework",
+        ".xcarchive",
+    }
+)
 MANIFEST_NAMES = frozenset(
     {
         "Cargo.toml",
@@ -128,6 +135,7 @@ BINARY_ASSET_EXTENSIONS = frozenset(
     {
         ".7z",
         ".a",
+        ".aab",
         ".avi",
         ".bin",
         ".bmp",
@@ -142,6 +150,7 @@ BINARY_ASSET_EXTENSIONS = frozenset(
         ".gz",
         ".icns",
         ".ico",
+        ".ipa",
         ".jar",
         ".jpeg",
         ".jpg",
@@ -227,11 +236,19 @@ def _analysis_diagnostics(raw: str) -> tuple[AnalysisDiagnostic, ...]:
     return tuple(diagnostics)
 
 
+def _is_packaged_app_root(name: str) -> bool:
+    lower = name.lower()
+    return any(lower.endswith(suffix) for suffix in PACKAGED_APP_DIRECTORY_SUFFIXES)
+
+
 def _safe_history_path(path: str) -> bool:
     pure_path = PurePosixPath(path)
     if not path or pure_path.is_absolute() or ".." in pure_path.parts:
         return False
-    if any(part.lower() in HARD_EXCLUDED_DIRECTORIES for part in pure_path.parts[:-1]):
+    if any(
+        part.lower() in HARD_EXCLUDED_DIRECTORIES or _is_packaged_app_root(part)
+        for part in pure_path.parts[:-1]
+    ):
         return False
     return not WorkspaceScanner._is_sensitive(pure_path.name)
 
@@ -1408,6 +1425,7 @@ class WorkspaceScanner:
                     if (
                         stat.S_ISDIR(entry_stat.st_mode)
                         and entry.name.lower() not in HARD_EXCLUDED_DIRECTORIES
+                        and not _is_packaged_app_root(entry.name)
                     ):
                         stack.append(child_relative)
             finally:
@@ -1913,7 +1931,10 @@ class WorkspaceScanner:
                     if stat.S_ISDIR(entry_stat.st_mode):
                         if path in nested_project_roots:
                             excluded["nested_project"] += 1
-                        elif entry.name.lower() in HARD_EXCLUDED_DIRECTORIES:
+                        elif (
+                            entry.name.lower() in HARD_EXCLUDED_DIRECTORIES
+                            or _is_packaged_app_root(entry.name)
+                        ):
                             excluded["hard_excluded"] += 1
                         else:
                             stack.append(relative)
