@@ -222,7 +222,7 @@ GJ-14 与 GJ-15 在 GJ-13 后技术上可并行；单 Implementer 模式下一�
 | GJ-14 · 合成工作区全链路验收 | [GJ-14](../collab/tasks/GJ-14.md) | ✅ 已验收合入（信道 #58，merge `5aa2504`） | GJ-13 | 对抗 | 条件 2；条件 3 前置 |
 | GJ-15 · 看板机检缺口闭合 | [GJ-15](../collab/tasks/GJ-15.md) | ✅ 已验收合入（信道 #52，merge `319ccd6`） | GJ-13 | 对抗 | 条件 4 机检部分 |
 | GJ-16A · 多工作树合成证据补齐 | [GJ-16A](../collab/tasks/GJ-16A.md) | ✅ 已验收合入（信道 #62，merge `b7be588`） | GJ-14、GJ-15、OWN-01 | 对抗 | 条件 2；条件 3 前置 |
-| GJ-16B · CodeRoute/SliverShield 真实只读验收 | [GJ-16B](../collab/tasks/GJ-16B.md) | 🔴 复工中途再停工，等 GJ-23 合入（信道 [#106](../collab/channel.md) L1） | GJ-16A、GJ-23 | 对抗 | 条件 3；Owner 视觉输入 |
+| GJ-16B · CodeRoute/SliverShield 真实只读验收 | [GJ-16B](../collab/tasks/GJ-16B.md) | 🟡 GJ-23 已合入，待三次复工 | GJ-16A、GJ-23 已合入 | 对抗 | 条件 3；Owner 视觉输入 |
 | GJ-17 · 隔离安装副本与报告契约复现 | 待前置完成后出卡 | 阻塞 | GJ-16B、Owner 文档/视觉核对 | 对抗 | 条件 6；发布候选收口 |
 
 GJ-13 验收裁决要点（信道 #43）：证据账本按上游动态提取并覆盖 28 个 `IMP` 与 12 个 `DASH`，当前结论为 `IMP = verified 1 / partial 27`、`DASH = partial 10 / missing 2`。首轮验收将缺少完整快照不可变与中断状态转换断言的 `IMP-17` 从 `verified` 退回为 `partial`，修订后独立发布门禁全绿并合入。#40 的 L2“全绿测试不等于完整发布实证”成立，缺口归宿以账本逐行为准：先由 GJ-15 闭合两个 `missing` 看板语义，再按账本最小目标规划 GJ-14，不把全部 `partial` 塞入一张卡。
@@ -235,7 +235,7 @@ GJ-14 由 Architect 在信道 #54 正式派发；#55 发现 JD 持久化断言�
 
 GJ-16A 由 Architect 在信道 #60 正式派发，候选 `8f05c43` 于 #62 通过对抗档验收并以 `b7be588` 合入：真实 Git 三工作树联合证明 branch/HEAD/dirty、等价内容单次分析与全部来源、分支独有 Evidence 隔离、module/project 提升边界、精确 worktree scope 及冻结 provenance。独立聚焦节点为 `7 passed`，完整门禁为 184 个 Python 测试与 Chromium/WebKit `152/152`；账本只闭合上述子句，`IMP-03` 因全部非法 external config/candidate 组合仍缺证据而保持 `partial`。GJ-16B 前置现已满足。
 
-GJ-16B 因 `IgnoreMatcher`/`_is_sensitive` 两项缺陷于 #73 停工，GJ-18/GJ-19 合入后经 #104 二次修订复工。复工第一次真实扫描（CodeRoute）即撞出第三个缺陷（信道 [#106](../collab/channel.md) L1）：未跟踪的 `.agent_context/.../CodeRoute.app/...` 应用打包产物内部资源被建成 `SourceRevision`/`Evidence`，违反"生成/依赖目录不得进入证据链"判据。根因是 `HARD_EXCLUDED_DIRECTORIES` 目录名精确匹配清单未覆盖应用打包产物这一类生成物格式，与 GJ-18/GJ-21 不同源但同属"排除机制是封闭枚举"这个更大模式。已按 L1 出卡 GJ-23，不合并进 GJ-16B（验收卡内不顺手修）。GJ-16B 维持停工，等 GJ-23 独立验收合入后从 CodeRoute 完整流程重新开始（不复用本次已产生的 ScanRun/PreparationRun）；GJ-22（开源前脱敏审计）与本次停工无关，Implementer 可继续推进。
+GJ-16B 因 `IgnoreMatcher`/`_is_sensitive` 两项缺陷于 #73 停工，GJ-18/GJ-19 合入后经 #104 二次修订复工。复工第一次真实扫描（CodeRoute）即撞出第三个缺陷（信道 [#106](../collab/channel.md) L1）：未跟踪的 `.agent_context/.../CodeRoute.app/...` 应用打包产物内部资源被建成 `SourceRevision`/`Evidence`，违反"生成/依赖目录不得进入证据链"判据。根因是 `HARD_EXCLUDED_DIRECTORIES` 目录名精确匹配清单未覆盖应用打包产物这一类生成物格式，与 GJ-18/GJ-21 不同源但同属"排除机制是封闭枚举"这个更大模式。已按 L1 出卡 GJ-23，不合并进 GJ-16B（验收卡内不顺手修）。**GJ-23 已于 [#109](../collab/channel.md) 终审通过并合入**：新增路径段后缀匹配（`.app`/`.framework`/`.xcarchive`）与现有精确匹配并存，三个消费点（`_safe_history_path`/`_walk_directories`/`_iter_project_files`）同时接入，`.aab`/`.ipa` 顺带补入 `BINARY_ASSET_EXTENSIONS`。终审独立复现变异测试（15 红/7 绿，与报告一致）、额外做了 12 个报告未覆盖的边界探测与一次 5000 文件规模的剪枝性能验证（0.018 秒、零泄漏），零发现。**本卡首次由 Implementer（`glm-plus`）交付**，非 Sol-Impl；验收标准未因执行者不同而调整。GJ-16B 现从 CodeRoute 完整流程第三次重新开始（不复用此前已产生的 ScanRun/PreparationRun）；GJ-22（开源前脱敏审计）与本次停工无关，Implementer（Sol-Impl）全程未受影响。
 
 ### 批次 H · 证据完整性缺陷修复
 
@@ -247,7 +247,7 @@ GJ-16B 因 `IgnoreMatcher`/`_is_sensitive` 两项缺陷于 #73 停工，GJ-18/GJ
 | GJ-19 · `*.env` 后缀漏判修复与判定基线锚定 | [GJ-19](../collab/tasks/GJ-19.md) | ✅ 已验收合入（终审 [#100](../collab/channel.md)） | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
 | GJ-20 · 敏感文件排除的 `FR-15` 合规 | 待出卡（设计问题未定，见下） | 阻塞(设计问题未定,非任务依赖) | 无(GJ-19 已合入) | 对抗 | 条件 2（`FR-15` 证据） |
 | GJ-21 · ignore 来源枚举不完整 | 待出卡 | 挂账 | GJ-18 | 对抗 | 条件 3 前置 |
-| GJ-23 · 应用打包产物根排除 | [GJ-23](../collab/tasks/GJ-23.md) | 🔵 已派发 | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
+| GJ-23 · 应用打包产物根排除 | [GJ-23](../collab/tasks/GJ-23.md) | ✅ 已验收合入（终审 [#109](../collab/channel.md)） | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
 
 GJ-18 源于信道 [#69](../collab/channel.md) 与 [#73](../collab/channel.md) 裁决：`IgnoreMatcher.matches()` 缺少多段路径模式的前缀匹配规则，多段目录模式只匹配目录自身、不匹配后代；`_iter_project_files` 无目录剪枝故无兜底；该失效不触发任何 ScanIssue，违反 GJ-05 的「近似必须可见」。静默失效模式数经两轮核算：SliverShield **14 条**（复核确认无一被 `HARD_EXCLUDED_DIRECTORIES` 兜住）、CodeRoute 0 条、GoodJob 本仓 **1 条**（`prototypes/dashboard/out/`）。**出卡侧更正**：初次统计称本仓 2 条并引「`node_modules` 下 174 个文件会进证据」为例，该说法不成立——`node_modules` 在硬排除集合中，`_iter_project_files` 在目录层即不下钻，其文件永远到不了 `IgnoreMatcher`。Implementer 以信道 [#83](../collab/channel.md) L1 停工指出，并实测本仓真正泄入 `source_artifacts` 的为 **1 个文件**（`prototypes/dashboard/out/dashboard.html`）。根因是测出失效模式后未核上游是否已有兜底，把一个环节的观测当成全链路结论；GJ-18 的 D5 已按 [#85](../collab/channel.md) 裁决重写。本轮 SliverShield 后果为 5 个生成文件进入 `source_revisions`、产生 8 条 Evidence、**支撑 0 条 Claim**，故 Claim 层未污染、两份 ArtifactSnapshot 不作废。
 
