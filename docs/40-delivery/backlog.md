@@ -242,8 +242,8 @@ GJ-16A 由 Architect 在信道 #60 正式派发，候选 `8f05c43` 于 #62 通�
 | 任务 | 卡面 | 状态 | 前置 | 验收强度 | 发布条件 |
 | --- | --- | --- | --- | --- | --- |
 | GJ-18 · IgnoreMatcher 多段路径模式失效 | [GJ-18](../collab/tasks/GJ-18.md) | ✅ 已验收合入（终审 [#89](../collab/channel.md)） | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
-| GJ-19 · `*.env` 后缀漏判修复与判定基线锚定 | [GJ-19](../collab/tasks/GJ-19.md) | 🔵 已派发（[#91](../collab/channel.md)） | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
-| GJ-20 · 敏感文件排除的 `FR-15` 合规 | 待出卡（设计问题未定，见下） | 阻塞 | GJ-19 | 对抗 | 条件 2（`FR-15` 证据） |
+| GJ-19 · `*.env` 后缀漏判修复与判定基线锚定 | [GJ-19](../collab/tasks/GJ-19.md) | ✅ 已验收合入（终审 [#100](../collab/channel.md)） | 无 | 对抗 | 条件 3 前置（GJ-16B 重跑） |
+| GJ-20 · 敏感文件排除的 `FR-15` 合规 | 待出卡（设计问题未定，见下） | 阻塞(设计问题未定,非任务依赖) | 无(GJ-19 已合入) | 对抗 | 条件 2（`FR-15` 证据） |
 | GJ-21 · ignore 来源枚举不完整 | 待出卡 | 挂账 | GJ-18 | 对抗 | 条件 3 前置 |
 
 GJ-18 源于信道 [#69](../collab/channel.md) 与 [#73](../collab/channel.md) 裁决：`IgnoreMatcher.matches()` 缺少多段路径模式的前缀匹配规则，多段目录模式只匹配目录自身、不匹配后代；`_iter_project_files` 无目录剪枝故无兜底；该失效不触发任何 ScanIssue，违反 GJ-05 的「近似必须可见」。静默失效模式数经两轮核算：SliverShield **14 条**（复核确认无一被 `HARD_EXCLUDED_DIRECTORIES` 兜住）、CodeRoute 0 条、GoodJob 本仓 **1 条**（`prototypes/dashboard/out/`）。**出卡侧更正**：初次统计称本仓 2 条并引「`node_modules` 下 174 个文件会进证据」为例，该说法不成立——`node_modules` 在硬排除集合中，`_iter_project_files` 在目录层即不下钻，其文件永远到不了 `IgnoreMatcher`。Implementer 以信道 [#83](../collab/channel.md) L1 停工指出，并实测本仓真正泄入 `source_artifacts` 的为 **1 个文件**（`prototypes/dashboard/out/dashboard.html`）。根因是测出失效模式后未核上游是否已有兜底，把一个环节的观测当成全链路结论；GJ-18 的 D5 已按 [#85](../collab/channel.md) 裁决重写。本轮 SliverShield 后果为 5 个生成文件进入 `source_revisions`、产生 8 条 Evidence、**支撑 0 条 Claim**，故 Claim 层未污染、两份 ArtifactSnapshot 不作废。
@@ -256,13 +256,15 @@ GJ-19 源于同一轮调查的独立发现（[#73 七](../collab/channel.md)）�
 
 GJ-19 经 Reviewer 预审（信道 [#81](../collab/channel.md)）**四项发现全部成立，卡面已大幅收窄**，裁决见 [#84](../collab/channel.md)。删除的三条契约各自的病因：「成员来源」把"生态惯例"列为可接受来源，而它没有发布者、定位与版本，与同一契约禁止的"凭经验补几个"无法机械区分；「排除可见」与权威 `FR-15` 冲突，且按 `FR-15` 实现必然超出卡面允许范围，按计数实现则在生产代码零改动下即可通过——是**出卡侧造出的假绿出口**；「假阴性优先」对一个只接收 filename 的纯函数给了判定方向却没有判定域，实为把安全分类权下放给 Implementer。收窄后本卡只做已证实的 `.env` 后缀成员，另加独立 oracle 与四项变异门槛。
 
+**GJ-19 已于 [#100](../collab/channel.md) 终审通过并合入**。初审（[#98](../collab/channel.md)）之外终审独立重做了全部五步，未采信任何一个报告数字：`_is_sensitive` 基线源码逐字重新转录核对 25 项 oracle（精确名 1、名字集合 20、后缀代表 4）零遗漏零多余；独立复现 D3.3（移除 `lower()`）与 D4（插入 `startswith("secret")`）两项变异，失败用例集合与交付报告逐字一致；独立构造含背景事故文件名 `flutter_native_integration.env` 在内的 12 个真实路径直接调用生产函数验证。三项契约（oracle 独立冻结、四类规则各自大小写变体、阴性样本覆盖）均实测成立，无实施发现。
+
 **GJ-20 待出卡，三个设计问题未定，定完再写卡**（仓促出卡正是本轮 GJ-19 四项缺陷的共同来源）：
 
 1. **`FR-15` 六类的实际合规面**——`FR-15` 列举权限不足、仓库损坏、无法识别项目、语言不支持、敏感文件排除、单个模块读取失败共六类，出卡前须**逐条核对现码是否已产生合规 ScanIssue**，不得只按本轮撞见的"敏感文件排除"一类出卡（门禁 9）；
 2. **路径披露粒度**——敏感文件的路径本身可能即是敏感信息（如 `deploy/prod-aws-root.key`）。`FR-15` 要求"路径/范围"，须裁定何时给完整路径、何时只给范围，并与发布条件 5 对齐；
-3. **消费点范围**——`_is_sensitive` 有两个消费方向，`scanner.py:1579` 工作树索引与 `scanner.py:236` `_safe_history_path`。后者过滤 Git 历史路径，逐条产生 ScanIssue 可能产生数量级噪声；须裁定是否纳入、以及如何聚合。
+3. **消费点范围**——`_is_sensitive` 有两个消费方向（以 `grep -rn "_is_sensitive" runtime/src/goodjob/` 与 `grep -rn "_safe_history_path" runtime/src/goodjob/` 的实际输出为准，不写行号字面量，理由见 [architect.md 门禁 8](../collab/architect.md)）：工作树索引过滤与 `_safe_history_path` 注入的历史路径过滤。后者过滤 Git 历史路径，逐条产生 ScanIssue 可能产生数量级噪声；须裁定是否纳入、以及如何聚合。
 
-GJ-16B 在 GJ-18、GJ-19 合入前维持停工；其 ArtifactSnapshot 现场已由 Implementer 持久另存至 `~/.codex/goodjob-career-review/acceptance/GJ-16B-2026-08-06/`（信道 #74），作为修复后前后对比基准。
+**GJ-16B 的停工条件（GJ-18、GJ-19 均合入）已满足，解锁重跑**；其 ArtifactSnapshot 现场已由 Implementer 持久另存至 `~/.codex/goodjob-career-review/acceptance/GJ-16B-2026-08-06/`（信道 #74），作为修复后前后对比基准。重跑前须先按 [architect.md 门禁 11](../collab/architect.md) 固定语料——旧现场基线与当前主干已相隔两轮合入，不可直接比较，需给出新的同 HEAD 前后对比方案再出卡/复工。
 
 ### Owner 决策与人工门
 
