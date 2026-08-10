@@ -1,6 +1,6 @@
 # 任务卡 GJ-16B：CodeRoute / SliverShield 真实工作区只读验收
 
-- 状态：待领取（复工，见「复工说明」；GJ-16A / GJ-18 / GJ-19 前置均已合入；复工卡面经 [#103](../channel.md) 预审二次修订） ｜ 实现：Sol-Impl ｜ 出卡/评审：Sol，复工修订：Architect（Claude Opus 5）
+- 状态：**✅ 已验收合入（终审 [#112](../channel.md)）** ｜ 实现：glm-plus（派卡对象为 Sol-Impl，实际执行人切换未在信道说明，见 [#112](../channel.md) 待回应） ｜ 出卡/评审：Sol，复工修订：Architect（Claude Opus 5）
 - 对应 backlog：里程碑 M2 · 批次 G · GJ-16B
 - 前置任务：GJ-16A 已通过信道 #62 验收并以 merge `b7be588` 合入，`IMP-03` 证据裁定已完成
 - 分支：`task/GJ-16B-real-workspace-readonly-acceptance`，仅在后续派卡消息指定基线后创建

@@ -222,7 +222,7 @@ GJ-14 与 GJ-15 在 GJ-13 后技术上可并行；单 Implementer 模式下一�
 | GJ-14 · 合成工作区全链路验收 | [GJ-14](../collab/tasks/GJ-14.md) | ✅ 已验收合入（信道 #58，merge `5aa2504`） | GJ-13 | 对抗 | 条件 2；条件 3 前置 |
 | GJ-15 · 看板机检缺口闭合 | [GJ-15](../collab/tasks/GJ-15.md) | ✅ 已验收合入（信道 #52，merge `319ccd6`） | GJ-13 | 对抗 | 条件 4 机检部分 |
 | GJ-16A · 多工作树合成证据补齐 | [GJ-16A](../collab/tasks/GJ-16A.md) | ✅ 已验收合入（信道 #62，merge `b7be588`） | GJ-14、GJ-15、OWN-01 | 对抗 | 条件 2；条件 3 前置 |
-| GJ-16B · CodeRoute/SliverShield 真实只读验收 | [GJ-16B](../collab/tasks/GJ-16B.md) | 🟡 GJ-23 已合入，待三次复工 | GJ-16A、GJ-23 已合入 | 对抗 | 条件 3；Owner 视觉输入 |
+| GJ-16B · CodeRoute/SliverShield 真实只读验收 | [GJ-16B](../collab/tasks/GJ-16B.md) | ✅ 已验收合入（终审 [#112](../collab/channel.md)） | GJ-16A、GJ-18、GJ-19、GJ-23 均已合入 | 对抗 | 条件 3 满足；Owner 视觉输入待 `OWN-03` |
 | GJ-17 · 隔离安装副本与报告契约复现 | 待前置完成后出卡 | 阻塞 | GJ-16B、Owner 文档/视觉核对 | 对抗 | 条件 6；发布候选收口 |
 
 GJ-13 验收裁决要点（信道 #43）：证据账本按上游动态提取并覆盖 28 个 `IMP` 与 12 个 `DASH`，当前结论为 `IMP = verified 1 / partial 27`、`DASH = partial 10 / missing 2`。首轮验收将缺少完整快照不可变与中断状态转换断言的 `IMP-17` 从 `verified` 退回为 `partial`，修订后独立发布门禁全绿并合入。#40 的 L2“全绿测试不等于完整发布实证”成立，缺口归宿以账本逐行为准：先由 GJ-15 闭合两个 `missing` 看板语义，再按账本最小目标规划 GJ-14，不把全部 `partial` 塞入一张卡。
@@ -236,6 +236,8 @@ GJ-14 由 Architect 在信道 #54 正式派发；#55 发现 JD 持久化断言�
 GJ-16A 由 Architect 在信道 #60 正式派发，候选 `8f05c43` 于 #62 通过对抗档验收并以 `b7be588` 合入：真实 Git 三工作树联合证明 branch/HEAD/dirty、等价内容单次分析与全部来源、分支独有 Evidence 隔离、module/project 提升边界、精确 worktree scope 及冻结 provenance。独立聚焦节点为 `7 passed`，完整门禁为 184 个 Python 测试与 Chromium/WebKit `152/152`；账本只闭合上述子句，`IMP-03` 因全部非法 external config/candidate 组合仍缺证据而保持 `partial`。GJ-16B 前置现已满足。
 
 GJ-16B 因 `IgnoreMatcher`/`_is_sensitive` 两项缺陷于 #73 停工，GJ-18/GJ-19 合入后经 #104 二次修订复工。复工第一次真实扫描（CodeRoute）即撞出第三个缺陷（信道 [#106](../collab/channel.md) L1）：未跟踪的 `.agent_context/.../CodeRoute.app/...` 应用打包产物内部资源被建成 `SourceRevision`/`Evidence`，违反"生成/依赖目录不得进入证据链"判据。根因是 `HARD_EXCLUDED_DIRECTORIES` 目录名精确匹配清单未覆盖应用打包产物这一类生成物格式，与 GJ-18/GJ-21 不同源但同属"排除机制是封闭枚举"这个更大模式。已按 L1 出卡 GJ-23，不合并进 GJ-16B（验收卡内不顺手修）。**GJ-23 已于 [#109](../collab/channel.md) 终审通过并合入**：新增路径段后缀匹配（`.app`/`.framework`/`.xcarchive`）与现有精确匹配并存，三个消费点（`_safe_history_path`/`_walk_directories`/`_iter_project_files`）同时接入，`.aab`/`.ipa` 顺带补入 `BINARY_ASSET_EXTENSIONS`。终审独立复现变异测试（15 红/7 绿，与报告一致）、额外做了 12 个报告未覆盖的边界探测与一次 5000 文件规模的剪枝性能验证（0.018 秒、零泄漏），零发现。**本卡首次由 Implementer（`glm-plus`）交付**，非 Sol-Impl；验收标准未因执行者不同而调整。GJ-16B 现从 CodeRoute 完整流程第三次重新开始（不复用此前已产生的 ScanRun/PreparationRun）；GJ-22（开源前脱敏审计）与本次停工无关，Implementer（Sol-Impl）全程未受影响。
+
+**GJ-16B 第三次复工已于 [#112](../collab/channel.md) 终审通过并合入**，两个 Owner 指定真实工作区（CodeRoute、SliverShield）各自完整走完 Skill 只读流程，CodeRoute 三项、SliverShield 四项判据全部 pass，GJ-23 修复在真实工作区上验证为 0 `.app` 路径进入证据。终审独立复核不满足于交付报告数字：亲自重跑 gate-release（278 测试 + 152 浏览器核对 + mypy/ruff/doc-links/uv build 全绿，与报告逐字段一致）；直接读临时 data directory 的原始 JSON/txt（非报告转述）核对 claim/evidence/gap 计数、drift 行数、排除分类计数；自行重算全部 6 个产物文件的 SHA-256 与 manifest 比对一致；额外读 `git_metadata.py` 源码确认只读证明属"结构上不可能写"而非"这次没写"。**唯一未能坐实的一点**：runtime 的排除计数按类别汇总、不落具体路径，是否有真实 `.app` 内容被 GJ-23 机制命中无法在不违反"不碰真实工作区""不做前后基线对比"两条既有纪律的前提下证实到底，判定为当前隐私设计下的验证天花板，不计缺陷。交付人（`glm-plus`）与派卡对象（Sol-Impl）不一致且信道无交接说明，已在 #112 要求 Sol-Impl 补充；不影响本次验收结论。临时 data directory 保留至 `OWN-03` 完成本轮新产物的视觉核对。**GJ-16B 前后共停工三次**（GJ-18/GJ-19 缺陷组合、Sol 预审揪出的复工卡面设计缺陷、GJ-23 缺陷各一次），三次原因互不相同，均按「验收卡内不顺手修」原则另开卡处理，未合并掩盖。
 
 ### 批次 H · 证据完整性缺陷修复
 
@@ -267,7 +269,7 @@ GJ-19 经 Reviewer 预审（信道 [#81](../collab/channel.md)）**四项发现�
 2. **路径披露粒度**——敏感文件的路径本身可能即是敏感信息（如 `deploy/prod-aws-root.key`）。`FR-15` 要求"路径/范围"，须裁定何时给完整路径、何时只给范围，并与发布条件 5 对齐；
 3. **消费点范围**——`_is_sensitive` 有两个消费方向（以 `grep -rn "_is_sensitive" runtime/src/goodjob/` 与 `grep -rn "_safe_history_path" runtime/src/goodjob/` 的实际输出为准，不写行号字面量，理由见 [architect.md 门禁 8](../collab/architect.md)）：工作树索引过滤与 `_safe_history_path` 注入的历史路径过滤。后者过滤 Git 历史路径，逐条产生 ScanIssue 可能产生数量级噪声；须裁定是否纳入、以及如何聚合。
 
-**GJ-16B 的停工条件（GJ-18、GJ-19 均合入）已满足，解锁重跑**；其 ArtifactSnapshot 现场已由 Implementer 持久另存至 `~/.codex/goodjob-career-review/acceptance/GJ-16B-2026-08-06/`（信道 #74），作为修复后前后对比基准。重跑前须先按 [architect.md 门禁 11](../collab/architect.md) 固定语料——旧现场基线与当前主干已相隔两轮合入，不可直接比较，需给出新的同 HEAD 前后对比方案再出卡/复工。
+**（历史记录，方案已废弃）** GJ-16B 复工筹备阶段最初计划把 2026-08-06 旧现场（`~/.codex/goodjob-career-review/acceptance/GJ-16B-2026-08-06/`，信道 #74）作为修复后前后对比基准。Sol 预审（[#103](../collab/channel.md)）指出该现场的 `manifest.json` 未记录 CodeRoute/SliverShield 自身的 canonical root/branch/HEAD，`git status --porcelain` 的 untracked 行也不含内容哈希，语料不可控——按 [architect.md 门禁 11](../collab/architect.md) 做不到语料受控就不能声称对比结论。裁决（[#104](../collab/channel.md)）采纳并整张放弃"前后对比"设计，复工卡面改为每次扫描独立判定 pass/fail、不新建也不另存任何供未来复跑使用的基准。**GJ-16B 最终于 [#112](../collab/channel.md) 按此设计终审通过**，详见上方批次 G 段落。
 
 ### Owner 决策与人工门
 
