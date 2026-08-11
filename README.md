@@ -87,7 +87,7 @@ mv "$goodjob_stage" "$goodjob_target"
 ```text
 $goodjob-career-review
 
-工作区：/Users/damien/Projects
+工作区：/Users/<owner>/Projects
 目标岗位：高级应用软件工程师
 JD：无
 请扫描并生成中文岗位准备包。
@@ -98,10 +98,10 @@ JD：无
 ```text
 $goodjob-career-review
 
-工作区：/Users/damien/Projects
+工作区：/Users/<owner>/Projects
 目标岗位：中间件工程师
 职级：高级
-JD 文件：/Users/damien/Documents/jobs/middleware-engineer.md
+JD 文件：/Users/<owner>/Documents/jobs/middleware-engineer.md
 请优先分析分布式通信、可靠性、性能、可观测性和工程化证据。
 ```
 
