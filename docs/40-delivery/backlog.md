@@ -301,7 +301,7 @@ GJ-19 经 Reviewer 预审（信道 [#81](../collab/channel.md)）**四项发现�
 
 | 任务 | 卡面 | 状态 | 前置 | 验收强度 |
 | --- | --- | --- | --- | --- |
-| GJ-22 · 开源前脱敏审计 | [GJ-22](../collab/tasks/GJ-22.md) | 🟡 三次 L1 均已裁决，复工中（维度 4） | 无 | 对抗 |
+| GJ-22 · 开源前脱敏审计 | [GJ-22](../collab/tasks/GJ-22.md) | ✅ 已验收合入（终审 [#123](../collab/channel.md)） | 无 | 对抗 |
 
 Architect 已做一轮机械扫描（全历史 `git rev-list --all`，非仅当前 `main`）：私钥头/AWS 与 GitHub token 格式/通用 `secret=` 赋值模式均无命中；全历史 114 个曾出现过的文件名中无 `.env`/`credentials`/`id_rsa`/`*.pem`/`*.sqlite3` 等敏感文件；全部 8 条非 `main` 分支相对 `main` 的 diff 为空（早已合并，无孤立内容）；`prototypes/dashboard/fixture/report-bundle.json` 为合成测试数据；`.gitignore` 覆盖常规缓存/构建目录。**确认发现一项**：全部 120 次提交的 author/committer 均为 `lc.jin <lc.jin@invo.cn>`，公开后逐条提交、GitHub 贡献者信息均会暴露这一真实身份标识。**出卡侧疏漏**：披露这一发现时，Architect 把该身份原文写进了本节与 [#105](../collab/channel.md) 派卡消息正文，本身即违反 GJ-22 自己的"零原文"契约。
 
@@ -310,6 +310,8 @@ Architect 已做一轮机械扫描（全历史 `git rev-list --all`，非仅当�
 **GJ-22 复工后于 [#116](../collab/channel.md) 触发第二次 L1**：Sol-Impl 通读维度 4 过程中发现仓库正文（README、`protocol.md`、`implementer-bootstrap.md`、任务卡、`channel.md`、`real-workspace-acceptance.md` 共 7 个文件、15 行、19 处实例）保存了真实 macOS 绝对路径，路径中的本机用户目录段是与 `lc.jin` 不同的另一条身份线索；全历史 8 个可达 commit，最早 2026-07-24。Architect 独立复核（重新扫描 + `git log --all -S`）与 Sol-Impl 数字完全一致。裁决前 Owner 先提出是否应把 `docs/collab/` 整体移出公开仓库历史，与 Architect 讨论确认 GitHub 可见性是仓库级、"同仓库建干净分支"无法真正隔离完整历史后，**放弃仓库结构重组**。落入 [#117](../collab/channel.md) 的最终裁决：`docs/collab/` 内的 8 处实例保留不处理（协作过程记录的一部分）；`README.md`/`real-workspace-acceptance.md` 的 7 处实例判定为面向公开访客的内容，单独替换为占位符 `/Users/<owner>/...`（commit `d72752f`）。GJ-22 契约 3 新增第二条附则固化这一裁定，GJ-22 复工，从维度 4 继续。
 
 **GJ-22 复工后于 [#118](../collab/channel.md) 触发第三次 L1**：Sol-Impl 补查全部 ref 历史 blob，发现同一条本机路径线索还出现在 `docs/40-delivery/acceptance-baseline.md` 的历史版本（commit `25b7b93b` 引入、`4c61aebee` 移除，当前工作树零命中，148 个可达 commit 中 91 个历史快照包含）；该文件不在 [#117](../collab/channel.md) 精确列举的白名单内，Sol-Impl 未自行并入，按矩停工上报。Architect 独立复核（`-S` 定点搜索 + 148 个 commit 逐一 `git show | grep`）数字完全一致。因当前文件已干净，唯一能消除该历史实例的手段是历史改写——而 Owner 已在 #117 明确放弃任何形式的历史改写；[#119](../collab/channel.md) 裁决：该历史实例援引 #117 同一理由，保留不处理，纳入契约 3 附则二白名单。GJ-22 复工，从维度 4 继续（第三次，当前已知范围内最后一次因本机路径线索停工）。
+
+**GJ-22 于 [#120](../collab/channel.md) 交付**：新增 [open-source-desensitization-audit.md](open-source-desensitization-audit.md)，固定 `audit_subject_head=5af1413`（149 个可达 commit、118 个历史路径、476 个唯一 blob），六维结论为密钥/凭据⚪、PII⚪（例外范围严格等于 #115/#117/#119 精确裁定）、真实扫描内容⚪、叙事文档⚪（7,153 行人工通读）、全部 branch/ref⚪、`.gitignore` 前瞻性防护🟡。总体建议**有条件建议开源**。Reviewer（本轮由 glm-plus 代行）于 [#122](../collab/channel.md) 完成对抗档初审，独立复核 D1-D6 与六维度数字全部通过，提出两项不阻塞的透明度/精度改进建议。Architect 于 [#123](../collab/channel.md) 终审：独立重验 commit 计数、报告零原文自证、`.gitignore` 判定与契约 4（本卡零 runtime/schema/前端改动）后 PASS，两项 Reviewer 建议留待报告下次因"最终候选 SHA 重跑"而重新生成时一并纳入，不为此单开修订轮。**GJ-22 到此验收合入**；是否切换仓库为 public、是否执行报告 §5 的三项前置条件（补窄 `.gitignore`、确认 data directory 在仓库外、以最终候选 SHA 重跑），留待 Owner 后续决定，需要时另立任务卡。
 
 ## 已完成
 
