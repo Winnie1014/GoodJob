@@ -24,8 +24,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| Owner 指定根 | `/Users/damien/Projects/CodeRoute` |
-| Canonical root | `/Users/damien/Projects/CodeRoute` |
+| Owner 指定根 | `/Users/<owner>/Projects/CodeRoute` |
+| Canonical root | `/Users/<owner>/Projects/CodeRoute` |
 | Branch | `task/T6.14-content-manifest-crlf-fix` |
 | HEAD | `0fef5965a3f9c4a93becd5d6a0c8a3c41bf0f0d4` |
 
@@ -114,8 +114,8 @@ Evidence kind 分布：implementation 60、test_definition 40、technology_usage
 
 | 项 | 值 |
 | --- | --- |
-| Owner 指定根 | `/Users/damien/Projects/SliverShield` |
-| Canonical root | `/Users/damien/Projects/SliverShield` |
+| Owner 指定根 | `/Users/<owner>/Projects/SliverShield` |
+| Canonical root | `/Users/<owner>/Projects/SliverShield` |
 | Branch | `main` |
 | HEAD | `e06fc9bcd3b4a288eee19cd50c9ef1bce52a7199` |
 
