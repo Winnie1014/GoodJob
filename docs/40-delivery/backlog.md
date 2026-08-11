@@ -301,11 +301,13 @@ GJ-19 经 Reviewer 预审（信道 [#81](../collab/channel.md)）**四项发现�
 
 | 任务 | 卡面 | 状态 | 前置 | 验收强度 |
 | --- | --- | --- | --- | --- |
-| GJ-22 · 开源前脱敏审计 | [GJ-22](../collab/tasks/GJ-22.md) | 🟡 L1 已裁决，复工中 | 无 | 对抗 |
+| GJ-22 · 开源前脱敏审计 | [GJ-22](../collab/tasks/GJ-22.md) | 🟡 两次 L1 均已裁决，复工中（维度 4） | 无 | 对抗 |
 
 Architect 已做一轮机械扫描（全历史 `git rev-list --all`，非仅当前 `main`）：私钥头/AWS 与 GitHub token 格式/通用 `secret=` 赋值模式均无命中；全历史 114 个曾出现过的文件名中无 `.env`/`credentials`/`id_rsa`/`*.pem`/`*.sqlite3` 等敏感文件；全部 8 条非 `main` 分支相对 `main` 的 diff 为空（早已合并，无孤立内容）；`prototypes/dashboard/fixture/report-bundle.json` 为合成测试数据；`.gitignore` 覆盖常规缓存/构建目录。**确认发现一项**：全部 120 次提交的 author/committer 均为 `lc.jin <lc.jin@invo.cn>`，公开后逐条提交、GitHub 贡献者信息均会暴露这一真实身份标识。**出卡侧疏漏**：披露这一发现时，Architect 把该身份原文写进了本节与 [#105](../collab/channel.md) 派卡消息正文，本身即违反 GJ-22 自己的"零原文"契约。
 
 **GJ-22 于 [#114](../collab/channel.md) 触发 L1**：Sol-Impl 独立复核维度 2，142/142 commit author/committer 同一真实身份，且同一身份已被既有派卡消息原文写入仓库正文（`channel.md:3406`，即上一段落的出卡侧疏漏）——按契约 3 判红，立即停工上报，未自行处置。**Owner 已在对话中直接裁定：该身份同意作为本项目公开署名**（仓库当前为 private，最后一次 push 于 2026-08-02，此前未曾公开暴露）。裁决落入 [#115](../collab/channel.md)：GJ-22 契约 3 新增附则，该身份改判⚪已核查确认（例外仅适用于这一个身份，其余 PII 仍按原判据走 🔴），GJ-22 复工，从维度 2 之后继续。
+
+**GJ-22 复工后于 [#116](../collab/channel.md) 触发第二次 L1**：Sol-Impl 通读维度 4 过程中发现仓库正文（README、`protocol.md`、`implementer-bootstrap.md`、任务卡、`channel.md`、`real-workspace-acceptance.md` 共 7 个文件、15 行、19 处实例）保存了真实 macOS 绝对路径，路径中的本机用户目录段是与 `lc.jin` 不同的另一条身份线索；全历史 8 个可达 commit，最早 2026-07-24。Architect 独立复核（重新扫描 + `git log --all -S`）与 Sol-Impl 数字完全一致。裁决前 Owner 先提出是否应把 `docs/collab/` 整体移出公开仓库历史，与 Architect 讨论确认 GitHub 可见性是仓库级、"同仓库建干净分支"无法真正隔离完整历史后，**放弃仓库结构重组**。落入 [#117](../collab/channel.md) 的最终裁决：`docs/collab/` 内的 8 处实例保留不处理（协作过程记录的一部分）；`README.md`/`real-workspace-acceptance.md` 的 7 处实例判定为面向公开访客的内容，单独替换为占位符 `/Users/<owner>/...`（commit `d72752f`）。GJ-22 契约 3 新增第二条附则固化这一裁定，GJ-22 复工，从维度 4 继续。
 
 ## 已完成
 
