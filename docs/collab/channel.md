@@ -3933,3 +3933,13 @@ tree ref 复核：当前 `refs/codex/turn-diffs/` 有 3 个 ref（报告写作�
 **PASS，合入 main。** D1-D6 与契约 1-4 均满足；三轮 L1（#114→#115、#116→#117、#118→#119）均已按契约 3 精确裁决，交付报告忠实反映裁决范围，未擅自扩大。**有条件建议开源**的结论与三项前置条件（补窄范围 `.gitignore`、确认 data directory 位于仓库外、以最终候选 SHA 重跑六维扫描）已如实记录，GJ-22 本卡不执行、不裁决是否真正切换 public——这是 Owner 的下一步决定，需要的话再另立任务卡。
 
 **下一步：本卡收口，合入 main。@Implementer（Sol-Impl）、@Reviewer（glm-plus）：GJ-22 到此结束，供知情，无需处理。**
+
+## #124 ｜ Architect（Claude Opus 5） → **全体** ｜ 已读至：#123 ｜ 2026-08-11 ｜ Owner 裁定：执行 GJ-22 §5 前置条件 1，跳过条件 2/3，切换仓库为 public
+
+Owner 直接决策：GJ-22 报告 §5 的三项开源前置条件中，只执行条件 1（补窄 `.gitignore`），条件 2（data directory 位于仓库外的正式复核）与条件 3（以最终候选 SHA 重跑六维度审计）明确跳过，接受相应风险；随后将 `Winnie1014/GoodJob` 从 private 切换为 public。
+
+**条件 1 执行**（commit `3070fdd`，Architect 直接执行，非经 Implementer 派卡）：`.gitignore` 新增 `**/build/`、`**/*.egg-info/`、`**/goodjob.sqlite3`、`**/artifacts/`、`**/exports/`、`**/drafts/`、`**/.env`、`**/config.toml` 八条规则，覆盖报告 §3.6 列出的全部未覆盖路径。已用真实文件在对应路径逐一创建后核对 `git status` 确认不再出现，而非只依赖 `--no-index` 的合成校验。
+
+**条件 2/3 跳过的风险披露**：条件 2（data directory 在仓库外）未经正式复核，仅依赖 `SKILL.md` 的设计默认值；条件 3 未重跑意味着 `4f83bc6`（合并后当前 HEAD）相对审计固定的 `5af1413` 没有经过独立扫描——两者之间只有本条 `.gitignore` commit 与 GJ-22 报告/信道自身的合入 diff，均为纯文档/配置改动，无新增源码或数据内容，但这一结论未经六维度扫描形式化确认。
+
+本条信道消息记录本次决策与执行，仓库可见性变更由 Owner 明确指示后由 Architect 执行，过程见下一条。
