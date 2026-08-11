@@ -6,6 +6,16 @@
 **/__pycache__/
 *.py[cod]
 
+# 运行时 data directory 若被误指向仓库内会产生的产物（GJ-22 §3.6/§5 前置条件 1）
+**/build/
+**/*.egg-info/
+**/goodjob.sqlite3
+**/artifacts/
+**/exports/
+**/drafts/
+**/.env
+**/config.toml
+
 # 看板原型构建产物（由 prototypes/dashboard/build.py 生成）
 prototypes/dashboard/out/
 prototypes/dashboard/node_modules/
