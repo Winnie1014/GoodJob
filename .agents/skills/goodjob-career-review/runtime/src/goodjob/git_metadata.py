@@ -7,7 +7,6 @@ import selectors
 import signal
 import stat
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -18,6 +17,8 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, cast
 
 from goodjob.errors import InvalidInputError
+from goodjob.platform import select_git_sandbox
+from goodjob.platform.detect import resolve_git_executable
 from goodjob.source_io import MAX_SOURCE_FILE_BYTES, open_regular_file, read_open_file
 
 if TYPE_CHECKING:
@@ -42,37 +43,7 @@ MAX_GIT_COMMAND_BYTES = 8 * 1024 * 1024
 
 MAX_HISTORY_FIELD_BYTES = 512
 
-GIT_EXECUTABLE_CANDIDATES = (
-    Path("/Applications/Xcode.app/Contents/Developer/usr/bin/git"),
-    Path("/Library/Developer/CommandLineTools/usr/bin/git"),
-    Path("/usr/bin/git"),
-    Path("/bin/git"),
-)
-
-GIT_EXECUTABLE = next(
-    (str(candidate) for candidate in GIT_EXECUTABLE_CANDIDATES if candidate.is_file()),
-    "/usr/bin/git",
-)
-
-SANDBOX_EXECUTABLE = Path("/usr/bin/sandbox-exec")
-
-GIT_SANDBOX_PROFILE = " ".join(
-    (
-        "(version 1)",
-        '(import "system.sb")',
-        "(deny default)",
-        "(deny network*)",
-        '(allow process-exec (literal (param "GIT_EXECUTABLE")))',
-        "(allow process-fork)",
-        "("
-        "allow file-read* file-test-existence file-map-executable "
-        '(subpath (param "AUTHORIZED_ROOT")) '
-        '(literal (param "GIT_EXECUTABLE"))'
-        ")",
-        '(allow file-read-metadata file-test-existence (path-ancestors (param "AUTHORIZED_ROOT")))',
-        '(allow file-write-data (literal "/dev/null"))',
-    )
-)
+GIT_EXECUTABLE = resolve_git_executable()
 
 GIT_ENV = {
     "PATH": "/usr/bin:/bin",
@@ -1177,10 +1148,8 @@ class GitMetadataReader:
         binding: InternalGitBinding,
         arguments: tuple[str, ...],
     ) -> list[str]:
-        if sys.platform != "darwin" or not SANDBOX_EXECUTABLE.is_file():
-            raise OSError("a supported local Git filesystem sandbox is unavailable")
-        git_command = [
-            self._git_executable,
+        sandbox = select_git_sandbox(self._git_executable)
+        git_args = [
             "--no-lazy-fetch",
             "--no-replace-objects",
             f"--git-dir={binding.git_dir}",
@@ -1194,16 +1163,7 @@ class GitMetadataReader:
             "--no-pager",
             *arguments,
         ]
-        return [
-            str(SANDBOX_EXECUTABLE),
-            "-p",
-            GIT_SANDBOX_PROFILE,
-            "-D",
-            f"AUTHORIZED_ROOT={binding.workspace_root}",
-            "-D",
-            f"GIT_EXECUTABLE={self._git_executable}",
-            *git_command,
-        ]
+        return sandbox.build_command(self._git_executable, binding, git_args)
 
     @staticmethod
     def _open_bound_git_directory(

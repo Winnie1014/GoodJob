@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
 _PROCESS_ENV = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"}
 
@@ -27,6 +28,14 @@ def is_recoverable_process_identity(identity: str) -> bool:
 
 
 def process_start_marker(pid: int) -> str | None:
+    if sys.platform == "darwin":
+        return _macos_start_marker(pid)
+    if sys.platform.startswith("linux"):
+        return _linux_start_marker(pid)
+    raise OSError(f"process identity is not supported on platform: {sys.platform}")
+
+
+def _macos_start_marker(pid: int) -> str | None:
     result = subprocess.run(
         ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
         check=False,
@@ -38,6 +47,43 @@ def process_start_marker(pid: int) -> str | None:
     )
     marker = result.stdout.strip()
     return marker if result.returncode == 0 and marker else None
+
+
+def _linux_start_marker(pid: int) -> str | None:
+    try:
+        raw = (f"/proc/{pid}/stat").encode("ascii")
+        fd = os.open(raw, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    try:
+        content = b""
+        while True:
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break
+            content += chunk
+            if len(content) > 65536:
+                return None
+    finally:
+        os.close(fd)
+    try:
+        decoded = content.decode("utf-8", errors="replace")
+    except UnicodeDecodeError:
+        return None
+    right_paren = decoded.rfind(")")
+    if right_paren == -1:
+        return None
+    fields = decoded[right_paren + 2 :].split()
+    if len(fields) < 20:
+        return None
+    starttime = fields[19]
+    try:
+        int(starttime)
+    except ValueError:
+        return None
+    return starttime
 
 
 def owner_process_stopped(identity: str) -> bool:

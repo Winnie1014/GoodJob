@@ -60,6 +60,7 @@
 | D-042 | 看板呈现顺序与只读出口 | 总览首屏固定 `L0→L4`，覆盖限制与降级先于叙事；看板不提供写状态控件，只给可复制的 Skill 调用出口 | [看板呈现契约](../20-architecture/dashboard-design.md) |
 | D-043 | 校验与门禁的判定层级 | 对结构化数据的校验必须按结构判定：token 序列的散文级规则只作用于 `text`/`emphasis`，入口文档的属性检查不作用于内联数据区。禁止先扁平化成字符串再模式匹配；任何门禁必须在任意真实用户内容下成立 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[证据模型](../20-architecture/evidence-model.md)、[看板呈现契约](../20-architecture/dashboard-design.md) |
 | D-044 | 呈现层动态几何与行为验收 | 呈现层禁用全部 `.style` 运行时写入，动态几何用内联 SVG 几何属性配合整数 `viewBox`；看板行为由跨 Chromium/WebKit 的真实文档核对验收，并以「注入 `style` 属性必须触发违规」为阳性对照，不以源码字符串匹配代替行为断言 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[看板呈现契约](../20-architecture/dashboard-design.md)、[验收基线](../40-delivery/acceptance-baseline.md) |
+| D-045 | 跨平台运行时安全 | macOS 与 Linux（含 WSL2）使用等价的 Git 沙箱后端（sandbox-exec / bwrap）与进程身份（BSD ps / /proc）；任一后端不可用时 fail-closed，不回退到无沙箱。ADR-0009 部分替代 ADR-0001/ADR-0006 的 macOS-only 平台限定 | [ADR-0009](adrs/ADR-0009-cross-platform-runtime-security.md) |
 
 ## 明确的非首版能力
 

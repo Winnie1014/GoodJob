@@ -45,6 +45,7 @@
 | FR-13 | IMP-16、IMP-27 |
 | FR-14 | IMP-19、IMP-25、IMP-28 |
 | FR-15 | IMP-20、IMP-28 |
+| FR-16、NFR-09 | IMP-29 |
 | NFR-01、NFR-02 | IMP-05、IMP-07、IMP-12、IMP-21、IMP-23 |
 | NFR-03 | IMP-18、IMP-28 |
 | NFR-04 | IMP-08、IMP-12、IMP-17、IMP-25 |
@@ -85,6 +86,7 @@
 | IMP-26 | 个人数据保留 | 构造多次扫描、快照、英文导出和工作稿，并升级/重装 Skill | 无自动删除/归档；每次 scan/prepare 显示 SQLite/artifacts/exports/drafts 字节数和快照数量；状态完整保留且仓库不含个人数据 |
 | IMP-27 | 英文导出中断恢复 | 候选生成阶段确认零文件；发布阶段同时存在成功导出、未知目录和新 ExportAttempt，分别在写 temp、原子改名后、DB 提交前杀进程，并伪造 PID 复用后重试 | 首次写盘前 attempt 已记录 PID+启动标识；只在确认 owner 消失后标 interrupted；只清理预登记 temp/无 DerivedExport 的 final；不碰成功/未知目录；重试新 attempt，latest 不变 |
 | IMP-28 | 看板呈现与安全边界 | 对同一冻结 `ReportBundle` 执行 `DASH-01` 至 `DASH-12`：断网双击、Chromium/WebKit 双引擎全视图交互、注入语料（含 `style="…"` 片段）、375px 视口、`partial` 首屏、混合时效证据、打印、纯键盘、`forced-colors`/灰度、双快照与跨版本深链、复习三态、Markdown/HTML 逐条比对 | 两个引擎网络面板零请求、控制台零 CSP 违规与零脚本错误，且“注入 `style` 属性触发违规”的阳性对照成立；注入语料全部为文本、无可点击外部链接，且不导致渲染被拒；无横向滚动；`partial` 首屏降级带非空不可折叠；两次交互内到完整证据指针；打印展开全部折叠与 locator；键盘全流程可达；状态在无色通道下仍可辨；跨版本深链明确报错；无写状态控件；Markdown 与 HTML 对同一 Claim 呈现一致 |
+| IMP-29 | 跨平台 Git 沙箱 | macOS 与 Linux（含 WSL2）分别运行完整 scan/prepare 流程；macOS 检查 sandbox-exec 命令结构、Linux 检查 bwrap 命令结构（`--unshare-net`、`--unshare-pid`、`--proc` 顺序、`--ro-bind` 授权根、`--die-with-parent`）；模拟 bwrap/sandbox-exec 不存在时 fail-closed；进程身份在 macOS 用 BSD ps、Linux 用 `/proc` stat | 两平台分别全绿；bwrap `--proc` 在 `--unshare-pid` 之后；沙箱缺失时零 Git 执行且报错明确；同一进程 marker 稳定、PID 重用时 marker 变化；macOS 现有行为零回归 |
 
 ## 4. 真实工作区只读验收
 
@@ -131,7 +133,7 @@ GoodJob 对真实工作区只读是产品级承诺，验收必须逐条证明而
 
 ## 5. 质量与安全门禁
 
-- Python：单元测试、类型检查、lint、格式检查和 SQLite migration 测试全部通过；当前命令以根目录 README 与 runtime manifest 为准，变更时同步更新。
+- Python：单元测试、类型检查、lint、格式检查和 SQLite migration 测试全部通过；当前命令以根目录 README 与 runtime manifest 为准，变更时同步更新。macOS 与 Linux（含 WSL2）均须在真实环境中通过 `make gate`（不是 mock/monkeypatch 替代）；Linux 须安装 bwrap（`dependencies = []` 不破坏--bwrap 是系统二进制，与 sandbox-exec 同性质）。
 - TypeScript 前端：类型检查、lint、单元测试和可复现构建通过；构建产物不得引用远端 CDN、远端字体或同目录静态资源。构建门禁还必须静态检出 `ADR-0008` 决策 6 列出的禁用 API（含 `element.style` 的任何属性赋值），校验 CSP meta 中的哈希与实际内联内容一致，并验证同一 `ReportBundle` 重复渲染产出逐字节相同的入口文件。静态门禁不得以“源码中必须出现某段字符串或某句 UI 文案”代替行为断言（`ADR-0008` 决策 8、`DASH-INV-11`）。
 - 看板行为：在真实渲染产物上跨 Chromium 与 WebKit 各执行一次可机检核对，断言干净加载零控制台错误、零外部请求、多宽度 × 全视图零横向溢出、打印分支生效，并以“注入 `style` 属性必须触发 CSP 违规”为阳性对照。核对脚本随运行时前端一起维护，不以设计原型中的同类脚本充当证据。
 - 门禁的反向用例：至少覆盖一条含 `style=` 的 `code` token 能正常渲染，一条引用命令行片段（如 `rg -i`）的非个人化 Claim 能通过归因校验。二者任一失败即为门禁缺陷。
@@ -146,7 +148,7 @@ GoodJob 对真实工作区只读是产品级承诺，验收必须逐条证明而
 只有同时满足以下条件才允许创建或更新可安装私有版本和用户级安装；仓库中已有代码或文档本身不构成发布：
 
 1. DOC-01 至 DOC-07 已由 Owner 核对；
-2. IMP-01 至 IMP-28 有可复现的本地证据；
+2. IMP-01 至 IMP-29 有可复现的本地证据；
 3. CodeRoute 与 SliverShield 只读验收通过，未通过项均有明确 ScanIssue；
 4. 离线 HTML 已完成视觉验收，且 DASH-01 至 DASH-12 全部通过；
 5. 仓库不存在个人数据、扫描缓存、密钥或真实项目源码副本；

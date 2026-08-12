@@ -1,6 +1,6 @@
 # ADR-0006：Codex 源码分析授权与根外 Git 元数据绑定
 
-> 状态：已接受  
+> 状态：已接受（macOS-only Git 沙箱前提由 [ADR-0009](ADR-0009-cross-platform-runtime-security.md) 扩展为 macOS/Linux 双平台）  
 > 日期：2026-07-24  
 > 权威范围：项目衍生信息进入 Codex 分析前的授权，以及 `.git` 指向授权根外时的最小读取边界  
 > 上游：[产品需求](../../10-product/product-requirements.md)  

@@ -7,7 +7,7 @@
 
 ## 1. 设计摘要
 
-GoodJob 是一个由 Codex 显式调用的个人 Skill，而不是独立桌面应用。Codex 负责理解岗位、读取本地证据、生成叙事与开展访谈；随 Skill 分发的 Python 核心负责确定性的发现、索引、SQLite 持久化和产物编排；预构建的 TypeScript 前端只负责渲染无需服务的离线 HTML 看板。每个显式会话先形成范围级 `AuthorizationReceipt`，它确认 Owner 有权让当前 Codex 会话分析该工作区，但不重新定义 Codex 平台的数据边界。
+GoodJob 是一个由 Codex 显式调用的个人 Skill，而不是独立桌面应用。Codex 负责理解岗位、读取本地证据、生成叙事与开展访谈；随 Skill 分发的 Python 核心负责确定性的发现、索引、SQLite 持久化和产物编排；预构建的 TypeScript 前端只负责渲染无需服务的离线 HTML 看板。每个显式会话先形成范围级 `AuthorizationReceipt`，它确认 Owner 有权让当前 Codex 会话分析该工作区，但不重新定义 Codex 平台的数据边界。运行时支持 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）。
 
 同一份岗位无关证据目录可以被不同 `RoleLens` 重排。源码仍以用户指定工作区内的原文件为事实源；数据库只保存证据指针、哈希、短摘要和结构化结论。版本化 Skill 目录与持续增长的个人数据目录严格分离。
 
@@ -63,7 +63,7 @@ Skill 运行期间不得修改安装目录。升级、重装或删除 Skill 不�
 ### 2.3 进程与网络边界
 
 - Owner 提供的 `workspace_path` 仅定义本机文件范围。`ARCH-C01` 必须先取得当次 `AuthorizationReceipt(source_analysis)`，再让 Codex 或 Python 处理源码、源码衍生证据或既有项目材料；回执拒绝/缺失时不建立新运行。扫描器只可把 `.git` 标记当作不可信候选：先只检查根内标记，再以绑定 marker kind 与精确候选的 `external_git_relation_probe` 回执解析关系和目录身份；解析后展示 git-dir/common-dir、身份与字段并取得精确 `external_git_metadata` 回执。双向绑定通过后也只能用描述符直接读取关系与 HEAD/ref，不得启动外部 Git 或扫描根外项目内容、配置、index/dirty 或历史。
-- Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。
+- Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。Git 子进程在平台原生沙箱中运行：macOS 使用 `sandbox-exec` Seatbelt（拒网络、只读授权根、禁 hooks），Linux 使用 `bwrap`（等价安全语义，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；任一沙箱后端不可用时 fail-closed。
 - SQLite 是唯一结构化持久层。前端不得直接打开或修改 SQLite。
 - 离线 HTML 不请求远端 API、CDN、字体或分析服务，也不通过 `file://` 再读取外部 JSON；报告数据随 HTML 产物内嵌。
 - GoodJob 不引入当前 Codex 会话之外的分析服务、源码上传通道或遥测。Codex 对源码的访问属于当前工作区会话中的直接读取，受该会话既有的数据边界约束；扫描器不额外复制或传输源码。GoodJob 不判断 Owner 的 NDA、版权或组织策略是否允许该会话分析或对外使用材料。
@@ -204,6 +204,7 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 | `FR-14` | `ARCH-C01/C03/C04`、`ARCH-I05`、`ARCH-INV-17` | 结构化复习语义控制连续性；纯文案改写不断档，实质变化重评 |
 | `FR-15` | `ARCH-C02/C05` | 部分失败可继续且覆盖缺口进入产物 |
 | `NFR-01`、`NFR-02` | `ARCH-C01/C02/C03`、`ARCH-INV-02/10/14/15` | task 易失 capability 防跨会话复用；本地最小持久化；根外 Git 不扩张权限 |
+| `FR-16`、`NFR-09` | `ARCH-C02`、`ARCH-INV-10/15` | macOS/Linux 沙箱等价与 fail-closed；平台后端选择器自动选择 |
 | `NFR-03` | `ARCH-C05/C06`、`ARCH-INV-09` | 无服务、无远端依赖、单机离线可读 |
 | `NFR-04`、`NFR-05` | `ARCH-C02/C03/C05`、`ARCH-I10/I11`、`ARCH-INV-16/19` | 快照三阶段校验；运行与英文导出中断均有可归属恢复路径 |
 | `NFR-06` | `ARCH-C01/C03`、`ARCH-INV-01` | Skill 升级不触碰个人状态；首版不自动删除并显示存储用量 |

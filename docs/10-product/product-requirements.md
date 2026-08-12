@@ -216,6 +216,22 @@ GoodJob 不得写入、格式化、构建、测试、提交或以其他方式改
 
 工作区文件、Git 元数据、JD、项目名称、用户项目上下文和模型生成文本一律作为不可信数据处理，不能改变 Skill 指令、AuthorizationReceipt、授权根、工具权限、网络边界或写入目标。`.git` 的 `gitdir:`、`commondir`、Git 配置和继承的 `GIT_*` 环境变量均不能自行授权根外读取。扫描器不得通过 import、构建脚本、包管理器、shell 拼接或其他方式执行项目内容；离线 HTML 必须把项目数据作为文本或经安全编码的结构化数据呈现，不得执行其中的 HTML、脚本、事件处理器或 URL。
 
+### FR-16：跨平台 Git 沙箱与进程身份
+
+GoodJob 必须在 macOS 和 Linux（含 WSL2）上以各自平台的等价安全沙箱运行 Git 子进程，而不是只在单一平台可用。macOS 使用 `sandbox-exec` Seatbelt 沙箱，Linux 使用 `bwrap`（bubblewrap）沙箱；两者都必须拒绝 Git 网络访问、只读授权根、禁用 hooks 和可变 Git 配置。任一平台的沙箱后端不可用时必须 fail-closed，不回退到无沙箱模式。
+
+进程身份（用于崩溃恢复的 PID 重用防护）在 macOS 上使用 BSD `ps` 的启动时间，在 Linux 上读取 `/proc/<pid>/stat` 的 starttime 字段。两者必须满足同一契约：同一进程的标识稳定，PID 重用时标识变化。
+
+WSL1 不支持用户命名空间（bwrap 依赖），因此 WSL1 上 bwrap 后端 fail-closed；只有 WSL2 提供完整沙箱。原生 Windows 不在本 FR 范围内。
+
+**验收结果：** 在 macOS 和 Linux（含 WSL2）上分别能运行完整 scan/prepare 流程，Git 子进程被各自平台的沙箱限制；任一沙箱后端缺失时明确报错且零 Git 执行。
+
+### NFR-09：跨平台沙箱等价性与 fail-closed 边界
+
+macOS Seatbelt 和 Linux bwrap 沙箱在安全语义上必须等价：都拒绝网络、限制文件系统读取范围、隔离进程命名空间。两者的安全差异（bwrap 额外只读挂载 `/usr`、`/lib`、`/etc` 等系统路径以使 Git 二进制和身份解析可用）必须在 ADR-0009 中记录并接受。
+
+平台后端选择在运行时按 `sys.platform` 自动决定，不提供手动覆盖。沙箱后端不存在（`sandbox-exec` 缺失或 `bwrap` 未安装/无法运行）时必须 fail-closed，不得回退到无沙箱或弱化沙箱。bwrap 已安装但无法运行（如 WSL1 的用户命名空间限制、AppArmor 限制、容器环境）时也必须 fail-closed 并给出安装/启用指引。
+
 ## 5. 关键失败路径
 
 | 情况 | 用户可见行为 | 是否继续 |
@@ -241,7 +257,7 @@ GoodJob 不得写入、格式化、构建、测试、提交或以其他方式改
 | G-03 建立可信叙事 | FR-06、FR-07、FR-10、FR-11；NFR-02、NFR-04 | 证据模型、产物与学习闭环、ADR-0003 |
 | G-04 产出可使用材料 | FR-08、FR-09、FR-12、FR-13；NFR-03 | 产物与学习闭环、系统设计、ADR-0002 |
 | G-05 可持续复习闭环 | FR-04、FR-10、FR-14；NFR-04、NFR-06 | 证据模型、产物与学习闭环、ADR-0007 |
-| G-06 本地、可审计、可维护 | FR-01、FR-15；NFR-01 至 NFR-06、NFR-08 | 系统设计、扫描与分析设计、ADR-0001、ADR-0005、ADR-0006 |
+| G-06 本地、可审计、可维护 | FR-01、FR-15、FR-16；NFR-01 至 NFR-06、NFR-08、NFR-09 | 系统设计、扫描与分析设计、ADR-0001、ADR-0005、ADR-0006、ADR-0009 |
 
 ## 7. 首版边界重申
 

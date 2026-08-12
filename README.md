@@ -28,10 +28,11 @@ GoodJob 不会仅凭 Git 作者信息把整个项目归为你的个人贡献。�
 
 ## 环境要求
 
-- macOS。当前运行时把 Git 子进程限制在 `sandbox-exec` 沙箱中运行（拒绝网络、只读授权根、禁用 hooks），并用 BSD `ps` 的启动时间作为进程身份，两者都没有跨平台实现；在其他系统上读取 Git 元数据会显式失败而不是降级；
+- macOS 或 Linux（含 WSL2）。运行时把 Git 子进程限制在平台原生沙箱中运行（macOS 使用 `sandbox-exec` Seatbelt，Linux 使用 `bwrap` bubblewrap），拒绝网络、只读授权根、禁用 hooks，并用进程启动时间作为进程身份。任一沙箱后端不可用时 fail-closed（不回退到无沙箱）。WSL1 不支持用户命名空间，仅 WSL2 提供完整沙箱；原生 Windows 支持留待后续阶段；
 - Codex，支持本地 Skill；
 - Python 3.12.x，已安装在本机；当前隔离启动器固定选择 `--python 3.12`，只有更高版本不能替代；
 - [`uv`](https://docs.astral.sh/uv/)；
+- Linux 环境须安装 `bwrap`（bubblewrap）；
 - 待分析工作区对当前用户可读。
 
 运行时不需要启动本地服务，也不会在被扫描项目中安装依赖。
@@ -226,6 +227,7 @@ Git authorship、计划文档、配置文件或一句用户陈述都不会单独
 
 - GoodJob 只在当次 Codex 会话获得明确授权后读取指定工作区；授权不跨会话复用。
 - 扫描和分析不修改工作区，不运行项目代码、构建、测试、包管理器或工作区脚本。
+- Git 子进程在平台原生沙箱中运行（macOS `sandbox-exec` / Linux `bwrap`），拒绝网络、只读授权根、禁用 hooks；任一沙箱后端不可用时 fail-closed。
 - 不执行 `git fetch`、`checkout`，也不主动联网读取项目内容。
 - SQLite 只保存路径、locator、哈希、有限 Git 元数据、短证据摘要和结构化结论，不保存完整源码或完整 diff。
 - 会话能力只存在当前 broker 进程内存并通过继承文件描述符传递，不进入参数、环境变量、日志、数据库或报告。

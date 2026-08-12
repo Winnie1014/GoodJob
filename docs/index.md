@@ -7,7 +7,7 @@
 
 ## 当前阶段
 
-GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 Codex Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
+GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 Codex Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。运行时支持 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；原生 Windows 支持留待后续阶段。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
 
 当前阶段的边界如下：
 
@@ -44,6 +44,7 @@ GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的
 | [看板呈现契约](20-architecture/dashboard-design.md) | 待 Owner 核对 | 看板信息架构、首屏顺序、状态视觉编码、图表形式、布局交互、呈现层安全规则、`DASH-*` | 不定义 ReportBundle 字段、产物文件集合或简历文案口径 |
 | [决策账本](30-decisions/decision-log.md) | 待 Owner 核对 | 已决定事项的索引和首版排除项 | 不替代 ADR 的论证或设计文档的完整契约 |
 | [ADR-0001](30-decisions/adrs/ADR-0001-skill-and-state-isolation.md) 至 [ADR-0008](30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md) | 已接受 | 难以逆转决策的理由、后果和替代方案 | 不作为功能需求清单 |
+| [ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md) | 已接受 | macOS/Linux/WSL2 沙箱后端选择、进程身份、fail-closed 边界和平台等价性 | 不定义 agent 无关化或原生 Windows 支持 |
 | [验收基线](40-delivery/acceptance-baseline.md) | 待 Owner 核对 | `G-*`、`FR-*`、`NFR-*` 的测试与交付门槛 | 不重新解释产品意图 |
 | [任务池](40-delivery/backlog.md) | 协作运行区 | 任务状态、归属与裁决引注 | 不定义任何产品或技术契约 |
 | [协作运行区](collab/) | 协作运行区 | 双 agent 协作协议、角色手册、反模式池、信道与任务卡 | 不定义任何产品或技术契约；与上表任一权威文档冲突时权威文档优先 |
