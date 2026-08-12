@@ -7,6 +7,8 @@
 > 作者：glm-plus（基于代码独立探索）
 >
 > 用户裁定：原生 Windows 仅接受 Git 文件系统读隔离缺口；网络隔离和扫描器核心 FS guard 不降级；uv 保留 + python 回退
+>
+> 治理定位：本文件是交付路线与技术 spike 输入，不是产品/架构契约。下文的候选原语必须先经真机验证并进入带稳定编号的 FR/NFR、superseding ADR 与权威设计文档；后续任务卡只引用这些权威编号，不直接引用本计划建立新契约。
 
 ---
 
@@ -145,6 +147,8 @@ Phase 1 已扩大平台产品承诺，不能先合代码、等 Phase 2 再补文
 - 同步 `docs/index.md` 的平台状态与目标路线（包括 `:10`）、`system-design.md`、`scanning-and-analysis.md`、`acceptance-baseline.md`、`decision-log.md`、README 和 `docs/collab/protocol.md`；`docs/index.md:93,97` 及 Codex-only 会话条款留在 Phase 2 的完整 Agent 契约闭包中，不得在 Phase 1 提前改成“多 Agent 已支持”；
 - Phase 1 开卡同时建立全量影响清单，至少点名 `docs/index.md:10,93,97`、`artifacts-and-learning.md:12`、`ADR-0003`、`ADR-0007`，为每个条目标注“本 Phase 同步 / Phase 2 同步及阻塞理由 / 历史保留”；清单未闭合前不得称 Phase 独立可交付；
 - 文档契约、实现和真实 Linux/WSL2 验收一起合入后，Phase 1 才能宣称独立交付。仅 `make gate-docs` 通过不构成功能完成证据。
+
+以下 §4.1-4.6 是 ADR-0009 的候选实现输入；在 ADR 和权威设计接受前不具规范性，也不能直接据此出实现卡。
 
 ### 4.1 平台后端选择器
 
@@ -306,6 +310,8 @@ Phase 1 已扩大平台产品承诺，不能先合代码、等 Phase 2 再补文
 
 Phase 2 开卡前对 `docs/`、README、SKILL 清单做一次 `Codex|codex_task|\.codex` 全量审计：每个命中必须分类为“应通用化”“兼容保留”或“历史文本”。本表是最低集合，不是允许遗漏其他权威命中的白名单。
 
+§5.1-5.5 的迁移与宿主适配细节同样是 ADR-0010/权威设计的候选输入；只有稳定 FR/NFR 和 ADR supersede 链建立后，才能转成实现验收条款。
+
 ### 5.7 交付物
 
 - 朋友在 WSL2 + OpenCode 上可用（**前置：OpenCode 5 项兼容性探针 + 真机 E2E 通过**；未通过则交付物收窄为已验证宿主）
@@ -323,6 +329,8 @@ Phase 2 开卡前对 `docs/`、README、SKILL 清单做一次 `Codex|codex_task|
 ### 6.0 Phase 3 安全前置门
 
 Phase 3 先以真机 spike 验证 §6.1 的 WFP、NT handle-relative FS 和 direct `CreateProcessW` 原语；三者任一不可用时，原生 Windows 保持 **unsupported / fail-closed**，不得回退到路径型检查、`subprocess.Popen` 或仅用 Git 环境变量“禁网”。若将来希望接受“无网络隔离”的新降级，必须另取 Owner 明确裁定，并先更新产品 NFR、superseding ADR、风险和验收基线；本计划不代替 Owner 作该裁定。
+
+§6.1 的 API、所有权和时序是为验证终审可实现性而写的 **候选 spike 假设**，不是已经接受的 Windows 架构。spike 产物必须记录最小复现、支持的 Windows/文件系统范围、失败模式和负向证据；通过后再将被证实的接口写入 superseding ADR/权威设计，未通过则回到 Owner 裁定而不是在任务卡内另选弱化方案。
 
 ### 6.1 Windows 模块（使用 §3.1 平铺布局）
 
@@ -441,7 +449,7 @@ Phase 3 先以真机 spike 验证 §6.1 的 WFP、NT handle-relative FS 和 dire
 | Phase | 内容 | 估计会话数 | 交付平台覆盖 |
 |---|---|---|---|
 | Phase 1 | Linux/WSL2（bwrap + /proc + 守卫泛化） | ~1 | macOS + Linux + WSL2 |
-| Phase 2 | Agent 无关（DB 迁移 + 参数化 + 启动器 + 清单 + 权威文档同步） | ~2-3 | + Codex/ZCode（已验证）；ClaudeCode/OpenCode/MimoCode 待探针 |
+| Phase 2 | Agent 无关（DB 迁移 + 参数化 + 启动器 + 清单 + 权威文档同步） | ~2-3 | Codex 保持已验证；ZCode/ClaudeCode/OpenCode/MimoCode 均待各自探针，通过者才加入 |
 | Phase 3 | 原生 Windows（WFP + NT handle-relative FS + capability 链重写 + direct launcher/Job Object + 锁 + 进程身份 + bounded-output 重写） | ~4-5 | 前置门全部通过后 + 原生 Windows（仅 Git FS 读隔离缺口） |
 
 **建议执行顺序：** Phase 1 -> Phase 2 -> Phase 3。Phase 1 + 2 完成后，若 OpenCode 兼容性探针通过，朋友即可在 WSL2 + OpenCode 上使用；未通过则交付物收窄为已验证宿主。Phase 3 补齐原生 Windows。每个 Phase 独立可交付、可验证。
