@@ -22,7 +22,7 @@ goodjob-career-review 技能当前仅支持 macOS + Codex + uv。用户朋友在
 
 ### 1.1 用户目标
 
-路线图目标是支持 Linux、macOS、WSL2、原生 Windows（WSL1 不支持用户命名空间，fail-closed），并逐宿主适配 OpenCode、Codex、ClaudeCode、ZCode、MimoCode。当前仓库仍以 macOS + Codex 为已验证基线；任何新平台或新 host agent 在对应 Phase 的真实 E2E 和权威契约闭合前都不进入支持矩阵。
+路线图目标是支持 Linux、macOS、WSL2、原生 Windows（WSL1 不支持用户命名空间，fail-closed），并逐宿主适配 OpenCode、Codex、ClaudeCode、ZCode、MimoCode。当前仓库以 macOS + Codex 为现有支持基线；Phase 2 必须让 Codex 也按 §5.5 的同一套 5 项探针回归，任何宿主在探针、真机 E2E 和权威契约闭合前都不以“已验证”身份进入支持矩阵。
 
 ### 1.2 已确认的设计裁定
 
@@ -47,7 +47,7 @@ goodjob-career-review 技能当前仅支持 macOS + Codex + uv。用户朋友在
 
 **关键发现：**
 
-- **Linux 共享全部 POSIX API**——dir_fd、fcntl、os.pipe、pass_fds、O_NOFOLLOW 在 Linux 上原样可用。只有 sandbox-exec 和 BSD ps 需要替换。Phase 1 改动量小；这不改变当前 macOS + Codex 已验证基线的产品状态。
+- **Linux 共享全部 POSIX API**——dir_fd、fcntl、os.pipe、pass_fds、O_NOFOLLOW 在 Linux 上原样可用。只有 sandbox-exec 和 BSD ps 需要替换。Phase 1 改动量小；这不改变当前 macOS + Codex 现有支持基线的产品状态，Codex 仍须在 Phase 2 按统一宿主探针回归。
 - **session.py 的 JSONL broker 协议已 agent 无关**——无 "codex" 字符串，纯 stdin/stdout JSONL。Codex 耦合仅在 SKILL.md 措辞、db.py CHECK 约束、paths.py 默认目录、auth.py INSERT 字面量。
 - **session.py 的 `subprocess.Popen` 在 Windows 上不可直接复用**：`pass_fds` 是 POSIX-only（Python 官方文档明确标注），`os.fpathconf` 是 Unix-only（Windows 上函数不存在，抛 `AttributeError` 而非 `OSError`，`except OSError -> 512` 回退接不住）。`preexec_fn`/`start_new_session` 也是 POSIX-only。Windows 需完整重新设计子进程启动、FD 传递和进程树回收。
 - **已有注入接口**：`GitMetadataReader.__init__` 接受 `workspace_git_command: Callable` 回调。测试已通过 monkeypatch `scanner._git_command` 绕过沙箱。
@@ -144,7 +144,7 @@ Phase 1 已扩大平台产品承诺，不能先合代码、等 Phase 2 再补文
 
 - 更新 `vision-and-goals.md`、`product-requirements.md` 的 Linux/WSL2 产品范围；
 - 新增 `ADR-0009-cross-platform-runtime-security.md`，记录 macOS/Linux/WSL2 沙箱与 fail-closed 边界；需要改变 ADR-0001/ADR-0006 的平台限定时，在 ADR-0009 中逐条声明 supersede，不改写旧 ADR 的历史决策正文；
-- 同步 `docs/index.md` 的平台状态与目标路线（包括 `:10`）、`system-design.md`、`scanning-and-analysis.md`、`acceptance-baseline.md`、`decision-log.md`、README 和 `docs/collab/protocol.md`；`docs/index.md:93,97` 及 Codex-only 会话条款留在 Phase 2 的完整 Agent 契约闭包中，不得在 Phase 1 提前改成“多 Agent 已支持”；
+- 同步 `docs/index.md` 的平台状态与目标路线（包括 `:10`），并在文档地图中加入 ADR-0009；同步 `system-design.md`、`scanning-and-analysis.md`、`acceptance-baseline.md`、`decision-log.md`、README 和 `docs/collab/protocol.md`；`docs/index.md:93,97` 及 Codex-only 会话条款留在 Phase 2 的完整 Agent 契约闭包中，不得在 Phase 1 提前改成“多 Agent 已支持”；
 - Phase 1 开卡同时建立全量影响清单，至少点名 `docs/index.md:10,93,97`、`artifacts-and-learning.md:12`、`ADR-0003`、`ADR-0007`，为每个条目标注“本 Phase 同步 / Phase 2 同步及阻塞理由 / 历史保留”；清单未闭合前不得称 Phase 独立可交付；
 - 文档契约、实现和真实 Linux/WSL2 验收一起合入后，Phase 1 才能宣称独立交付。仅 `make gate-docs` 通过不构成功能完成证据。
 
@@ -280,7 +280,7 @@ Phase 1 已扩大平台产品承诺，不能先合代码、等 Phase 2 再补文
 
 | Agent | 发现机制 | 清单文件 | 状态 |
 |---|---|---|---|
-| Codex | `agents/openai.yaml` + SKILL.md | 现有 | 保留（已验证） |
+| Codex | `agents/openai.yaml` + SKILL.md | 现有 | 现有支持基线；Phase 2 须按同一 5 项探针回归，通过前不标“已验证” |
 | ZCode | `.agents/skills/` 下 SKILL.md frontmatter | 已可发现 | SKILL.md 通用化后需探针验证 |
 | ClaudeCode | `.claude/commands/` 或 skills 机制 | 待探针 | **未验证**--探针通过前不列入支持矩阵 |
 | OpenCode | 待探针 | 待探针 | **未验证**--探针通过前不列入支持矩阵 |
@@ -294,8 +294,8 @@ Phase 1 已扩大平台产品承诺，不能先合代码、等 Phase 2 再补文
 
 | 文件 | 改动 |
 |---|---|
-| `docs/index.md` | 更新 `:10,93,97` 等 Codex-only 入口、task capability 和产品状态摘要；ADR 索引加入 ADR-0009/0010 |
-| `docs/00-product/vision-and-goals.md` | 产品愿景从 Codex 专属改为已验证 host agent；SessionCapability 和模型处理链提示改为 host-scoped |
+| `docs/index.md` | ADR-0009 已由 Phase 1 加入文档地图；本 Phase 更新 `:93,97` 等 Codex-only 入口、task capability 和 Agent 相关摘要，并只新增 ADR-0010 索引 |
+| `docs/00-product/vision-and-goals.md` | 产品愿景从 Codex 专属改为“仅通过统一探针的 host agent 可进入支持矩阵”；SessionCapability 和模型处理链提示改为 host-scoped |
 | `docs/10-product/product-requirements.md` | 先新增稳定的多 Agent `FR-*` / `NFR-*`，再供设计、实现和验收引用 |
 | `docs/20-architecture/system-design.md` | SessionCapability、运行位置、入口绑定 Codex 的段落改为多 agent + 多平台 |
 | `docs/20-architecture/evidence-model.md` | `issuer_kind` 绑定 Codex 的段落改为自由文本 |
@@ -440,7 +440,7 @@ Phase 3 先以真机 spike 验证 §6.1 的 WFP、NT handle-relative FS 和 dire
 | 2 | Windows Git FS 读隔离缺口 | Git 进程可读取授权根外的本机文件；网络、hooks/config 入口和扫描器核心 FS guard 仍必须受保护 | WFP + Job active-process limit + Git allowlist；运行前明确提示唯一降级；不满足前置门就 fail-closed；WSL2 用户可获完整沙箱 |
 | 3 | DB 迁移 FK 约束 | `authorization_receipts` 被外键引用，`DROP TABLE` 在 FK 开启时失败 | 迁移引擎级 FK 关闭/重建/`foreign_key_check` 非空 rollback/`finally` 恢复 FK=ON（§5.1）；`VACUUM INTO` 备份 + 故障注入测试 |
 | 4 | 向后兼容 | 现有用户数据在 `~/.codex/`、`issuer_kind='codex_task_runtime'` | 数据目录回退检测 + 迁移不破坏 |
-| 5 | Agent 兼容性未验证 | ClaudeCode/OpenCode/MimoCode 的发现契约、长驻 stdin、capability 复用、退出清理均未验证 | 逐宿主兼容性探针（§5.5），通过后才进入支持矩阵；未通过者留在待支持 |
+| 5 | Agent 兼容性未验证 | Codex 尚需按统一探针回归；ZCode/ClaudeCode/OpenCode/MimoCode 的发现契约、长驻 stdin、capability 复用、退出清理均未完整验证 | 逐宿主兼容性探针（§5.5），通过后才以“已验证”身份进入支持矩阵；未通过者留在现有基线或待支持状态 |
 
 ---
 
@@ -449,7 +449,7 @@ Phase 3 先以真机 spike 验证 §6.1 的 WFP、NT handle-relative FS 和 dire
 | Phase | 内容 | 估计会话数 | 交付平台覆盖 |
 |---|---|---|---|
 | Phase 1 | Linux/WSL2（bwrap + /proc + 守卫泛化） | ~1 | macOS + Linux + WSL2 |
-| Phase 2 | Agent 无关（DB 迁移 + 参数化 + 启动器 + 清单 + 权威文档同步） | ~2-3 | Codex 保持已验证；ZCode/ClaudeCode/OpenCode/MimoCode 均待各自探针，通过者才加入 |
+| Phase 2 | Agent 无关（DB 迁移 + 参数化 + 启动器 + 清单 + 权威文档同步） | ~2-3 | Codex 为现有支持基线但须按同一 5 项探针回归；ZCode/ClaudeCode/OpenCode/MimoCode 均待各自探针，通过者才加入 |
 | Phase 3 | 原生 Windows（WFP + NT handle-relative FS + capability 链重写 + direct launcher/Job Object + 锁 + 进程身份 + bounded-output 重写） | ~4-5 | 前置门全部通过后 + 原生 Windows（仅 Git FS 读隔离缺口） |
 
 **建议执行顺序：** Phase 1 -> Phase 2 -> Phase 3。Phase 1 + 2 完成后，若 OpenCode 兼容性探针通过，朋友即可在 WSL2 + OpenCode 上使用；未通过则交付物收窄为已验证宿主。Phase 3 补齐原生 Windows。每个 Phase 独立可交付、可验证。
