@@ -17,8 +17,8 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, cast
 
 from goodjob.errors import InvalidInputError
-from goodjob.platform import select_git_sandbox
-from goodjob.platform.detect import resolve_git_executable
+from goodjob.platform import GitSandboxUnavailableError, select_git_sandbox
+from goodjob.platform.detect import sandbox_failure_reason
 from goodjob.source_io import MAX_SOURCE_FILE_BYTES, open_regular_file, read_open_file
 
 if TYPE_CHECKING:
@@ -43,7 +43,9 @@ MAX_GIT_COMMAND_BYTES = 8 * 1024 * 1024
 
 MAX_HISTORY_FIELD_BYTES = 512
 
-GIT_EXECUTABLE = resolve_git_executable()
+# Resolution is delayed until a scanner is constructed so missing system tools
+# can cross the CLI boundary as a stable GoodJobError.
+GIT_EXECUTABLE = "/usr/bin/git"
 
 GIT_ENV = {
     "PATH": "/usr/bin:/bin",
@@ -831,6 +833,14 @@ class GitMetadataReader:
                 "--untracked-files=all",
                 maximum_output_bytes=MAX_GIT_COMMAND_BYTES,
             )
+        except GitSandboxUnavailableError as exc:
+            return None, self._issue(
+                "git_sandbox_unavailable",
+                "error",
+                "The platform Git sandbox is unavailable or could not establish its boundary.",
+                str(exc),
+                _relative_path(root, workspace_root),
+            )
         except subprocess.TimeoutExpired:
             return None, self._issue(
                 "git_command_timeout",
@@ -866,9 +876,18 @@ class GitMetadataReader:
             if "untracked" in state_values
             else "clean"
         )
-        history_basis, history_entries, history_issues = self._recent_git_history(
-            binding, head, branch, scan_started_at
-        )
+        try:
+            history_basis, history_entries, history_issues = self._recent_git_history(
+                binding, head, branch, scan_started_at
+            )
+        except GitSandboxUnavailableError as exc:
+            return None, self._issue(
+                "git_sandbox_unavailable",
+                "error",
+                "The platform Git sandbox became unavailable while reading repository history.",
+                str(exc),
+                _relative_path(root, workspace_root),
+            )
         return (
             GitState(
                 binding.git_dir,
@@ -915,6 +934,8 @@ class GitMetadataReader:
             entries, truncated = self._read_recent_history(
                 binding, revisions, head, scan_started_at
             )
+        except GitSandboxUnavailableError:
+            raise
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return (
                 "history_unavailable",
@@ -1149,7 +1170,8 @@ class GitMetadataReader:
         arguments: tuple[str, ...],
     ) -> list[str]:
         sandbox = select_git_sandbox(self._git_executable)
-        git_args = [
+        git_command = [
+            self._git_executable,
             "--no-lazy-fetch",
             "--no-replace-objects",
             f"--git-dir={binding.git_dir}",
@@ -1163,7 +1185,15 @@ class GitMetadataReader:
             "--no-pager",
             *arguments,
         ]
-        return sandbox.build_command(self._git_executable, binding, git_args)
+        return sandbox.build_command(self._git_executable, binding, git_command)
+
+    @staticmethod
+    def _fchdir_and_close_bound_directories(worktree_fd: int, *bound_fds: int) -> None:
+        """Enter the bound worktree, then remove host directory capabilities before exec."""
+        os.fchdir(worktree_fd)
+        for descriptor in bound_fds:
+            with suppress(OSError):
+                os.close(descriptor)
 
     @staticmethod
     def _open_bound_git_directory(
@@ -1211,15 +1241,26 @@ class GitMetadataReader:
                 **GIT_ENV,
                 "GIT_COMMON_DIR": str(binding.common_dir),
             }
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=environment,
-                pass_fds=(worktree_fd, git_dir_fd, common_dir_fd),
-                preexec_fn=partial(os.fchdir, worktree_fd),
-                start_new_session=True,
-            )
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=environment,
+                    pass_fds=(worktree_fd, git_dir_fd, common_dir_fd),
+                    preexec_fn=partial(
+                        self._fchdir_and_close_bound_directories,
+                        worktree_fd,
+                        worktree_fd,
+                        git_dir_fd,
+                        common_dir_fd,
+                    ),
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                raise GitSandboxUnavailableError(
+                    "the selected platform Git sandbox could not be launched"
+                ) from exc
         finally:
             os.close(common_dir_fd)
             os.close(git_dir_fd)
@@ -1255,6 +1296,9 @@ class GitMetadataReader:
                 raise subprocess.TimeoutExpired(process.args, self._timeout())
             return_code = process.wait(timeout=timeout)
             self._verify_git_binding(binding)
+            failure_reason = sandbox_failure_reason(command, return_code, bytes(outputs["stderr"]))
+            if failure_reason is not None:
+                raise GitSandboxUnavailableError(failure_reason)
             return return_code, bytes(outputs["stdout"]), bytes(outputs["stderr"])
         except BaseException:
             if process.poll() is None:

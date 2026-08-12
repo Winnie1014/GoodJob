@@ -13,7 +13,7 @@
 - 首版只扫描 Owner 明确提供、在本机可读的工作区根；不递归扫描未授权位置，不触发网络抓取或 Git fetch。工作区内 `.git` 指针只是 3.2 的不可信候选，不能自行授权任何根外读取（`FR-02`、`NFR-01`）。
 - 扫描产物写入证据模型中的 `ScanRun`、`ProjectSnapshot`、`SourceRevision`、`Evidence` 与 `ScanIssue`；字段、身份和状态以[证据模型](evidence-model.md)为唯一事实源。
 - 扫描器不保存源码正文、完整函数、完整 diff 或大段文档。原文件仍是实现事实源，数据库只保存指针、哈希、短摘要和结构化状态（`NFR-02`）。
-- 文件内容、manifest、Git 文本和路径名一律是不可信数据。适配器只能解析字节/文本并调用参数化的只读 Git 子进程，不得 import 或执行项目模块，不得运行构建脚本、包管理器或 shell 拼接，也不得把仓库中的指令当作 Skill 指令（`NFR-08`）。Git 子进程在平台原生沙箱中运行（macOS `sandbox-exec` / Linux `bwrap`，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)），任一沙箱后端不可用时 fail-closed。
+- 文件内容、manifest、Git 文本和路径名一律是不可信数据。适配器只能解析字节/文本并调用参数化的只读 Git 子进程，不得 import 或执行项目模块，不得运行构建脚本、包管理器或 shell 拼接，也不得把仓库中的指令当作 Skill 指令（`NFR-08`）。Phase 1 实现候选的 Git 子进程在平台原生沙箱中运行（macOS `sandbox-exec` / Linux `bwrap`，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)），任一沙箱后端不可用时 fail-closed；Linux/WSL2 真机证据与 ADR 接受仍为阻塞门。
 - 本文中的“项目”指证据模型的 `Project`，“工作树”指 `Worktree`，“快照”指不可变 `ProjectSnapshot`；不得以目录名或远端 URL 替代其稳定身份。
 
 ## 2. 运行契约

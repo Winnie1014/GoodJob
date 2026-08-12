@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -20,11 +19,13 @@ def _git_sandbox_available() -> bool:
 
         return SANDBOX_EXECUTABLE.is_file()
     if sys.platform.startswith("linux"):
-        return shutil.which("bwrap") is not None
+        from goodjob.platform.sandbox_linux import BwrapSandbox
+
+        return BwrapSandbox().is_available()
     return False
 
 
-git_sandbox_available = pytest.mark.skipif(
-    not _git_sandbox_available(),
-    reason="no supported Git sandbox backend available on this platform",
-)
+@pytest.fixture
+def git_sandbox_available() -> None:
+    if not _git_sandbox_available():
+        pytest.skip("no supported Git sandbox backend available on this platform")

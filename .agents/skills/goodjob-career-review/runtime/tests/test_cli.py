@@ -625,6 +625,7 @@ def test_maximum_escaped_jd_crosses_the_broker_for_validation_and_prepare(
 
 def test_preparation_protocol_does_not_echo_private_payload_and_is_task_bound(
     tmp_path: Path,
+    git_sandbox_available: None,
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -633,6 +634,28 @@ def test_preparation_protocol_does_not_echo_private_payload_and_is_task_bound(
         encoding="utf-8",
     )
     (workspace / "main.py").write_text("def main():\n    return 0\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", "pyproject.toml", "main.py"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=GoodJob Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+    )
     data_dir = tmp_path / "data"
     request_id = str(uuid.uuid4())
     request: dict[str, object] = {

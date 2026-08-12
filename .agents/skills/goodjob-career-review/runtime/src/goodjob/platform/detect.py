@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import enum
-import shutil
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
+
+from goodjob.errors import GoodJobError
 
 if TYPE_CHECKING:
     from goodjob.git_metadata import InternalGitBinding
@@ -20,16 +20,12 @@ class GitSandbox(Protocol):
         self,
         git_executable: str,
         binding: InternalGitBinding,
-        git_args: list[str],
+        git_command: list[str],
     ) -> list[str]: ...
 
 
-@dataclass(frozen=True)
-class PlatformBackend:
-    """The resolved platform identity and its Git sandbox backend (if any)."""
-
-    platform: Platform
-    sandbox: GitSandbox | None
+class GitSandboxUnavailableError(GoodJobError, OSError):
+    """The selected Git sandbox is missing or could not establish its boundary."""
 
 
 class Platform(enum.Enum):
@@ -92,20 +88,32 @@ def git_executable_candidates() -> tuple[Path, ...]:
             Path("/bin/git"),
         )
     if platform == Platform.LINUX:
-        return (
-            Path("/usr/bin/git"),
-            Path("/usr/local/bin/git"),
-            Path("/bin/git"),
-        )
+        return (Path("/usr/bin/git"),)
     return (Path("git"),)
 
 
 def resolve_git_executable() -> str:
-    """Resolve the Git executable path, falling back to ``shutil.which``."""
+    """Resolve Git only from the platform's trusted absolute candidates."""
     for candidate in git_executable_candidates():
         if candidate.is_file():
             return str(candidate)
-    found = shutil.which("git")
-    if found:
-        return found
-    return "/usr/bin/git"
+    raise GitSandboxUnavailableError(
+        "Git is unavailable at a trusted system path; install Git through the platform "
+        "toolchain before running GoodJob"
+    )
+
+
+def sandbox_failure_reason(command: list[str], returncode: int, stderr: bytes) -> str | None:
+    """Classify a launcher failure without treating ordinary Git errors as sandbox failures."""
+    if returncode == 0 or not command:
+        return None
+    launcher = Path(command[0]).name
+    first_line = stderr.splitlines()[0].decode("utf-8", errors="replace") if stderr else ""
+    if launcher == "bwrap" and first_line.startswith("bwrap:"):
+        return (
+            "bubblewrap could not establish the Linux Git sandbox; install bwrap and enable "
+            "unprivileged user namespaces/AppArmor access (WSL requires WSL2)"
+        )
+    if launcher == "sandbox-exec" and first_line.startswith("sandbox-exec:"):
+        return "macOS sandbox-exec could not establish the Git sandbox"
+    return None

@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
-from goodjob.platform.detect import Platform, detect_platform, select_git_sandbox
+from goodjob.platform.detect import (
+    GitSandboxUnavailableError,
+    Platform,
+    detect_platform,
+    select_git_sandbox,
+)
 
-__all__ = ["Platform", "detect_platform", "select_git_sandbox"]
+__all__ = [
+    "GitSandboxUnavailableError",
+    "Platform",
+    "detect_platform",
+    "select_git_sandbox",
+]

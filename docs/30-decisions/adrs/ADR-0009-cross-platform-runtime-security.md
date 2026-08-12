@@ -1,6 +1,6 @@
 # ADR-0009：跨平台运行时安全（macOS/Linux/WSL2 沙箱与 fail-closed 边界）
 
-> 状态：已接受
+> 状态：待 Owner/Architect 接受（实现返工中）
 > 日期：2026-08-12
 > 权威范围：macOS、Linux（含 WSL2）的 Git 沙箱后端选择、进程身份、fail-closed 边界和平台等价性契约
 > 上游：[产品需求](../../10-product/product-requirements.md)（FR-16、NFR-09）、[跨平台多 Agent 适配计划](../../40-delivery/cross-platform-multi-agent-plan.md) §4
@@ -50,8 +50,8 @@ bwrap 的 `--proc /proc` 挂载 procfs。如果在 `--unshare-pid` 之前挂载�
 
 ### 4. fail-closed 边界
 
-- bwrap 不存在（`shutil.which("bwrap")` 返回 `None`）时，`BwrapSandbox.build_command()` 抛出 `OSError`，不回退到无沙箱
-- bwrap 已安装但无法运行（WSL1 不支持用户命名空间、Ubuntu 23.10+ AppArmor 限制、Debian `kernel.unprivileged_userns_clone`、容器/CI 环境常禁 userns）时，bwrap 进程启动失败，`subprocess.Popen` 抛出 `OSError`，同样 fail-closed
+- bwrap 不存在（仅检查 `/usr/bin/bwrap`，不信任继承 `PATH`）时，`BwrapSandbox.build_command()` 抛出 `GitSandboxUnavailableError`，不回退到无沙箱
+- bwrap 已安装但无法运行（WSL1 不支持用户命名空间、Ubuntu 23.10+ AppArmor 限制、Debian `kernel.unprivileged_userns_clone`、容器/CI 环境常禁 userns）时，启动器启动失败或以 `bwrap:` 错误退出；运行时将其分类为 `git_sandbox_unavailable`，给出安装/启用指引，同样 fail-closed
 - macOS 上 `sandbox-exec` 不存在时同样 fail-closed
 - WSL1 不支持用户命名空间，因此 WSL1 上 bwrap 后端 fail-closed；只有 WSL2 提供完整沙箱
 
@@ -78,7 +78,7 @@ macOS 分支保持现有 `/bin/ps -o lstart=` 不变。Linux 分支读取 `/proc
 - macOS + Linux（含 WSL2）均享完整沙箱安全模型
 - `git_metadata.py` 的平台守卫从 `sys.platform != "darwin"` 改为 `select_git_sandbox()` 后端选择
 - `process_identity.py` 按平台分支选择 BSD `ps` 或 `/proc/<pid>/stat`
-- 既有 macOS 行为零回归：SeatbeltSandbox 从 `git_metadata.py` 提取到 `platform/sandbox_macos.py`，行为不变
+- 既有 macOS 行为零回归：SeatbeltSandbox 从 `git_metadata.py` 提取到 `platform/sandbox_macos.py`，Git argv 仍由单一层构造并逐字回归
 - Linux/WSL2 真机验收必须在真实环境中通过（不是 mock/monkeypatch 替代）
 - `dependencies = []` 不破坏——bwrap/sandbox-exec/ps 是系统二进制（与 sandbox-exec 同性质），不是 Python 包依赖
 
@@ -92,10 +92,10 @@ macOS 分支保持现有 `/bin/ps -o lstart=` 不变。Linux 分支读取 `/proc
 
 ## 验证
 
-- `make gate` 在 macOS 和 Linux（含 WSL2）上分别全绿
+- `make gate` 在 macOS 和 Linux（含 WSL2）上分别全绿；当前 macOS 证据已具备，Linux/WSL2 证据待真机补验
 - macOS sandbox-exec 测试加 `@pytest.mark.skipif(sys.platform != "darwin")`，Linux bwrap 测试加 `@pytest.mark.skipif(not linux or not bwrap)`
 - E2E broker 测试在两个平台各跑一次真实沙箱
-- `BwrapSandbox.build_command()` 测试断言 `--proc` 出现在 `--unshare-pid` 之后
+- `BwrapSandbox.build_command()` 测试断言 `--proc` 出现在 `--unshare-pid` 之后，且显式 `--chdir` 到授权根
 - bwrap 不存在时 `BwrapSandbox.is_available()` 返回 `False`，`build_command()` 抛出 `OSError`
 - 进程身份测试断言同一进程的 marker 稳定，不存在 PID 的 marker 为 `None`
 

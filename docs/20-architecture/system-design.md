@@ -63,7 +63,7 @@ Skill 运行期间不得修改安装目录。升级、重装或删除 Skill 不�
 ### 2.3 进程与网络边界
 
 - Owner 提供的 `workspace_path` 仅定义本机文件范围。`ARCH-C01` 必须先取得当次 `AuthorizationReceipt(source_analysis)`，再让 Codex 或 Python 处理源码、源码衍生证据或既有项目材料；回执拒绝/缺失时不建立新运行。扫描器只可把 `.git` 标记当作不可信候选：先只检查根内标记，再以绑定 marker kind 与精确候选的 `external_git_relation_probe` 回执解析关系和目录身份；解析后展示 git-dir/common-dir、身份与字段并取得精确 `external_git_metadata` 回执。双向绑定通过后也只能用描述符直接读取关系与 HEAD/ref，不得启动外部 Git 或扫描根外项目内容、配置、index/dirty 或历史。
-- Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。Git 子进程在平台原生沙箱中运行：macOS 使用 `sandbox-exec` Seatbelt（拒网络、只读授权根、禁 hooks），Linux 使用 `bwrap`（等价安全语义，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；任一沙箱后端不可用时 fail-closed。
+- Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。Phase 1 实现候选的 Git 子进程在平台原生沙箱中运行：macOS 使用 `sandbox-exec` Seatbelt（拒网络、只读授权根、禁 hooks），Linux 使用 `bwrap`（等价安全语义，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；任一沙箱后端不可用时 fail-closed，Linux/WSL2 真机证据与 ADR 接受仍为阻塞门。
 - SQLite 是唯一结构化持久层。前端不得直接打开或修改 SQLite。
 - 离线 HTML 不请求远端 API、CDN、字体或分析服务，也不通过 `file://` 再读取外部 JSON；报告数据随 HTML 产物内嵌。
 - GoodJob 不引入当前 Codex 会话之外的分析服务、源码上传通道或遥测。Codex 对源码的访问属于当前工作区会话中的直接读取，受该会话既有的数据边界约束；扫描器不额外复制或传输源码。GoodJob 不判断 Owner 的 NDA、版权或组织策略是否允许该会话分析或对外使用材料。

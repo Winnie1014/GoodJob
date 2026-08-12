@@ -39,25 +39,14 @@ class SeatbeltSandbox:
         self,
         git_executable: str,
         binding: InternalGitBinding,
-        git_args: list[str],
+        git_command: list[str],
     ) -> list[str]:
+        from goodjob.platform.detect import GitSandboxUnavailableError
+
         if not self.is_available():
-            raise OSError("macOS sandbox-exec is not available at /usr/bin/sandbox-exec")
-        git_command = [
-            git_executable,
-            "--no-lazy-fetch",
-            "--no-replace-objects",
-            f"--git-dir={binding.git_dir}",
-            f"--work-tree={binding.worktree_root}",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.pager=cat",
-            "--no-pager",
-            *git_args,
-        ]
+            raise GitSandboxUnavailableError(
+                "macOS sandbox-exec is not available at /usr/bin/sandbox-exec"
+            )
         return [
             str(SANDBOX_EXECUTABLE),
             "-p",

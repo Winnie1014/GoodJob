@@ -30,7 +30,6 @@ from goodjob.config import ExcludedProjectRule, ProjectExclusionConfig, load_pro
 from goodjob.db import Database
 from goodjob.errors import InvalidInputError
 from goodjob.git_metadata import (
-    GIT_EXECUTABLE,
     MAX_FILE_BYTES,
     MAX_GIT_COMMAND_BYTES,
     GitHistoryEntry,
@@ -44,6 +43,7 @@ from goodjob.git_metadata import (
     _relative_to_root,
     _safe_lstat,
 )
+from goodjob.platform.detect import resolve_git_executable
 from goodjob.process_identity import owner_process_stopped, process_identity
 
 HISTORY_WINDOW_DAYS = _git_metadata.HISTORY_WINDOW_DAYS
@@ -664,9 +664,12 @@ class IgnoreMatcher:
 class WorkspaceScanner:
     """Build immutable scan snapshots after the caller has verified authorization."""
 
-    def __init__(self, database: Database, *, git_executable: str = GIT_EXECUTABLE) -> None:
+    def __init__(self, database: Database, *, git_executable: str | None = None) -> None:
         self._database = database
-        self._git_executable = str(Path(git_executable).resolve(strict=True))
+        resolved_git_executable = (
+            resolve_git_executable() if git_executable is None else git_executable
+        )
+        self._git_executable = str(Path(resolved_git_executable).resolve(strict=True))
         self._git_metadata = GitMetadataReader(
             git_executable=self._git_executable,
             issue_factory=_issue,

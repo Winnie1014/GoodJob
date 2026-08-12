@@ -78,7 +78,9 @@ def _object(payload: dict[str, object], key: str) -> dict[str, object]:
     return cast(dict[str, object], value)
 
 
-def test_targeted_history_is_bounded_transient_and_session_scoped(tmp_path: Path) -> None:
+def test_targeted_history_is_bounded_transient_and_session_scoped(
+    tmp_path: Path, git_sandbox_available: None
+) -> None:
     workspace = tmp_path / "workspace"
     repository = workspace / "repository"
     repository.mkdir(parents=True)

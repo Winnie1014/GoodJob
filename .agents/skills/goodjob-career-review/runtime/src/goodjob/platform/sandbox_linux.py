@@ -2,24 +2,20 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from goodjob.git_metadata import InternalGitBinding
 
-BWRAP_EXECUTABLE_CANDIDATES = (
-    "/usr/bin/bwrap",
-    "/usr/local/bin/bwrap",
-)
+BWRAP_EXECUTABLE_CANDIDATES = ("/usr/bin/bwrap",)
 
 
 def _find_bwrap() -> str | None:
     for candidate in BWRAP_EXECUTABLE_CANDIDATES:
         if Path(candidate).is_file():
             return candidate
-    return shutil.which("bwrap")
+    return None
 
 
 class BwrapSandbox:
@@ -38,6 +34,8 @@ class BwrapSandbox:
     - ``--proc /proc``: procfs (MUST be mounted after --unshare-pid, otherwise
       host process cmdline is exposed)
     - ``--tmpfs /tmp``: empty tmpfs (avoid host /tmp leakage)
+    - ``--chdir <authorized_root>``: replace the descriptor-bound host cwd with
+      the read-only namespace mount before Git starts
     - ``--die-with-parent``: kill child when parent exits
 
     Security trade-off: bwrap makes /usr and /etc readable, which is wider than
@@ -53,30 +51,17 @@ class BwrapSandbox:
         self,
         git_executable: str,
         binding: InternalGitBinding,
-        git_args: list[str],
+        git_command: list[str],
     ) -> list[str]:
+        from goodjob.platform.detect import GitSandboxUnavailableError
+
         bwrap = _find_bwrap()
         if bwrap is None:
-            raise OSError(
+            raise GitSandboxUnavailableError(
                 "bubblewrap (bwrap) is not installed; install it to enable the "
                 "Linux Git sandbox, or use WSL2/macOS"
             )
         authorized_root = str(binding.workspace_root)
-        git_command = [
-            git_executable,
-            "--no-lazy-fetch",
-            "--no-replace-objects",
-            f"--git-dir={binding.git_dir}",
-            f"--work-tree={binding.worktree_root}",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.pager=cat",
-            "--no-pager",
-            *git_args,
-        ]
         return [
             bwrap,
             "--die-with-parent",
@@ -103,5 +88,7 @@ class BwrapSandbox:
             "/proc",
             "--tmpfs",
             "/tmp",
+            "--chdir",
+            authorized_root,
             *git_command,
         ]
