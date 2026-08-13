@@ -16,8 +16,8 @@
 
 | ID | 决策 | 结果 | 权威来源 |
 | --- | --- | --- | --- |
-| D-001 | 产品形态 | 采用 Codex Skill 对话 + 本地确定性扫描器 + SQLite 证据库，而非纯提示词或独立桌面程序 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
-| D-002 | 源码访问与授权 | 当前 Codex task 易失持有原始 SessionCapability，SQLite 只存 digest；受保护请求须证明同 task 能力。根外 Git 另走两阶段精确回执；GoodJob 不新增会话外上传/遥测 | [ADR-0006](adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md) |
+| D-001 | 产品形态 | 采用 host agent Skill 对话 + 本地确定性扫描器 + SQLite 证据库，而非纯提示词或独立桌面程序。ADR-0010 部分替代入口绑定 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md)、[ADR-0010](adrs/ADR-0010-host-agent-neutral-session.md) |
+| D-002 | 源码访问与授权 | 当前 host agent task 易失持有原始 SessionCapability，SQLite 只存 digest；受保护请求须证明同 task 能力。根外 Git 另走两阶段精确回执；GoodJob 不新增会话外上传/遥测。ADR-0010 部分替代 SessionCapability 与 issuer_kind 绑定 | [ADR-0006](adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md)、[ADR-0010](adrs/ADR-0010-host-agent-neutral-session.md) |
 | D-003 | 持久化 | SQLite 保存结构化状态，Markdown/HTML 作为人类阅读产物 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
 | D-004 | Skill 与个人数据 | 版本化 Skill 只带流程、脚本、参考和前端资源；个人数据放在独立用户目录 | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
 | D-005 | 开发与安装 | GoodJob 已建立私有 GitHub 文档基线；只有实现和发布验收通过后才安装到用户级 Skill 目录，当前仓库状态不等于可安装 Skill | [ADR-0001](adrs/ADR-0001-skill-and-state-isolation.md) |
@@ -34,7 +34,7 @@
 | D-016 | 事实与快照优先级 | 当前可读工作树是实现事实主来源，文档计划不得升级为已实现；准备阶段三次哈希校验，漂移时显式 refresh，不混用源码版本 | [ADR-0007](adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md) |
 | D-017 | Git 历史 | 初始读取最近 180 天；只有具体结论需要时才向更早历史追溯 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
 | D-018 | 语言深读 | 首版深读 TS/TSX、Python、Rust、Dart 和 SQL；其他语言仍生成可靠基础档案 | [扫描设计](../20-architecture/scanning-and-analysis.md) |
-| D-019 | Codex 阅读策略 | 扫描器索引全量模块；Codex 先读岗位相关证据包，再按问题钻入本地原文件 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md) |
+| D-019 | Host agent 阅读策略 | 扫描器索引全量模块；host agent 先读岗位相关证据包，再按问题钻入本地原文件。ADR-0010 部分替代 Codex 深读策略措辞 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0010](adrs/ADR-0010-host-agent-neutral-session.md) |
 | D-020 | 证据保存 | 只保存位置、行范围、哈希、状态和短摘要，不保存源码全文 | [ADR-0003](adrs/ADR-0003-evidence-pointers-without-source-snapshots.md) |
 | D-021 | 失败策略 | 权限、损坏仓库或不支持语言不使全局失败；保留部分结果并显式列缺口 | [ADR-0005](adrs/ADR-0005-local-first-discovery-and-degradation.md) |
 | D-022 | 技术栈 | Python 负责扫描、SQLite 和产物编排；TypeScript 前端负责离线静态看板 | [ADR-0002](adrs/ADR-0002-python-and-offline-typescript-dashboard.md) |
@@ -61,12 +61,7 @@
 | D-043 | 校验与门禁的判定层级 | 对结构化数据的校验必须按结构判定：token 序列的散文级规则只作用于 `text`/`emphasis`，入口文档的属性检查不作用于内联数据区。禁止先扁平化成字符串再模式匹配；任何门禁必须在任意真实用户内容下成立 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[证据模型](../20-architecture/evidence-model.md)、[看板呈现契约](../20-architecture/dashboard-design.md) |
 | D-044 | 呈现层动态几何与行为验收 | 呈现层禁用全部 `.style` 运行时写入，动态几何用内联 SVG 几何属性配合整数 `viewBox`；看板行为由跨 Chromium/WebKit 的真实文档核对验收，并以「注入 `style` 属性必须触发违规」为阳性对照，不以源码字符串匹配代替行为断言 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[看板呈现契约](../20-architecture/dashboard-design.md)、[验收基线](../40-delivery/acceptance-baseline.md) |
 | D-045 | 跨平台运行时安全 | macOS 与 Linux（含 WSL2）使用等价的 Git 沙箱后端（sandbox-exec / bwrap）与进程身份（BSD ps / /proc）；任一后端不可用时 fail-closed，不回退到无沙箱。ADR-0009 部分替代 ADR-0001/ADR-0006 的 macOS-only 平台限定 | [ADR-0009](adrs/ADR-0009-cross-platform-runtime-security.md) |
-
-## 待接受决策
-
-| ID | 决策 | 候选结果 | 权威来源 |
-| --- | --- | --- | --- |
-| D-046 | Host Agent 无关会话 | 候选契约解除 `issuer_kind` CHECK 约束（DB v11），参数化宿主运行时，新增 uv+python 回退启动器，并以五项探针管理宿主准入。ADR-0010 接受后才部分替代 ADR-0001/0003/0006/0007 | [ADR-0010](adrs/ADR-0010-host-agent-neutral-session.md) |
+| D-046 | Host Agent 无关会话 | 解除 `issuer_kind` CHECK 约束（DB v11），参数化宿主运行时，新增 uv+python 回退启动器，并以五项探针管理宿主准入。ADR-0010 部分替代 ADR-0001/0003/0006/0007 中绑定 Codex 的条款 | [ADR-0010](adrs/ADR-0010-host-agent-neutral-session.md) |
 
 ## 明确的非首版能力
 

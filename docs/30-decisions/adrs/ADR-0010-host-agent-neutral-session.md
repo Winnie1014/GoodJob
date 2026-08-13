@@ -1,11 +1,11 @@
 # ADR-0010：Host Agent 无关会话（解除 Codex 硬编码绑定）
 
-> 状态：待 Owner/Architect 接受
+> 状态：已接受（Architect 确认接受，2026-08-13）
 > 日期：2026-08-13
 > 权威范围：Agent 运行时标识、数据目录平台感知、启动器 uv 回退、宿主兼容性探针准入矩阵
 > 上游：[产品需求](../../10-product/product-requirements.md)（FR-17、NFR-10）、[跨平台多 Agent 适配计划](../../40-delivery/cross-platform-multi-agent-plan.md) §5
 > 下游：[系统设计](../../20-architecture/system-design.md)、[证据模型](../../20-architecture/evidence-model.md)、[扫描与分析设计](../../20-architecture/scanning-and-analysis.md)、[验收基线](../../40-delivery/acceptance-baseline.md)
-> 关系：接受后部分替代 [ADR-0001](ADR-0001-skill-and-state-isolation.md) 的 Codex-only 产品入口与数据目录绑定；部分替代 [ADR-0003](ADR-0003-evidence-pointers-without-source-snapshots.md) 的 Codex 深读策略措辞；部分替代 [ADR-0006](ADR-0006-authorized-codex-analysis-and-external-git-metadata.md) 的 Codex 专属 SessionCapability 与 issuer_kind 绑定；部分替代 [ADR-0007](ADR-0007-review-state-lineage-and-snapshot-integrity.md) 的 Codex task awaiting-context 条款。旧 ADR 正文保留为历史决策记录，不被改写。
+> 关系：部分替代 [ADR-0001](ADR-0001-skill-and-state-isolation.md) 的 Codex-only 产品入口与数据目录绑定；部分替代 [ADR-0003](ADR-0003-evidence-pointers-without-source-snapshots.md) 的 Codex 深读策略措辞；部分替代 [ADR-0006](ADR-0006-authorized-codex-analysis-and-external-git-metadata.md) 的 Codex 专属 SessionCapability 与 issuer_kind 绑定；部分替代 [ADR-0007](ADR-0007-review-state-lineage-and-snapshot-integrity.md) 的 Codex task awaiting-context 条款。旧 ADR 正文保留为历史决策记录，不被改写。
 
 ## 背景
 
