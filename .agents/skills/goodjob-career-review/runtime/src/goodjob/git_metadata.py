@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, cast
 
 from goodjob.errors import InvalidInputError
 from goodjob.platform import GitSandboxUnavailableError, select_git_sandbox
-from goodjob.platform.detect import sandbox_failure_reason
+from goodjob.platform.detect import Platform, detect_platform, sandbox_failure_reason
 from goodjob.source_io import MAX_SOURCE_FILE_BYTES, open_regular_file, read_open_file
 
 if TYPE_CHECKING:
@@ -1170,21 +1170,24 @@ class GitMetadataReader:
         arguments: tuple[str, ...],
     ) -> list[str]:
         sandbox = select_git_sandbox(self._git_executable)
-        git_command = [
-            self._git_executable,
-            "--no-lazy-fetch",
-            "--no-replace-objects",
-            f"--git-dir={binding.git_dir}",
-            f"--work-tree={binding.worktree_root}",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.pager=cat",
-            "--no-pager",
-            *arguments,
-        ]
+        git_command = [self._git_executable]
+        if detect_platform() != Platform.LINUX:
+            git_command.append("--no-lazy-fetch")
+        git_command.extend(
+            [
+                "--no-replace-objects",
+                f"--git-dir={binding.git_dir}",
+                f"--work-tree={binding.worktree_root}",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.pager=cat",
+                "--no-pager",
+                *arguments,
+            ]
+        )
         return sandbox.build_command(self._git_executable, binding, git_command)
 
     @staticmethod

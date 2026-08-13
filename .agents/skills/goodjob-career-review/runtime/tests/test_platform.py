@@ -248,6 +248,28 @@ linux_only = pytest.mark.skipif(
 
 
 @linux_only
+def test_linux_git_command_uses_environment_for_lazy_fetch_suppression() -> None:
+    from goodjob.git_metadata import GitMetadataReader
+
+    binding = MagicMock()
+    binding.workspace_root = Path("/test/workspace")
+    binding.git_dir = Path("/test/workspace/.git")
+    binding.worktree_root = Path("/test/workspace")
+    reader = GitMetadataReader(
+        git_executable="/usr/bin/git",
+        issue_factory=MagicMock(),
+        safe_history_path=lambda _path: True,
+        git_command_timeout_seconds=lambda: 10.0,
+        workspace_git_command=lambda _binding, _arguments: [],
+    )
+
+    command = reader._git_command(binding, ("rev-parse", "HEAD"))
+
+    assert "--no-lazy-fetch" not in command
+    assert command[-2:] == ["rev-parse", "HEAD"]
+
+
+@linux_only
 def test_bwrap_sandbox_availability_matches_trusted_candidates() -> None:
     from goodjob.platform.sandbox_linux import BWRAP_EXECUTABLE_CANDIDATES, BwrapSandbox
 

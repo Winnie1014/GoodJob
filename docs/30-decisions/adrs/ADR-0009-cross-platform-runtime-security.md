@@ -52,6 +52,7 @@ bwrap 的 `--proc /proc` 挂载 procfs。如果在 `--unshare-pid` 之前挂载�
 
 - bwrap 不存在（仅检查 `/usr/bin/bwrap`，不信任继承 `PATH`）时，`BwrapSandbox.build_command()` 抛出 `GitSandboxUnavailableError`，不回退到无沙箱
 - bwrap 已安装但无法运行（WSL1 不支持用户命名空间、Ubuntu 23.10+ AppArmor 限制、Debian `kernel.unprivileged_userns_clone`、容器/CI 环境常禁 userns，或挂载参数顺序覆盖授权根）时，启动器启动失败或以 `bwrap:` 错误退出；运行时将其分类为 `git_sandbox_unavailable`，给出安装/启用指引，同样 fail-closed
+- Linux Git 命令通过 `GIT_NO_LAZY_FETCH=1` 环境变量禁用 lazy fetch；不使用 macOS-only 的 `--no-lazy-fetch` argv 选项，以兼容系统 Git 版本，同时保持同一安全语义
 - macOS 上 `sandbox-exec` 不存在时同样 fail-closed
 - WSL1 不支持用户命名空间，因此 WSL1 上 bwrap 后端 fail-closed；只有 WSL2 提供完整沙箱
 
