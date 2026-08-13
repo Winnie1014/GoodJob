@@ -791,6 +791,25 @@ class GitMetadataReader:
                 _relative_path(root, workspace_root),
             )
         try:
+            include_result = self._git(
+                binding,
+                "config",
+                "--local",
+                "--no-includes",
+                "--null",
+                "--get-regexp",
+                r"^include.*\.path$",
+            )
+            if include_result.returncode == 0 and self._has_root_external_include(
+                binding, include_result.stdout
+            ):
+                return None, self._issue(
+                    "git_repository_boundary_violation",
+                    "warning",
+                    "Repository metadata requested a path outside the authorized Git sandbox.",
+                    "Remove root-external Git config or object indirection, then run refresh.",
+                    _relative_path(root, workspace_root),
+                )
             result = self._git(binding, "rev-parse", "--is-inside-work-tree")
             if result.returncode != 0 or result.stdout.strip() != "true":
                 boundary_denied = any(
@@ -905,6 +924,29 @@ class GitMetadataReader:
             ),
             None,
         )
+
+    @staticmethod
+    def _has_root_external_include(binding: InternalGitBinding, output: str) -> bool:
+        for record in output.split("\0"):
+            if not record:
+                continue
+            key, separator, raw_path = record.partition("\n")
+            normalized_key = key.casefold()
+            if not separator or not (
+                normalized_key == "include.path"
+                or normalized_key.startswith("includeif.")
+                and normalized_key.endswith(".path")
+            ):
+                continue
+            if not raw_path or raw_path.startswith(("~", "%")) or "\0" in raw_path:
+                return True
+            include_path = Path(raw_path)
+            if not include_path.is_absolute():
+                include_path = binding.common_dir / include_path
+            lexical_path = Path(os.path.normpath(str(include_path)))
+            if not _is_within(lexical_path, binding.workspace_root):
+                return True
+        return False
 
     def _recent_git_history(
         self,

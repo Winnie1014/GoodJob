@@ -1461,6 +1461,41 @@ def test_internal_git_config_cannot_read_an_include_outside_the_authorized_works
     assert "invalid external config" not in database_text
 
 
+def test_internal_git_config_can_include_a_file_inside_the_authorized_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    internal_config = workspace / "internal-config"
+    repository.mkdir(parents=True)
+    _git_init(repository)
+    (repository / "pyproject.toml").write_text("[project]\nname='sandboxed'\n", encoding="utf-8")
+    internal_config.write_text("[goodjob]\n\tprobe = true\n", encoding="utf-8")
+    _git(repository, "config", "include.path", str(internal_config))
+
+    broker = _broker(tmp_path / "data")
+    authorized, validation_sha256 = _authorize_source(broker, workspace)
+    receipt = _object_field(authorized, "receipt")
+    scanned = _send_json(
+        broker,
+        {
+            "op": "scan",
+            "job_input_validation_sha256": validation_sha256,
+            "workspace": str(workspace),
+            "authorization_receipt_id": receipt["authorization_receipt_id"],
+        },
+    )
+    _close_broker(broker)
+
+    assert scanned["status"] == "ok"
+    coverage = _object_field(scanned, "coverage")
+    assert coverage["fresh_projects"] == 1
+    assert not any(
+        isinstance(issue, dict) and issue.get("kind") == "git_repository_boundary_violation"
+        for issue in cast(list[object], scanned["issues"])
+    )
+
+
 def test_bounded_git_runner_kills_timeout_and_output_flood(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

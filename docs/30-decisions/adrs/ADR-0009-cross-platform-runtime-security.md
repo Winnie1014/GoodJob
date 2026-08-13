@@ -97,6 +97,7 @@ macOS 分支保持现有 `/bin/ps -o lstart=` 不变。Linux 分支读取 `/proc
 - macOS sandbox-exec 测试加 `@pytest.mark.skipif(sys.platform != "darwin")`，Linux bwrap 测试加 `@pytest.mark.skipif(not linux or not bwrap)`
 - E2E broker 测试在两个平台各跑一次真实沙箱
 - `BwrapSandbox.build_command()` 测试断言 `--tmpfs /tmp` 先于授权根 `--ro-bind`，`--proc` 出现在 `--unshare-pid` 之后，且显式 `--chdir` 到授权根内的具体 worktree；授权根可能包含多个项目，不能用它替代 Git 当前工作目录
+- Git 本地配置的 `include.path` / `includeIf.*.path` 在执行其他 Git 命令前以 `--no-includes` 枚举；根外路径显式 fail-closed，不能依赖 Seatbelt 的 `EACCES` 或 bwrap 空路径的 `ENOENT` 差异
 - bwrap 不存在时 `BwrapSandbox.is_available()` 返回 `False`，`build_command()` 抛出 `OSError`
 - 进程身份测试断言同一进程的 marker 稳定，不存在 PID 的 marker 为 `None`
 
