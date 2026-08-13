@@ -794,9 +794,9 @@ class GitMetadataReader:
             include_result = self._git(
                 binding,
                 "config",
-                "--local",
                 "--no-includes",
                 "--null",
+                "--show-origin",
                 "--get-regexp",
                 r"^include.*\.path$",
             )
@@ -927,9 +927,12 @@ class GitMetadataReader:
 
     @staticmethod
     def _has_root_external_include(binding: InternalGitBinding, output: str) -> bool:
-        for record in output.split("\0"):
-            if not record:
-                continue
+        fields = output.split("\0")
+        if fields and not fields[-1]:
+            fields.pop()
+        if len(fields) % 2 != 0:
+            return True
+        for origin, record in zip(fields[::2], fields[1::2], strict=True):
             key, separator, raw_path = record.partition("\n")
             normalized_key = key.casefold()
             if not separator or not (
@@ -938,11 +941,17 @@ class GitMetadataReader:
                 and normalized_key.endswith(".path")
             ):
                 continue
-            if not raw_path or raw_path.startswith(("~", "%")) or "\0" in raw_path:
+            if not origin.startswith("file:") or not raw_path or raw_path.startswith(("~", "%")):
+                return True
+            origin_path = Path(origin.removeprefix("file:"))
+            if not origin_path.is_absolute():
+                origin_path = binding.worktree_root / origin_path
+            origin_path = Path(os.path.normpath(str(origin_path)))
+            if not _is_within(origin_path, binding.workspace_root):
                 return True
             include_path = Path(raw_path)
             if not include_path.is_absolute():
-                include_path = binding.common_dir / include_path
+                include_path = origin_path.parent / include_path
             lexical_path = Path(os.path.normpath(str(include_path)))
             if not _is_within(lexical_path, binding.workspace_root):
                 return True
