@@ -115,7 +115,7 @@ session_binding_digest = SHA256(
 )
 ```
 
-每个受保护请求都临时携带原始 capability；Repository 重新计算 digest 并以 constant-time compare 对照回执。原始值不得进入 SQLite、配置、argv、环境变量、stdout/stderr、诊断、manifest、产物或 host agent 可见文本；本地核心只可通过专用 stdin/继承文件描述符接收，且禁止记录完整请求载荷。host agent task 结束、编排状态丢失或运行时不能提供 task-scoped 易失状态时，能力立即失效并要求 Owner 重新确认，绝不能从 SQLite 恢复。该 capability 防止 GoodJob 在另一个 host agent task 中误复用回执，不构成对控制本机与数据库的 Owner 的安全沙箱。
+每个受保护请求都临时携带原始 capability；Repository 重新计算 digest 并以 constant-time compare 对照回执。原始值不得进入 SQLite、配置、argv、环境变量、stdout/stderr、诊断、manifest、产物或 host agent 可见文本；本地核心只可通过平台私有能力通道接收（POSIX 专用 stdin/继承文件描述符，原生 Windows allowlisted inherited HANDLE），且禁止记录完整请求载荷。host agent task 结束、编排状态丢失或运行时不能提供 task-scoped 易失状态时，能力立即失效并要求 Owner 重新确认，绝不能从 SQLite 恢复。该 capability 防止 GoodJob 在另一个 host agent task 中误复用回执，不构成对控制本机与数据库的 Owner 的安全沙箱。
 
 `RoleLens.dimensions` 等结构化字段必须被当作版本化值对象保存，而非依赖当前 Skill 中的模板重新计算。`JobInput.jd_text` 可以保存用户主动提供的完整 JD，因为它不是扫描到的项目源码；如通过路径提供，应同时保存当次内容哈希，避免后续文件变化导致镜头来源不明。`DerivedExport` 只投影源 `ArtifactSnapshot` 已冻结的事实，不重新扫描、生成 Claim 或改变 RoleLens。
 
@@ -142,7 +142,7 @@ final_score_milli =
 
 | 对象 | 必需内容 | 约束 |
 | --- | --- | --- |
-| `SessionAuthorizationEnvelope` | `authorization_receipt_id`、瞬时 `session_capability` | 包裹所有会读取/返回项目衍生数据或调用模型的请求；capability 只经专用 stdin/继承 FD 传给本地核心，不属于可序列化业务 payload，不得记录或持久化 |
+| `SessionAuthorizationEnvelope` | `authorization_receipt_id`、瞬时 `session_capability` | 包裹所有会读取/返回项目衍生数据或调用模型的请求；capability 只经平台私有能力通道传给本地核心（POSIX inherited FD / Windows allowlisted inherited HANDLE），不属于可序列化业务 payload，不得记录或持久化 |
 | `PreparationRequest` | `request_id`、`workspace_ref`、`authorization_receipt_id`、`target_role`、可选 `jd_input`、可选 `level_override`、可选 `requested_exports`、`config_revision` | 创建运行时校验同会话源码分析回执并冻结具体 `scan_run_id`；主包语言固定为 `zh-CN`，请求英文时先完成主快照再派生导出 |
 | `EvidenceQuery` | `scan_run_id`、`role_lens_id`、岗位维度、可选项目/模块/类型过滤、每组数量上限、可选定向历史目标与理由 | 查询必须可由同一快照与 RoleLens 重放；定向历史只返回 commit 元数据/路径候选并记录理由，不能以数据库当前指针替换显式 run |
 | `EvidenceBundle` | `contract_version`、`scan_run_id`、`role_lens_id`、临时查询优先级、证据项/候选项、覆盖摘要、`ScanIssue` 摘要、深读建议 | 查询优先级只用于控制阅读预算，不是最终 ProjectAssessment；已持久化项含 ID，候选项含 candidate ID/来源；均含项目/worktree/模块、locator、状态与 hash/commit locator；不含源码正文 |

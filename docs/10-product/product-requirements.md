@@ -183,7 +183,7 @@ GoodJob 不要求用户对每个 Claim 逐条确认，但必须严格区分以�
 GoodJob 的访问边界分为三层，缺一不可：
 
 1. `workspace_path` 只授权 Python 在本机读取指定根内的合资格内容；显式 JD 只作为岗位输入读取，不扩展扫描范围。
-2. 每个显式会话的 `AuthorizationReceipt(source_analysis)` 才授权 GoodJob 让当前 host agent 会话分析该工作区。回执只记录 scope、notice、确认时间与当前 task capability 的 digest；原始 capability 由 host agent task 易失编排状态持有，每次受保护请求经专用 stdin/继承 FD 传给本地核心并 constant-time compare，不落库、不记日志、不能从旧 receipt 恢复。能力缺失或运行时不支持时必须重新确认。按证据打开的原文件会进入该会话的模型处理链路；GoodJob 不扩大当前产品/账户/工作区的数据处理与保留边界。
+2. 每个显式会话的 `AuthorizationReceipt(source_analysis)` 才授权 GoodJob 让当前 host agent 会话分析该工作区。回执只记录 scope、notice、确认时间与当前 task capability 的 digest；原始 capability 由 host agent task 易失编排状态持有，每次受保护请求经平台私有能力通道传给本地核心并 constant-time compare，不落库、不记日志、不能从旧 receipt 恢复。能力缺失或运行时不支持时必须重新确认。按证据打开的原文件会进入该会话的模型处理链路；GoodJob 不扩大当前产品/账户/工作区的数据处理与保留边界。
 3. 工作区内 `.git` 标记只是根外 Git 目录的**不可信候选**。系统先只读取根内标记并展示 marker kind 与精确候选；Owner 对这些候选授予 `external_git_relation_probe` 后，系统才可解析规范化 git-dir/common-dir、互指关系和目录身份。系统展示解析结果和拟读取字段后，还须取得同时绑定精确路径与身份的 `AuthorizationReceipt(external_git_metadata)`，才能以描述符直接读取关系与 HEAD/ref。外部阶段不得启动 Git；根外 index/dirty、源码、配置、模块、blob、diff 和 Git 历史都不得被扫描或读取。
 
 GoodJob 不得写入、格式化、构建、测试、提交或以其他方式改变被扫描项目，也不得引入当前 host agent 会话之外的外部分析服务、源码上传通道、遥测或扫描网络依赖。
@@ -230,6 +230,16 @@ WSL1 不支持用户命名空间（bwrap 依赖），因此 WSL1 上 bwrap 后�
 
 通过 `--agent-runtime` 参数标识宿主运行时；`issuer_kind` 为自由文本，默认 `codex_task_runtime` 保持向后兼容；`uv` 不存在时自动回退到 `python3.12`。
 
+### FR-18：原生 Windows 安全运行时
+
+GoodJob 在原生 Windows 上必须以独立的安全后端完成与现有平台相同的可观察安全结果：Git 远程访问和 helper 绕过失败而本地白名单操作正常；Git 与业务子进程在用户代码执行前进入可回收边界且不能逃逸；扫描器全部文件操作保持授权根身份并拒绝路径穿越、reparse、别名、ADS 与跨卷逃逸；SessionCapability 与私有 payload 只进入目标子进程的最小能力集合，不进入参数、环境变量或持久状态；输出总量受同一预算约束，失败后不遗留活动子进程、网络规则或系统资源。
+
+上述结果的 Windows 实现机制由待接受的 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 唯一定义，产品需求不允许实现用不同机制弱化这些结果。
+
+在 `IMP-31` 全部真机 E2E 通过前，原生 Windows 必须保持 unsupported / fail-closed，运行前提示推荐 WSL2；文档冻结或原语 spike 通过都不能提前改变支持状态。
+
+**验收结果：** 原生 Windows 只有在 Git 网络隔离、进程树回收、授权根文件访问、capability 隔离、有界输出和异常清理均有真机阳性/负向证据后才进入支持矩阵；否则零受保护 Git/扫描执行并显示 WSL2 指引。
+
 ### NFR-09：跨平台沙箱等价性与 fail-closed 边界
 
 macOS Seatbelt 和 Linux bwrap 沙箱在安全语义上必须等价：都拒绝网络、限制文件系统读取范围、隔离进程命名空间。两者的安全差异（bwrap 额外只读挂载 `/usr`、`/lib`、`/etc` 等系统路径以使 Git 二进制和身份解析可用）必须在 ADR-0009 中记录并接受。
@@ -239,6 +249,14 @@ macOS Seatbelt 和 Linux bwrap 沙箱在安全语义上必须等价：都拒绝�
 ### NFR-10：宿主兼容性探针准入
 
 每个宿主 agent 必须通过 5 项探针（发现路径、长驻 stdin、JSONL 往返、退出清理、真机 E2E）后才可进入支持矩阵；未通过者明确标注待支持。
+
+### NFR-11：Windows 降级预算与 fail-closed 边界
+
+原生 Windows 唯一允许的安全降级是 Git 子进程没有文件系统读隔离，因而可能读取授权根外的本机文件；该限制即使在未来准入后，也必须在每次原生 Windows 运行前清楚提示。要求完整 Git 文件系统隔离时应使用 WSL2。
+
+Git 网络隔离、扫描器授权根/reparse/TOCTOU 边界、进程树回收和 capability 隔离不得降级。任一原生 Windows 安全前置条件不可用、无权限、无法验证或无法收窄到本次请求时，相关操作必须在受保护执行前 fail-closed；不得静默切换到无网络隔离、路径名重解析、非受控进程启动或宽泛能力继承。
+
+正常结束、失败、取消和超限都不得遗留活动子进程、临时网络边界或未释放系统资源；stdout/stderr 必须共用一个端到端累计预算，不允许任一阶段形成无界缓冲。具体机制与清理顺序由 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 定义。
 
 ## 5. 关键失败路径
 
@@ -252,6 +270,7 @@ macOS Seatbelt 和 Linux bwrap 沙箱在安全语义上必须等价：都拒绝�
 | 岗位名称未知或无 JD | 生成带假设的候选 RoleLens，并在准备包中展示假设 | 是 |
 | 某项目/模块权限不足或仓库损坏 | 记录 ScanIssue、覆盖影响和补救动作 | 是，继续其余范围 |
 | 语言未深读支持 | 生成基础档案并标注分析边界 | 是 |
+| 原生 Windows 尚未完成 `IMP-31` 准入，或任一原生 Windows 安全前置条件失败 | 标记 unsupported / fail-closed，零受保护 Git/扫描执行，明确推荐 WSL2 | 否，不降级执行 |
 | 原始证据已移动或哈希失效 | 运行标记 `refresh_required`，列出受影响 SourceRevision，要求显式 refresh 或重新读取原文件 | 否，本次准备不得半提交；旧快照仍可读取 |
 | 英文导出失败或进程中断 | ExportAttempt 标为 failed/interrupted；只清理该 attempt 预登记路径 | 是，可创建新 attempt 重试；中文快照/latest 不变 |
 | 缺少业务、结果或个人职责信息 | 产生项目级批量访谈问题；用户跳过后保留缺口 | 是 |
@@ -265,7 +284,7 @@ macOS Seatbelt 和 Linux bwrap 沙箱在安全语义上必须等价：都拒绝�
 | G-03 建立可信叙事 | FR-06、FR-07、FR-10、FR-11；NFR-02、NFR-04 | 证据模型、产物与学习闭环、ADR-0003 |
 | G-04 产出可使用材料 | FR-08、FR-09、FR-12、FR-13；NFR-03 | 产物与学习闭环、系统设计、ADR-0002 |
 | G-05 可持续复习闭环 | FR-04、FR-10、FR-14；NFR-04、NFR-06 | 证据模型、产物与学习闭环、ADR-0007 |
-| G-06 本地、可审计、可维护 | FR-01、FR-15、FR-16；NFR-01 至 NFR-06、NFR-08、NFR-09 | 系统设计、扫描与分析设计、ADR-0001、ADR-0005、ADR-0006、ADR-0009 |
+| G-06 本地、可审计、可维护 | FR-01、FR-15、FR-16、FR-18；NFR-01 至 NFR-06、NFR-08、NFR-09、NFR-11 | 系统设计、扫描与分析设计、ADR-0001、ADR-0005、ADR-0006、ADR-0009、ADR-0011 |
 
 ## 7. 首版边界重申
 

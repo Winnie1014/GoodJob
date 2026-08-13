@@ -7,7 +7,7 @@
 
 ## 1. 设计摘要
 
-GoodJob 是一个由 host agent 显式调用的个人 Skill，而不是独立桌面应用。host agent 负责理解岗位、读取本地证据、生成叙事与开展访谈；随 Skill 分发的 Python 核心负责确定性的发现、索引、SQLite 持久化和产物编排；预构建的 TypeScript 前端只负责渲染无需服务的离线 HTML 看板。每个显式会话先形成范围级 `AuthorizationReceipt`，它确认 Owner 有权让当前 host agent 会话分析该工作区，但不重新定义 host agent 平台的数据边界。运行时支持 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）。
+GoodJob 是一个由 host agent 显式调用的个人 Skill，而不是独立桌面应用。host agent 负责理解岗位、读取本地证据、生成叙事与开展访谈；随 Skill 分发的 Python 核心负责确定性的发现、索引、SQLite 持久化和产物编排；预构建的 TypeScript 前端只负责渲染无需服务的离线 HTML 看板。每个显式会话先形成范围级 `AuthorizationReceipt`，它确认 Owner 有权让当前 host agent 会话分析该工作区，但不重新定义 host agent 平台的数据边界。当前运行时支持 macOS 和 Linux（含 WSL2），由 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md) 定义安全后端；原生 Windows 的候选安全契约由待接受的 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 提出，在终审接受、实现和 `IMP-31` 真机验收完成前仍为 unsupported 并推荐 WSL2。
 
 同一份岗位无关证据目录可以被不同 `RoleLens` 重排。源码仍以用户指定工作区内的原文件为事实源；数据库只保存证据指针、哈希、短摘要和结构化结论。版本化 Skill 目录与持续增长的个人数据目录严格分离。
 
@@ -63,7 +63,7 @@ Skill 运行期间不得修改安装目录。升级、重装或删除 Skill 不�
 ### 2.3 进程与网络边界
 
 - Owner 提供的 `workspace_path` 仅定义本机文件范围。`ARCH-C01` 必须先取得当次 `AuthorizationReceipt(source_analysis)`，再让 host agent 或 Python 处理源码、源码衍生证据或既有项目材料；回执拒绝/缺失时不建立新运行。扫描器只可把 `.git` 标记当作不可信候选：先只检查根内标记，再以绑定 marker kind 与精确候选的 `external_git_relation_probe` 回执解析关系和目录身份；解析后展示 git-dir/common-dir、身份与字段并取得精确 `external_git_metadata` 回执。双向绑定通过后也只能用描述符直接读取关系与 HEAD/ref，不得启动外部 Git 或扫描根外项目内容、配置、index/dirty 或历史。
-- Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。Git 子进程在平台原生沙箱中运行：macOS 使用 `sandbox-exec` Seatbelt（拒网络、只读授权根、禁 hooks），Linux 使用 `bwrap`（等价安全语义，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；任一沙箱后端不可用时 fail-closed。真实 Ubuntu 24.04 门已通过，ADR-0009 已接受，WSL2 复用同一 Linux 后端。
+- Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。Git 子进程在平台原生沙箱中运行：macOS 使用 `sandbox-exec` Seatbelt，Linux/WSL2 使用 `bwrap`（见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）。原生 Windows 后端固定为 WFP ALE dynamic filters + Job Object：直接定位并启动 `mingw64\bin\git.exe`，先为同一真实二进制安装并回读 filters，再以 `CREATE_SUSPENDED` 创建、加入 `ACTIVE_PROCESS=1` Job 后 resume；`cmd\git.exe` shim 禁止作为入口（见 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md)）。任一后端不可用时 fail-closed。Windows 实现与真机 E2E 未全部通过前，平台选择器不得返回可执行后端，只返回 unsupported/WSL2 指引。
 - SQLite 是唯一结构化持久层。前端不得直接打开或修改 SQLite。
 - 离线 HTML 不请求远端 API、CDN、字体或分析服务，也不通过 `file://` 再读取外部 JSON；报告数据随 HTML 产物内嵌。
 - GoodJob 不引入当前 host agent 会话之外的分析服务、源码上传通道或遥测。host agent 对源码的访问属于当前工作区会话中的直接读取，受该会话既有的数据边界约束；扫描器不额外复制或传输源码。GoodJob 不判断 Owner 的 NDA、版权或组织策略是否允许该会话分析或对外使用材料。
@@ -78,10 +78,11 @@ Skill 运行期间不得修改安装目录。升级、重装或删除 Skill 不�
 | `ARCH-C04` | RoleLens 与准备引擎 | 由 host agent 根据岗位/JD/职级构造镜头，按镜头排序证据、形成 Claim、识别知识缺口 | 把岗位限制为固定枚举、重新扫描同一工作区、把文档计划判作已实现 |
 | `ARCH-C05` | 产物生成器 | 校验报告契约，生成中文报告/简历/HTML、工作稿、英文派生导出、manifest 和 `latest`；每次英文导出维护 ExportAttempt 与可恢复路径 | 改写 Claim、隐藏覆盖缺口、覆盖人工工作稿、让派生导出改写主快照 |
 | `ARCH-C06` | 离线 TypeScript 看板 | 在浏览器内完成导航、搜索、筛选、证据展开和复习状态展示 | 访问网络、启动服务、持久化新的数据库状态或执行源码扫描 |
+| `ARCH-C07` | Windows 平台安全后端 | 提供 WFP/Job/direct launcher、NT handle-relative FS、capability handle、进程身份、锁与 bounded-output；维护 Win32 handle 所有权 | 决定产品授权、回退到 pathname/无网络隔离后端、在未通过 IMP-31 时宣称 supported |
 
 ### 3.1 `ARCH-C01`：Skill 编排器
 
-Skill 只能由用户显式调用（FR-01）。当前 host agent task 首次进入 GoodJob 授权流程时，编排运行时必须用密码学安全随机源生成至少 256 bit `SessionCapability`，只保存在 task-scoped 易失状态；Owner 确认范围后，Python 仅持久化其 domain-separated SHA-256 digest 到 `AuthorizationReceipt`。原始 capability 只能通过专用 stdin/继承 FD 随受保护请求传递，不能进入 argv、环境变量、数据库、GoodJob 日志、产物或用户可见输出；host agent task trace 仍受 host 既有边界约束。task 结束、状态丢失或运行时不支持该易失能力时必须重新确认，不能读取 SQLite 恢复旧 capability。
+Skill 只能由用户显式调用（FR-01）。当前 host agent task 首次进入 GoodJob 授权流程时，编排运行时必须用密码学安全随机源生成至少 256 bit `SessionCapability`，只保存在 task-scoped 易失状态；Owner 确认范围后，Python 仅持久化其 domain-separated SHA-256 digest 到 `AuthorizationReceipt`。原始 capability 只能通过平台私有能力通道随受保护请求传递：POSIX 使用专用 stdin/继承 FD，原生 Windows 使用 allowlisted inherited HANDLE；它不能进入 argv、环境变量、数据库、GoodJob 日志、产物或用户可见输出，host agent task trace 仍受 host 既有边界约束。task 结束、状态丢失或运行时不支持该易失能力时必须重新确认，不能读取 SQLite 恢复旧 capability。
 
 授权前必须显示规范化工作区、处理类别、GoodJob 本地持久化边界，并说明按证据打开的原文件会进入当前 host agent 会话的模型处理链路、其边界由当前产品/账户/工作区策略决定；Owner 确认后形成 `AuthorizationReceipt(source_analysis)`。一次准备会话随后形成 `PreparationRequest`：授权工作区、回执、主岗位、可选 JD、可选职级覆盖、可选英文导出请求和可选数据目录；首版主包语言固定为中文（FR-02、FR-13）。
 
@@ -108,11 +109,17 @@ JD 用于细化岗位与推断职级；显式职级覆盖自动推断。无 JD �
 
 Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表结构；`ReportBundle` 的富文本只使用 `ReportInlineToken` 封闭集合，前端不含 Markdown 或 HTML 解析器。前端源码使用 TypeScript，构建产物随 Skill 分发；产出时报告数据与前端代码全部内联在单个入口 HTML 文件中，字体只用系统字体栈，双击即可在断网且无本地服务时打开（ADR-0002、ADR-0008）。Markdown 和 HTML 必须来自同一冻结快照，且对同一 Claim 呈现相同证据状态与缺口（FR-11、FR-12、NFR-03）。章节与学习闭环见[产物与学习闭环](artifacts-and-learning.md)；信息架构、状态编码、布局与交互见[看板呈现契约](dashboard-design.md)。
 
+### 3.5 `ARCH-C07`：Windows 平台安全后端
+
+`ARCH-C07` 由平铺的平台模块组成：`sandbox_windows.py` 只负责 WFP/Job Git policy，`fs_windows.py` 只负责 NT handle-relative 文件系统原语，`launcher_windows.py` 统一 direct `CreateProcessW` 生命周期与 bounded-output，`capability_windows.py` 负责最小 handle 继承，`process_windows.py`/`lock_windows.py` 提供进程身份与单写者锁。上层 `safe_fs.py`、`source_io.py`、`scanner.py`、`git_metadata.py`、`session.py` 与 `auth.py` 必须经 `ARCH-I12` 委托，不能绕过后端直接选弱化 API。
+
+Windows launcher 的状态机固定为 `security_ready -> suspended -> assigned -> running -> terminated -> cleaned`。`security_ready` 对 Git 表示 WFP filters 已安装并逐项回读；`assigned` 表示 suspended 进程已加入按本次 policy 预配置的独立 Job。只有 `assigned` 能进入 `running`。Git Job 固定 `ACTIVE_PROCESS=1`；业务子进程 Job 按自身 policy 允许或限制后代，但获准后代必须留在同一 Job containment 中。`Win32Child` 对 process/thread/Job/pipe/capability/payload/WFP/attribute-list 逐项声明唯一 owner；失败和取消按 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 的依赖逆序清理，Git 的 WFP session 最后关闭。`CREATE_NO_WINDOW` 固定保留；headless `conhost.exe` 可进入 Git Job accounting 但不提高 `ACTIVE_PROCESS=1` 限额。
+
 ## 4. 稳定接口
 
 以下是组件间稳定边界，不要求 Owner 直接使用命令行。所有内部命令以 JSON 向标准输出返回结构化结果；诊断写标准错误；只有请求整体无法建立时返回非零退出码。项目级失败作为 `ScanIssue` 返回，不得误报为全局成功或中断其他项目。
 
-`ARCH-I02/I03/I04/I05/I06/I08/I10/I11` 都必须由 `SessionAuthorizationEnvelope` 包裹。业务 JSON 只含 receipt ID；原始 SessionCapability 通过不记录的专用 stdin/继承 FD 侧带传入。Repository 在任何工作区读取、EvidenceBundle 返回、模型驱动分析或导出前，以 constant-time compare 验证 digest/scope/notice；验证失败为 `authorization_session_mismatch` 且零项目数据读取、零业务写入。`ARCH-I07` 是对已冻结 ReportBundle 的纯本地确定性重渲染，不调用模型或读取工作区，因此不要求旧 task capability。
+`ARCH-I02/I03/I04/I05/I06/I08/I10/I11` 都必须由 `SessionAuthorizationEnvelope` 包裹。业务 JSON 只含 receipt ID；原始 SessionCapability 通过不记录的平台私有能力通道侧带传入（POSIX inherited FD / Windows allowlisted inherited HANDLE）。Repository 在任何工作区读取、EvidenceBundle 返回、模型驱动分析或导出前，以 constant-time compare 验证 digest/scope/notice；验证失败为 `authorization_session_mismatch` 且零项目数据读取、零业务写入。`ARCH-I07` 是对已冻结 ReportBundle 的纯本地确定性重渲染，不调用模型或读取工作区，因此不要求旧 task capability。
 
 | ID | 发起方 → 接收方 | 接口 | 输入 | 输出与保证 |
 | --- | --- | --- | --- | --- |
@@ -127,6 +134,7 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 | `ARCH-I09` | `ARCH-C05` → `ARCH-C06` | `ReportBundle v1` | 一次冻结 PreparationRun 的岗位、项目、Claim、证据、缺口、ReviewSubjectProjection 与复习摘要 | canonical hash 稳定、自包含、可校验版本、无数据库内部表字段耦合、断网可渲染；重试不得改变 bundle hash |
 | `ARCH-I10` | `ARCH-C01` → `ARCH-C05` | `translate_export` | `TranslationExportRequest`、task 内存中的翻译候选、SessionAuthorizationEnvelope | 候选不落盘；单个持锁发布子进程先创建 ExportAttempt/owner identity，再写 temp、校验、改名和提交 DerivedExport；不更新 latest |
 | `ARCH-I11` | `ARCH-C01/C04` → `ARCH-C02` | `verify_source_revision` | `PreparationRun`、一组 SourceRevision/locator | 对预检、读取前和提交前的精确证据做哈希/定位器校验；返回 passed 或 `refresh_required`，不写入新事实 |
+| `ARCH-I12` | `ARCH-C02` → `ARCH-C07` | `WindowsPlatformBoundary` | 已验证 root/parent borrowed handles、单组件名称、受控 argv/env、最小 capability/payload handle 集、Git/业务 Job policy、输出总预算 | 返回 owned object/child handles 与结构化失败；名称与身份、WFP 回读、Job assign、继承集合和预算任一不满足即 fail-closed；不得返回 pathname 授权结果或失控子进程 |
 
 `PreparationRequest`、`EvidenceBundle`、`RoleLens`、`Claim`、`ScanIssue`、`ArtifactSnapshot`、`DerivedExport` 的字段与身份规则以[证据模型](evidence-model.md)为准。任何未来破坏性接口修改必须提升对应契约版本并保留旧快照的只读渲染能力。
 
@@ -187,6 +195,7 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 | `ARCH-INV-17` | 复习连续性依赖稳定 ReviewTarget 与 canonical ReviewSubjectProjection；不得直接 hash Revision/Gap ID 或题面。纯文案修订保持连续，实质语义变化或无法证明等价时必须重评。 |
 | `ARCH-INV-18` | 英文派生导出的源项/目标项集合及结构化事实锚点必须相等；失败不发布 DerivedExport，但此校验不宣称证明全部自然语言语义。 |
 | `ARCH-INV-19` | 英文导出必须先创建 ExportAttempt，且只写预登记 attempt-scoped temp/final path；DerivedExport 只由 succeeded attempt 创建，中断恢复不得扫描或删除其他 exports 目录。 |
+| `ARCH-INV-20` | 原生 Windows 的 Git 只有在真实 `mingw64\bin\git.exe` 的 WFP filters 已安装/回读且 suspended 进程已加入 `ACTIVE_PROCESS=1` Job 后才能 resume；扫描器授权只由 root/parent handle + volume/file identity 决定；capability 只经 allowlisted inherited handle 传递。任一条件或逆序清理不能成立即 fail-closed，唯一允许的降级仅为 Git FS 读隔离。 |
 
 首版使用单写者策略：迁移、恢复及任何写操作必须先取得 OS 管理的非阻塞排他文件锁；读取可并行。锁由持锁文件描述符和内核状态保证，进程退出自动释放；锁文件 PID/时间只用于诊断，绝不按超时、mtime 或 PID 猜测删锁/偷锁。未取得锁返回 `writer_busy` 且零写入。ScanRun/RenderAttempt/ExportAttempt 只有 owner PID+启动标识确认进程不存在时才自动标 interrupted；PreparationRun 由 SessionCapability 归属，不按 PID/时间处理，新 task 只能经 Owner 明示 `abandon_and_restart`。事务提交后只清理按 run/attempt ID 预登记且位于个人数据目录的路径。数据库迁移必须完整成功后才能继续写入。
 
@@ -210,6 +219,7 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 | `NFR-06` | `ARCH-C01/C03`、`ARCH-INV-01` | Skill 升级不触碰个人状态；首版不自动删除并显示存储用量 |
 | `NFR-07` | `ARCH-C02/C04` | 语言适配器和动态 RoleLens 可扩展，不改写基础证据模型 |
 | `NFR-08` | `ARCH-C01/C02/C05/C06`、`ARCH-I06`、`ARCH-INV-11` | 项目/JD 指令不被执行；模型草稿需校验；HTML 数据不能变成代码 |
+| `FR-18`、`NFR-11` | `ARCH-C02/C07`、`ARCH-I12`、`ARCH-INV-20` | WFP 回读后 resume；真实 Git scope + Job 单成员；NT handle-relative 授权；最小 handle 继承、bounded-output 与异常逆序清理；未过 IMP-31 时 unsupported/WSL2 |
 
 ## 8. 首版边界
 
