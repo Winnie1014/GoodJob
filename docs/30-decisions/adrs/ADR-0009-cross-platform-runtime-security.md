@@ -96,7 +96,7 @@ macOS 分支保持现有 `/bin/ps -o lstart=` 不变。Linux 分支读取 `/proc
 - `make gate` 在 macOS 和 Linux（含 WSL2）上分别全绿；当前 macOS 证据已具备，Linux/WSL2 证据待真机补验
 - macOS sandbox-exec 测试加 `@pytest.mark.skipif(sys.platform != "darwin")`，Linux bwrap 测试加 `@pytest.mark.skipif(not linux or not bwrap)`
 - E2E broker 测试在两个平台各跑一次真实沙箱
-- `BwrapSandbox.build_command()` 测试断言 `--tmpfs /tmp` 先于授权根 `--ro-bind`，`--proc` 出现在 `--unshare-pid` 之后，且显式 `--chdir` 到授权根
+- `BwrapSandbox.build_command()` 测试断言 `--tmpfs /tmp` 先于授权根 `--ro-bind`，`--proc` 出现在 `--unshare-pid` 之后，且显式 `--chdir` 到授权根内的具体 worktree；授权根可能包含多个项目，不能用它替代 Git 当前工作目录
 - bwrap 不存在时 `BwrapSandbox.is_available()` 返回 `False`，`build_command()` 抛出 `OSError`
 - 进程身份测试断言同一进程的 marker 稳定，不存在 PID 的 marker 为 `None`
 

@@ -320,8 +320,8 @@ def test_bwrap_sandbox_builds_correct_command_structure() -> None:
 
     binding = MagicMock()
     binding.workspace_root = Path("/test/workspace")
-    binding.git_dir = Path("/test/workspace/.git")
-    binding.worktree_root = Path("/test/workspace")
+    binding.git_dir = Path("/test/workspace/repository/.git")
+    binding.worktree_root = Path("/test/workspace/repository")
 
     sandbox = BwrapSandbox()
     if not sandbox.is_available():
@@ -348,7 +348,7 @@ def test_bwrap_sandbox_builds_correct_command_structure() -> None:
 
     assert "--dev" in command
     assert "--tmpfs" in command
-    assert command[command.index("--chdir") + 1] == "/test/workspace"
+    assert command[command.index("--chdir") + 1] == "/test/workspace/repository"
     assert command[-2:] == ["rev-parse", "HEAD"]
 
 
@@ -382,7 +382,8 @@ def test_real_bwrap_closes_bound_directory_fds_and_enforces_boundaries(
     from goodjob.platform.sandbox_linux import BwrapSandbox
 
     workspace = tmp_path / "workspace"
-    git_dir = workspace / ".git"
+    worktree = workspace / "repository"
+    git_dir = worktree / ".git"
     outside = tmp_path / "outside-secret"
     git_dir.mkdir(parents=True)
     outside.write_bytes(b"outside-secret")
@@ -395,14 +396,14 @@ def test_real_bwrap_closes_bound_directory_fds_and_enforces_boundaries(
     )
     if python is None:
         pytest.skip("real bwrap test requires system Python")
-    workspace_stat = workspace.stat()
+    worktree_stat = worktree.stat()
     git_dir_stat = git_dir.stat()
     binding = InternalGitBinding(
         workspace_root=workspace,
-        worktree_root=workspace,
+        worktree_root=worktree,
         git_dir=git_dir,
         common_dir=git_dir,
-        worktree_identity=(workspace_stat.st_dev, workspace_stat.st_ino),
+        worktree_identity=(worktree_stat.st_dev, worktree_stat.st_ino),
         git_dir_identity=(git_dir_stat.st_dev, git_dir_stat.st_ino),
         common_dir_identity=(git_dir_stat.st_dev, git_dir_stat.st_ino),
     )
@@ -412,6 +413,8 @@ def test_real_bwrap_closes_bound_directory_fds_and_enforces_boundaries(
     port = listener.getsockname()[1]
     probe = """
 import os, socket, stat, sys
+if os.getcwd() != sys.argv[1]:
+    raise SystemExit(f'unexpected sandbox cwd: {os.getcwd()}')
 directory_fds = []
 for descriptor in range(3, 256):
     try:
@@ -428,13 +431,13 @@ except OSError:
 else:
     raise SystemExit('authorized root remained writable')
 try:
-    open(sys.argv[1], 'rb').read()
+    open(sys.argv[2], 'rb').read()
 except OSError:
     pass
 else:
     raise SystemExit('root-external path remained readable')
 connection = socket.socket()
-if connection.connect_ex(('127.0.0.1', int(sys.argv[2]))) == 0:
+if connection.connect_ex(('127.0.0.1', int(sys.argv[3]))) == 0:
     raise SystemExit('host network remained reachable')
 print('sandbox-boundaries-ok')
 """
@@ -445,7 +448,9 @@ print('sandbox-boundaries-ok')
         safe_history_path=lambda _path: True,
         git_command_timeout_seconds=lambda: 10.0,
         workspace_git_command=lambda bound, _arguments: sandbox.build_command(
-            str(python), bound, [str(python), "-c", probe, str(outside), str(port)]
+            str(python),
+            bound,
+            [str(python), "-c", probe, str(worktree), str(outside), str(port)],
         ),
     )
     try:
@@ -457,7 +462,7 @@ print('sandbox-boundaries-ok')
 
     assert returncode == 0, stderr.decode("utf-8", errors="replace")
     assert stdout.strip() == b"sandbox-boundaries-ok"
-    assert not (workspace / "write-probe").exists()
+    assert not (worktree / "write-probe").exists()
     assert outside.read_bytes() == b"outside-secret"
     assert {
         path.name: path.read_bytes() for path in workspace.iterdir() if path.is_file()

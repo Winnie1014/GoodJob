@@ -34,8 +34,8 @@ class BwrapSandbox:
     - ``--proc /proc``: procfs (MUST be mounted after --unshare-pid, otherwise
       host process cmdline is exposed)
     - ``--tmpfs /tmp``: empty tmpfs (avoid host /tmp leakage)
-    - ``--chdir <authorized_root>``: replace the descriptor-bound host cwd with
-      the read-only namespace mount before Git starts
+    - ``--chdir <worktree_root>``: replace the descriptor-bound host cwd with
+      the bound worktree inside the read-only namespace before Git starts
     - ``--die-with-parent``: kill child when parent exits
 
     Security trade-off: bwrap makes /usr and /etc readable, which is wider than
@@ -62,6 +62,7 @@ class BwrapSandbox:
                 "Linux Git sandbox, or use WSL2/macOS"
             )
         authorized_root = str(binding.workspace_root)
+        worktree_root = str(binding.worktree_root)
         return [
             bwrap,
             "--die-with-parent",
@@ -89,6 +90,6 @@ class BwrapSandbox:
             "--proc",
             "/proc",
             "--chdir",
-            authorized_root,
+            worktree_root,
             *git_command,
         ]
