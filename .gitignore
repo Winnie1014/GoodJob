@@ -6,6 +6,12 @@
 **/__pycache__/
 *.py[cod]
 
+# Multica / opencode 运行时产物（非项目代码）
+.opencode/
+.multica/
+.agent_context/
+description.md
+
 # 运行时 data directory 若被误指向仓库内会产生的产物（GJ-22 §3.6/§5 前置条件 1）
 **/build/
 **/*.egg-info/
