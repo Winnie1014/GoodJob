@@ -295,7 +295,7 @@ class CheckerCliTests(unittest.TestCase):
 class GateIntegrationTests(unittest.TestCase):
     def test_gate_docs_runs_tests_before_checker(self) -> None:
         result = subprocess.run(
-            ["make", "-n", "gate-docs"],
+            ["make", "--no-print-directory", "-n", "gate-docs"],
             cwd=ROOT,
             check=True,
             capture_output=True,
