@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from goodjob.db import MIGRATIONS, Database
-from goodjob.errors import WriterBusyError
+from goodjob.errors import UnsupportedSchemaError, WriterBusyError
 from goodjob.locks import ExclusiveWriterLock
 from goodjob.paths import DataPaths
 
@@ -27,7 +27,7 @@ def test_data_paths_canonicalize_a_directly_constructed_root(tmp_path: Path) -> 
 def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     version = Database(data_paths).migrate()
 
-    assert version == 10
+    assert version == 11
     assert data_paths.config_file.read_text(encoding="utf-8") == "[goodjob]\nconfig_version = 1\n"
     assert data_paths.artifacts_dir.is_dir()
     assert data_paths.export_tmp_dir.is_dir()
@@ -93,7 +93,7 @@ def test_migration_creates_stable_owner_layout(data_paths: DataPaths) -> None:
     } <= source_revision_columns
     assert {"review_lineage_sequence", "review_cutoff_sequence"} <= preparation_columns
     assert "review_sequence" in interview_review_columns
-    assert Database(data_paths).migrate() == 10
+    assert Database(data_paths).migrate() == 11
 
 
 def test_writer_lock_never_steals_an_active_lock(data_paths: DataPaths) -> None:
@@ -165,6 +165,31 @@ def test_v9_migration_conservatively_backfills_review_order_and_cutoffs(
     )
     connection.execute(
         """
+        CREATE TABLE authorization_receipts (
+            authorization_receipt_id TEXT PRIMARY KEY,
+            receipt_kind TEXT NOT NULL CHECK (
+                receipt_kind IN (
+                    'source_analysis',
+                    'external_git_relation_probe',
+                    'external_git_metadata'
+                )
+            ),
+            session_binding_digest BLOB NOT NULL,
+            issuer_kind TEXT NOT NULL CHECK (issuer_kind = 'codex_task_runtime'),
+            scope_descriptor TEXT NOT NULL,
+            notice_version TEXT NOT NULL,
+            confirmed_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX authorization_receipts_scope_idx
+        ON authorization_receipts(receipt_kind, scope_descriptor, notice_version)
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE preparation_runs (
             preparation_run_id TEXT PRIMARY KEY,
             started_at TEXT NOT NULL
@@ -218,7 +243,7 @@ def test_v9_migration_conservatively_backfills_review_order_and_cutoffs(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 10
+    assert Database(data_paths).migrate() == 11
     upgraded = sqlite3.connect(data_paths.database_file)
     runs = upgraded.execute(
         """
@@ -313,7 +338,7 @@ def test_v7_migration_marks_populated_v6_claim_attribution_unknown(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 10
+    assert Database(data_paths).migrate() == 11
     upgraded = sqlite3.connect(data_paths.database_file)
     attribution = upgraded.execute(
         "SELECT personal_attribution FROM claim_revisions WHERE claim_revision_id = ?",
@@ -358,7 +383,7 @@ def test_migration_upgrades_v4_without_rewriting_existing_scan_schema(
     connection.commit()
     connection.close()
 
-    assert Database(data_paths).migrate() == 10
+    assert Database(data_paths).migrate() == 11
     upgraded = sqlite3.connect(data_paths.database_file)
     receipt = upgraded.execute(
         "SELECT authorization_receipt_id FROM authorization_receipts"
@@ -556,7 +581,7 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     connection.close()
 
-    assert Database(data_paths).migrate() == 10
+    assert Database(data_paths).migrate() == 11
     upgraded = sqlite3.connect(data_paths.database_file)
     preparation = upgraded.execute(
         "SELECT preparation_run_id, status FROM preparation_runs"
@@ -577,9 +602,9 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
     assert evidence == ("evidence-v5", "revision-v5", None, None)
     assert source_check == ("check-v5", "passed")
     assert foreign_key_failures == []
-    assert Database(data_paths).migrate() == 10
+    assert Database(data_paths).migrate() == 11
     final = sqlite3.connect(data_paths.database_file)
-    assert final.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (10,)
+    assert final.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (11,)
     assert final.execute("SELECT COUNT(*) FROM preparation_runs").fetchone() == (1,)
     assert final.execute("SELECT COUNT(*) FROM evidence").fetchone() == (1,)
     assert final.execute(
@@ -589,3 +614,286 @@ def test_migration_upgrades_populated_v5_without_losing_preparation_evidence(
         """
     ).fetchone() == (1, 0)
     final.close()
+
+
+def _seed_v10_database(data_paths: DataPaths, *, receipt_id: str = "receipt-v11") -> None:
+    data_paths.ensure_layout()
+    connection = sqlite3.connect(data_paths.database_file)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+        )
+        """
+    )
+    for migration in MIGRATIONS[:10]:
+        for statement in migration.statements:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (migration.version, migration.name, "2026-08-13T00:00:00Z"),
+        )
+    connection.execute(
+        """
+        INSERT INTO authorization_receipts(
+            authorization_receipt_id, receipt_kind, session_binding_digest, issuer_kind,
+            scope_descriptor, notice_version, confirmed_at
+        ) VALUES (?, 'source_analysis', X'00', 'codex_task_runtime',
+                  '{"workspace_path":"/workspace-v11"}', 'notice-v1',
+                  '2026-08-13T00:00:00Z')
+        """,
+        (receipt_id,),
+    )
+    connection.execute(
+        """
+        INSERT INTO workspaces(
+            workspace_id, canonical_root, display_name, registered_at, config_revision
+        ) VALUES ('ws-v11', '/workspace-v11', 'ws-v11', '2026-08-13T00:00:00Z', 'config-v1')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO scan_runs(
+            scan_run_id, workspace_id, authorization_receipt_id, owner_process_identity,
+            mode, change_detection_mode, config_revision, started_at, finished_at, status
+        ) VALUES ('scan-v11', 'ws-v11', ?, 'test', 'full', NULL, 'config-v1',
+                  '2026-08-13T00:00:00Z', '2026-08-13T00:00:00Z', 'completed')
+        """,
+        (receipt_id,),
+    )
+    connection.commit()
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    connection.close()
+
+
+def test_v11_migration_removes_issuer_kind_check_and_preserves_data(
+    data_paths: DataPaths,
+) -> None:
+    _seed_v10_database(data_paths)
+
+    assert Database(data_paths).migrate() == 11
+
+    upgraded = sqlite3.connect(data_paths.database_file)
+    upgraded.execute("PRAGMA foreign_keys = ON")
+    receipt = upgraded.execute(
+        "SELECT authorization_receipt_id, issuer_kind FROM authorization_receipts"
+    ).fetchone()
+    fk_check = upgraded.execute("PRAGMA foreign_key_check").fetchall()
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        upgraded.execute(
+            """
+            INSERT INTO authorization_receipts(
+                authorization_receipt_id, receipt_kind, session_binding_digest, issuer_kind,
+                scope_descriptor, notice_version, confirmed_at
+            ) VALUES ('bad-receipt', 'invalid_kind', X'00', 'codex_task_runtime',
+                      '{}', 'notice-v1', '2026-08-13T00:00:00Z')
+            """
+        )
+    upgraded.execute(
+        """
+        INSERT INTO authorization_receipts(
+            authorization_receipt_id, receipt_kind, session_binding_digest, issuer_kind,
+            scope_descriptor, notice_version, confirmed_at
+        ) VALUES ('new-receipt', 'source_analysis', X'01', 'opencode_task_runtime',
+                  '{}', 'notice-v1', '2026-08-13T00:00:00Z')
+        """
+    )
+    scan_run = upgraded.execute(
+        "SELECT scan_run_id FROM scan_runs WHERE authorization_receipt_id = ?",
+        ("receipt-v11",),
+    ).fetchone()
+    new_receipt = upgraded.execute(
+        "SELECT issuer_kind FROM authorization_receipts WHERE authorization_receipt_id = ?",
+        ("new-receipt",),
+    ).fetchone()
+    upgraded.close()
+
+    assert receipt == ("receipt-v11", "codex_task_runtime")
+    assert fk_check == []
+    assert scan_run == ("scan-v11",)
+    assert new_receipt == ("opencode_task_runtime",)
+
+
+def test_v11_migration_fault_injection_step6_rolls_back_and_restores_fk(
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_v10_database(data_paths)
+    original_connect = Database._connect
+    captured_connections: list[sqlite3.Connection] = []
+
+    class InspectableConnection(sqlite3.Connection):
+        def close(self) -> None:
+            pass
+
+    def connect_with_rejected_drop(database: Database) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            database.paths.database_file,
+            factory=InspectableConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 0")
+        captured_connections.append(connection)
+
+        def reject_authorization_receipts_drop(
+            action: int,
+            argument1: str | None,
+            _argument2: str | None,
+            _database_name: str | None,
+            _trigger_name: str | None,
+        ) -> int:
+            if action == sqlite3.SQLITE_DROP_TABLE and argument1 == "authorization_receipts":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(reject_authorization_receipts_drop)
+        return connection
+
+    monkeypatch.setattr(Database, "_connect", connect_with_rejected_drop)
+
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        Database(data_paths).migrate()
+
+    upgraded = sqlite3.connect(data_paths.database_file)
+    receipt = upgraded.execute(
+        "SELECT authorization_receipt_id, issuer_kind FROM authorization_receipts"
+    ).fetchone()
+    scan_run = upgraded.execute(
+        "SELECT scan_run_id FROM scan_runs WHERE authorization_receipt_id = ?",
+        ("receipt-v11",),
+    ).fetchone()
+    version = upgraded.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()
+    fk_violations = upgraded.execute("PRAGMA foreign_key_check").fetchall()
+    upgraded.close()
+
+    assert receipt == ("receipt-v11", "codex_task_runtime")
+    assert scan_run == ("scan-v11",)
+    assert version == (10,)
+    assert fk_violations == []
+    assert data_paths.database_file.with_name("goodjob.sqlite3.v10-backup").is_file()
+    assert captured_connections[0].execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    monkeypatch.setattr(Database, "_connect", original_connect)
+    sqlite3.Connection.close(captured_connections[0])
+    assert Database(data_paths).migrate() == 11
+    assert not data_paths.database_file.with_name("goodjob.sqlite3.v10-backup").exists()
+
+
+def test_v11_migration_fault_injection_step9_rolls_back_and_restores_fk(
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_v10_database(data_paths)
+    original_connect = Database._connect
+    captured_connections: list[sqlite3.Connection] = []
+
+    class InspectableConnection(sqlite3.Connection):
+        def close(self) -> None:
+            pass
+
+    def connect_with_rejected_fk_check(database: Database) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            database.paths.database_file,
+            factory=InspectableConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 0")
+        captured_connections.append(connection)
+
+        def reject_foreign_key_check(
+            action: int,
+            argument1: str | None,
+            _argument2: str | None,
+            _database_name: str | None,
+            _trigger_name: str | None,
+        ) -> int:
+            if action == sqlite3.SQLITE_PRAGMA and argument1 == "foreign_key_check":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(reject_foreign_key_check)
+        return connection
+
+    monkeypatch.setattr(Database, "_connect", connect_with_rejected_fk_check)
+
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        Database(data_paths).migrate()
+
+    upgraded = sqlite3.connect(data_paths.database_file)
+    receipt = upgraded.execute(
+        "SELECT authorization_receipt_id, issuer_kind FROM authorization_receipts"
+    ).fetchone()
+    scan_run = upgraded.execute(
+        "SELECT scan_run_id FROM scan_runs WHERE authorization_receipt_id = ?",
+        ("receipt-v11",),
+    ).fetchone()
+    version = upgraded.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()
+    fk_violations = upgraded.execute("PRAGMA foreign_key_check").fetchall()
+    upgraded.close()
+
+    assert receipt == ("receipt-v11", "codex_task_runtime")
+    assert scan_run == ("scan-v11",)
+    assert version == (10,)
+    assert fk_violations == []
+    assert data_paths.database_file.with_name("goodjob.sqlite3.v10-backup").is_file()
+    assert captured_connections[0].execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    monkeypatch.setattr(Database, "_connect", original_connect)
+    sqlite3.Connection.close(captured_connections[0])
+    assert Database(data_paths).migrate() == 11
+    assert not data_paths.database_file.with_name("goodjob.sqlite3.v10-backup").exists()
+
+
+def test_v11_migration_rejects_preexisting_foreign_key_violation(
+    data_paths: DataPaths,
+) -> None:
+    _seed_v10_database(data_paths)
+    corrupted = sqlite3.connect(data_paths.database_file)
+    corrupted.execute("PRAGMA foreign_keys = OFF")
+    corrupted.execute(
+        "DELETE FROM authorization_receipts WHERE authorization_receipt_id = ?",
+        ("receipt-v11",),
+    )
+    corrupted.commit()
+    corrupted.close()
+
+    with pytest.raises(UnsupportedSchemaError, match="foreign_key_check"):
+        Database(data_paths).migrate()
+
+    upgraded = sqlite3.connect(data_paths.database_file)
+    receipt = upgraded.execute(
+        "SELECT authorization_receipt_id, issuer_kind FROM authorization_receipts"
+    ).fetchone()
+    scan_run = upgraded.execute(
+        "SELECT scan_run_id FROM scan_runs WHERE authorization_receipt_id = ?",
+        ("receipt-v11",),
+    ).fetchone()
+    version = upgraded.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()
+    fk_violations = upgraded.execute("PRAGMA foreign_key_check").fetchall()
+    upgraded.close()
+
+    assert receipt is None
+    assert scan_run == ("scan-v11",)
+    assert version == (10,)
+    assert len(fk_violations) == 1
+    assert fk_violations[0][0] == "scan_runs"
+    assert data_paths.database_file.with_name("goodjob.sqlite3.v10-backup").is_file()
+
+    repaired = sqlite3.connect(data_paths.database_file)
+    repaired.execute(
+        """
+        INSERT INTO authorization_receipts(
+            authorization_receipt_id, receipt_kind, session_binding_digest, issuer_kind,
+            scope_descriptor, notice_version, confirmed_at
+        ) VALUES ('receipt-v11', 'source_analysis', X'00', 'codex_task_runtime',
+                  '{"workspace_path":"/workspace-v11"}', 'notice-v1',
+                  '2026-08-13T00:00:00Z')
+        """
+    )
+    repaired.commit()
+    repaired.close()
+    assert Database(data_paths).migrate() == 11
+    assert not data_paths.database_file.with_name("goodjob.sqlite3.v10-backup").exists()

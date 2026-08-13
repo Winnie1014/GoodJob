@@ -138,7 +138,10 @@ class AuthorizationRepository:
         *,
         capability: bytes,
         request: AuthorizationRequest,
+        issuer_kind: str = "codex_task_runtime",
     ) -> AuthorizationReceipt:
+        if not issuer_kind.strip():
+            raise InvalidInputError("issuer_kind must not be empty")
         receipt_id = str(uuid.uuid4())
         digest = session_binding_digest(capability)
         with self._database.write_transaction() as connection:
@@ -147,13 +150,14 @@ class AuthorizationRepository:
                 INSERT INTO authorization_receipts(
                     authorization_receipt_id, receipt_kind, session_binding_digest,
                     issuer_kind, scope_descriptor, notice_version, confirmed_at
-                ) VALUES (?, ?, ?, 'codex_task_runtime', ?, ?,
+                ) VALUES (?, ?, ?, ?, ?, ?,
                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 """,
                 (
                     receipt_id,
                     request.receipt_kind.value,
                     digest,
+                    issuer_kind,
                     request.scope_descriptor,
                     request.notice_version,
                 ),

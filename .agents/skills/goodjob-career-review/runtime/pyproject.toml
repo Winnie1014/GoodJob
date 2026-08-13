@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "goodjob-career-review"
 version = "0.1.0"
-description = "Local-first career preparation runtime for the GoodJob Codex Skill"
+description = "Local-first career preparation runtime for the GoodJob Career Review Skill"
 requires-python = ">=3.12"
 dependencies = []
 

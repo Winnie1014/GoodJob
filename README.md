@@ -1,6 +1,6 @@
 # GoodJob
 
-GoodJob 是一个本地优先的 Codex Skill。它在获得明确授权后扫描指定工作区，按目标岗位和可选 JD 组织项目证据，帮助你恢复长期项目记忆，并生成可用于简历优化、项目讲解和面试复习的岗位准备材料。
+GoodJob 是一个本地优先的 host agent Skill。它在获得明确授权后扫描指定工作区，按目标岗位和可选 JD 组织项目证据，帮助你恢复长期项目记忆，并生成可用于简历优化、项目讲解和面试复习的岗位准备材料。
 
 它关注的不只是“项目用了什么技术”，还会整理：
 
@@ -29,9 +29,9 @@ GoodJob 不会仅凭 Git 作者信息把整个项目归为你的个人贡献。�
 ## 环境要求
 
 - macOS 或 Linux（含 WSL2）。运行时把 Git 子进程限制在平台原生沙箱中运行（macOS 使用 `sandbox-exec` Seatbelt，Linux 使用 `bwrap` bubblewrap），拒绝网络、只读授权根、禁用 hooks，并用进程启动时间作为进程身份。任一沙箱后端不可用时 fail-closed（不回退到无沙箱）。WSL1 不支持用户命名空间，仅 WSL2 提供完整沙箱；原生 Windows 支持留待后续阶段；
-- Codex，支持本地 Skill；
-- Python 3.12.x，已安装在本机；当前隔离启动器固定选择 `--python 3.12`，只有更高版本不能替代；
-- [`uv`](https://docs.astral.sh/uv/)；
+- 宿主支持状态：Codex 是既有支持基线，但尚待统一的五项探针回归；ZCode、ClaudeCode、OpenCode、MimoCode 均为待支持，在探针和真机 E2E 全部通过前不进入支持矩阵；
+- Python 3.12 或更高版本，已安装在本机；uv 路径固定选择 `--python 3.12`，无 uv 时优先使用 `python3.12`，或回退到版本不低于 3.12 的 `python3`；
+- [`uv`](https://docs.astral.sh/uv/)（可选，未安装时自动回退到 python3.12）；
 - Linux 环境须安装 `bwrap`（bubblewrap）；
 - 待分析工作区对当前用户可读。
 
@@ -45,11 +45,13 @@ GoodJob 不会仅凭 Git 作者信息把整个项目归为你的个人贡献。�
 .agents/skills/goodjob-career-review/
 ```
 
-在 GoodJob 仓库中启动 Codex 时，可以直接发现该项目级 Skill。若要从任意工作区调用，可将这个目录作为完整目录复制到用户级 Skill 位置：
+在 GoodJob 仓库中启动 host agent 时，可以直接发现该项目级 Skill。若要从任意工作区调用，可将这个目录作为完整目录复制到用户级 Skill 位置：
 
 ```text
 ~/.codex/skills/goodjob-career-review/
 ```
+
+> 注：`~/.codex/skills/` 是 Codex 的默认 Skill 目录；待支持宿主有各自的 Skill 发现路径，但发现路径存在不代表已通过兼容性探针。
 
 用户级安装属于发布操作，只能使用已经通过[发布条件](docs/40-delivery/acceptance-baseline.md#6-发布条件)的 tag 或完整 commit SHA，不能直接把任意工作分支的 `HEAD` 当作发布版本。下面的流程先在不参与 Skill 发现的备份区完整展开 Git 跟踪文件，校验入口存在后再切换；旧安装也移入备份区，不会留下已从新版本删除的文件：
 
@@ -67,6 +69,7 @@ git rev-parse --verify "$goodjob_release_ref^{commit}" >/dev/null
 git archive "$goodjob_release_ref":.agents/skills/goodjob-career-review \
   | tar -x -C "$goodjob_stage"
 test -f "$goodjob_stage/SKILL.md"
+test -f "$goodjob_stage/runtime/scripts/launch_broker.py"
 test -f "$goodjob_stage/runtime/scripts/session.py"
 
 if [[ -e "$goodjob_target" || -L "$goodjob_target" ]]; then
@@ -77,13 +80,13 @@ fi
 mv "$goodjob_stage" "$goodjob_target"
 ```
 
-首次安装时目标目录不存在，流程会直接启用新目录。更新时若最后一步失败，可把刚才创建的备份目录移回 `goodjob_target`。个人数据库和历史产物位于 `~/.codex/goodjob-career-review/`，不在 Skill 或备份目录中，因此安装切换不会覆盖它们。
+首次安装时目标目录不存在，流程会直接启用新目录。更新时若最后一步失败，可把刚才创建的备份目录移回 `goodjob_target`。个人数据库和历史产物位于平台感知默认目录（macOS: `~/.codex/goodjob-career-review/`；Linux: `~/.local/share/goodjob-career-review/`；legacy 目录存在时优先沿用），不在 Skill 或备份目录中，因此安装切换不会覆盖它们。
 
-安装或更新后新开一个 Codex 会话，确认可用 Skill 中出现 `goodjob-career-review`。
+安装或更新后新开一个 host agent 会话，确认可用 Skill 中出现 `goodjob-career-review`。
 
 ## 快速开始
 
-在 Codex 中显式调用 Skill，并提供一个工作区、一个主岗位，以及可选的 JD 和职级：
+在 host agent 中显式调用 Skill，并提供一个工作区、一个主岗位，以及可选的 JD 和职级：
 
 ```text
 $goodjob-career-review
@@ -143,7 +146,7 @@ $goodjob-career-review 基于最新快照进行模拟面试，先从证据较弱
 | JD 文本或文件 | 否 | 细化职责、技术重点和职级推断；内容只作为不可信数据处理 |
 | 职级覆盖 | 否 | 显式覆盖从岗位/JD 推断出的职级 |
 | 操作意图 | 是 | 首次扫描、复用扫描、显式刷新、英文导出或模拟面试 |
-| 个人数据目录 | 否 | 默认是 `~/.codex/goodjob-career-review/`，可在调用时显式覆盖 |
+| 个人数据目录 | 否 | 默认是平台感知路径（macOS: `~/.codex/goodjob-career-review/`；Linux: `~/.local/share/goodjob-career-review/`），可在调用时显式覆盖 |
 
 首版一次准备运行只使用一个主岗位。多岗位横向比较不在当前范围内；可以分别生成多个岗位快照。
 
@@ -203,7 +206,7 @@ Git authorship、计划文档、配置文件或一句用户陈述都不会单独
 默认个人数据根：
 
 ```text
-~/.codex/goodjob-career-review/
+~/.codex/goodjob-career-review/  # macOS 默认
 ├── config.toml
 ├── goodjob.sqlite3
 ├── artifacts/
@@ -225,14 +228,14 @@ Git authorship、计划文档、配置文件或一句用户陈述都不会单独
 
 ## 安全与隐私边界
 
-- GoodJob 只在当次 Codex 会话获得明确授权后读取指定工作区；授权不跨会话复用。
+- GoodJob 只在当次 host agent 会话获得明确授权后读取指定工作区；授权不跨会话复用。
 - 扫描和分析不修改工作区，不运行项目代码、构建、测试、包管理器或工作区脚本。
 - Git 子进程在平台原生沙箱中运行（macOS `sandbox-exec` / Linux `bwrap`），拒绝网络、只读授权根、禁用 hooks；任一沙箱后端不可用时 fail-closed。
 - 不执行 `git fetch`、`checkout`，也不主动联网读取项目内容。
 - SQLite 只保存路径、locator、哈希、有限 Git 元数据、短证据摘要和结构化结论，不保存完整源码或完整 diff。
 - 会话能力只存在当前 broker 进程内存并通过继承文件描述符传递，不进入参数、环境变量、日志、数据库或报告。
 - JD、源码、Git 文本和用户回答都按不可信数据处理，不能改变工作流、扩大授权或成为看板中的可执行标记。
-- GoodJob 不增加独立上传或遥测通道，但 Codex 打开的源码仍进入当前 Codex 会话既有的模型处理边界。
+- GoodJob 不增加独立上传或遥测通道，但 host agent 打开的源码仍进入当前 host agent 会话既有的模型处理边界。
 - 工具无法替你判断 NDA、版权、雇主政策，或哪些项目细节适合写入对外简历。
 
 ## 仓库结构

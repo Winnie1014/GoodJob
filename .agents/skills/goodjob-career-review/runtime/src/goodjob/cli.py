@@ -92,7 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="goodjob")
     parser.add_argument(
         "--data-dir",
-        help="owner-local state directory; defaults to ~/.codex/goodjob-career-review",
+        help="owner-local state directory; defaults to a platform-appropriate location",
+    )
+    parser.add_argument(
+        "--agent-runtime",
+        default="codex_task_runtime",
+        help="host agent runtime identifier recorded in authorization receipts",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -307,6 +312,7 @@ def _handle_authorize(args: argparse.Namespace, paths: DataPaths) -> dict[str, A
     receipt = AuthorizationRepository(Database(paths)).issue(
         capability=capability,
         request=_authorization_request(args),
+        issuer_kind=args.agent_runtime,
     )
     return {"status": "ok", "receipt": receipt.as_json()}
 

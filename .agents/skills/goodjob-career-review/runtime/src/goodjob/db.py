@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from goodjob.errors import UnsupportedSchemaError
 from goodjob.locks import ExclusiveWriterLock
@@ -18,7 +19,101 @@ from goodjob.recovery import recover_interrupted_exports
 class Migration:
     version: int
     name: str
-    statements: tuple[str, ...]
+    statements: tuple[str, ...] = ()
+    handler: Callable[[sqlite3.Connection, Path], None] | None = None
+
+
+def _restore_database_from_backup(connection: sqlite3.Connection, backup_path: Path) -> None:
+    backup_connection = sqlite3.connect(backup_path)
+    try:
+        backup_connection.backup(connection)
+    finally:
+        backup_connection.close()
+
+
+def _migrate_v11_remove_issuer_kind_check(
+    connection: sqlite3.Connection, database_file: Path
+) -> None:
+    """Remove the CHECK constraint on authorization_receipts.issuer_kind.
+
+    Uses the 11-step FK-safe table rebuild because authorization_receipts is
+    referenced by foreign keys from scan_runs, worktree_observations, and
+    preparation_runs.  PRAGMA foreign_keys cannot be toggled inside a
+    transaction, so this handler manages its own transaction lifecycle.
+    """
+    backup_path = database_file.parent / f"{database_file.name}.v10-backup"
+    with suppress(FileNotFoundError):
+        backup_path.unlink()
+    quoted = str(backup_path).replace("'", "''")
+    connection.execute(f"VACUUM INTO '{quoted}'")
+    connection.execute("PRAGMA foreign_keys = OFF")
+    transaction_active = False
+    success = False
+    try:
+        connection.execute("BEGIN")
+        transaction_active = True
+        connection.execute(
+            """
+            CREATE TABLE authorization_receipts_new (
+                authorization_receipt_id TEXT PRIMARY KEY,
+                receipt_kind TEXT NOT NULL CHECK (
+                    receipt_kind IN (
+                        'source_analysis',
+                        'external_git_relation_probe',
+                        'external_git_metadata'
+                    )
+                ),
+                session_binding_digest BLOB NOT NULL,
+                issuer_kind TEXT NOT NULL,
+                scope_descriptor TEXT NOT NULL,
+                notice_version TEXT NOT NULL,
+                confirmed_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO authorization_receipts_new SELECT * FROM authorization_receipts"
+        )
+        connection.execute("DROP TABLE authorization_receipts")
+        connection.execute(
+            "ALTER TABLE authorization_receipts_new RENAME TO authorization_receipts"
+        )
+        connection.execute(
+            """
+            CREATE INDEX authorization_receipts_scope_idx
+            ON authorization_receipts(receipt_kind, scope_descriptor, notice_version)
+            """
+        )
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            connection.execute("ROLLBACK")
+            transaction_active = False
+            raise UnsupportedSchemaError(
+                "v11 migration failed foreign_key_check after table rebuild"
+            )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (11, "remove_issuer_kind_check", _utc_now()),
+        )
+        connection.execute("COMMIT")
+        transaction_active = False
+        success = True
+    except Exception:
+        if transaction_active:
+            with suppress(sqlite3.OperationalError):
+                connection.execute("ROLLBACK")
+        try:
+            _restore_database_from_backup(connection, backup_path)
+        except sqlite3.Error as restore_error:
+            raise UnsupportedSchemaError(
+                "v11 migration failed and the backup could not be restored"
+            ) from restore_error
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+        if success:
+            with suppress(FileNotFoundError):
+                backup_path.unlink()
 
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -970,6 +1065,11 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=11,
+        name="remove_issuer_kind_check",
+        handler=_migrate_v11_remove_issuer_kind_check,
+    ),
 )
 
 
@@ -1047,16 +1147,24 @@ class Database:
             for migration in MIGRATIONS:
                 if migration.version <= current_version:
                     continue
-                for statement in migration.statements:
-                    connection.execute(statement)
-                connection.execute(
-                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-                    (migration.version, migration.name, _utc_now()),
-                )
+                if migration.handler is not None:
+                    connection.commit()
+                    migration.handler(connection, self.paths.database_file)
+                else:
+                    if not connection.in_transaction:
+                        connection.execute("BEGIN IMMEDIATE")
+                    for statement in migration.statements:
+                        connection.execute(statement)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                        (migration.version, migration.name, _utc_now()),
+                    )
                 current_version = migration.version
-            connection.commit()
+            if connection.in_transaction:
+                connection.commit()
         except Exception:
-            connection.rollback()
+            if connection.in_transaction:
+                connection.rollback()
             raise
         recover_interrupted_exports(connection, self.paths)
         return current_version

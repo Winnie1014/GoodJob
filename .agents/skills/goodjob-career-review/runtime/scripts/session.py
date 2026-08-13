@@ -387,9 +387,10 @@ def _write_all(file_descriptor: int, payload: bytes) -> None:
 class SessionBroker:
     """Hold one raw capability only until the parent task closes standard input."""
 
-    def __init__(self, data_dir: str | None) -> None:
+    def __init__(self, data_dir: str | None, agent_runtime: str | None = None) -> None:
         self._capability = generate_capability()
         self._data_dir = str(Path(data_dir).expanduser().resolve()) if data_dir else None
+        self._agent_runtime = agent_runtime or "codex_task_runtime"
         self._source_receipts: dict[str, ReceiptEnvelope] = {}
         self._relation_receipts: dict[str, ReceiptEnvelope] = {}
         self._metadata_receipts: dict[str, ReceiptEnvelope] = {}
@@ -1452,6 +1453,7 @@ class SessionBroker:
         command = [sys.executable, "-I", "-B", "-c", CORE_BOOTSTRAP]
         if self._data_dir:
             command.extend(["--data-dir", self._data_dir])
+        command.extend(["--agent-runtime", self._agent_runtime])
         child_arguments = list(arguments)
         pass_fds = [capability_read_fd]
         if payload_read_fd is not None:
@@ -1519,6 +1521,7 @@ class SessionBroker:
         command = [sys.executable, "-I", "-B", "-c", CORE_BOOTSTRAP]
         if self._data_dir:
             command.extend(["--data-dir", self._data_dir])
+        command.extend(["--agent-runtime", self._agent_runtime])
         full_command = [*command, *arguments]
         child_environment = {
             key: value for key, value in os.environ.items() if not key.startswith("PYTHON")
@@ -1537,8 +1540,13 @@ class SessionBroker:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir")
+    parser.add_argument(
+        "--agent-runtime",
+        default="codex_task_runtime",
+        help="host agent runtime identifier for authorization receipts",
+    )
     args = parser.parse_args()
-    broker = SessionBroker(args.data_dir)
+    broker = SessionBroker(args.data_dir, args.agent_runtime)
     for line in sys.stdin:
         response: JsonObject
         try:

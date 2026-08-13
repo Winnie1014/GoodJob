@@ -1,6 +1,6 @@
 # ADR-0009：跨平台运行时安全（macOS/Linux/WSL2 沙箱与 fail-closed 边界）
 
-> 状态：待 Owner/Architect 接受（真实 Linux 门已通过）
+> 状态：已接受（真实 Linux 门已通过；Architect 于 2026-08-13 确认接受）
 > 日期：2026-08-12
 > 权威范围：macOS、Linux（含 WSL2）的 Git 沙箱后端选择、进程身份、fail-closed 边界和平台等价性契约
 > 上游：[产品需求](../../10-product/product-requirements.md)（FR-16、NFR-09）、[跨平台多 Agent 适配计划](../../40-delivery/cross-platform-multi-agent-plan.md) §4

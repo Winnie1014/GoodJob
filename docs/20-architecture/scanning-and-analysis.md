@@ -1,19 +1,19 @@
 # GoodJob 扫描与岗位化分析契约
 
 > 状态：待 Owner 核对  
-> 权威范围：定义授权工作区的发现、索引、增量刷新、Git 历史读取、语言适配和 Codex 按证据深读的行为；不定义 SQLite 实体字段或最终报告章节  
+> 权威范围：定义授权工作区的发现、索引、增量刷新、Git 历史读取、语言适配和 host agent 按证据深读的行为；不定义 SQLite 实体字段或最终报告章节
 > 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0005](../30-decisions/adrs/ADR-0005-local-first-discovery-and-degradation.md)、[ADR-0006](../30-decisions/adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md)、[ADR-0007](../30-decisions/adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md)、[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)  
 > 下游：[产物与学习闭环](artifacts-and-learning.md)、[验收基线](../40-delivery/acceptance-baseline.md)
 
 ## 1. 目标与边界
 
-扫描的目标不是让 Codex 无边界地阅读全部源码，而是把 Owner 在当前显式会话中确认可分析的工作区转换成可增量维护、可定位、可按岗位重排的证据目录。扫描器只做确定性观察：发现项目和模块、提取结构化证据、记录覆盖范围及问题。岗位价值、个人经历和面试叙事由 `RoleLens` 与准备流程在此基础上形成。
+扫描的目标不是让 host agent 无边界地阅读全部源码，而是把 Owner 在当前显式会话中确认可分析的工作区转换成可增量维护、可定位、可按岗位重排的证据目录。扫描器只做确定性观察：发现项目和模块、提取结构化证据、记录覆盖范围及问题。岗位价值、个人经历和面试叙事由 `RoleLens` 与准备流程在此基础上形成。
 
-- `workspace_path` 的本机可读性不足以授权源码分析。`scan`、`refresh` 或向 Codex 返回源码衍生 EvidenceBundle 前，必须用当前 Codex task 的易失 SessionCapability 通过 `AuthorizationReceipt(source_analysis)` digest/scope/notice 校验；receipt ID 或 SQLite 记录本身不授权任何读取。
+- `workspace_path` 的本机可读性不足以授权源码分析。`scan`、`refresh` 或向 host agent 返回源码衍生 EvidenceBundle 前，必须用当前 host agent task 的易失 SessionCapability 通过 `AuthorizationReceipt(source_analysis)` digest/scope/notice 校验；receipt ID 或 SQLite 记录本身不授权任何读取。
 - 首版只扫描 Owner 明确提供、在本机可读的工作区根；不递归扫描未授权位置，不触发网络抓取或 Git fetch。工作区内 `.git` 指针只是 3.2 的不可信候选，不能自行授权任何根外读取（`FR-02`、`NFR-01`）。
 - 扫描产物写入证据模型中的 `ScanRun`、`ProjectSnapshot`、`SourceRevision`、`Evidence` 与 `ScanIssue`；字段、身份和状态以[证据模型](evidence-model.md)为唯一事实源。
 - 扫描器不保存源码正文、完整函数、完整 diff 或大段文档。原文件仍是实现事实源，数据库只保存指针、哈希、短摘要和结构化状态（`NFR-02`）。
-- 文件内容、manifest、Git 文本和路径名一律是不可信数据。适配器只能解析字节/文本并调用参数化的只读 Git 子进程，不得 import 或执行项目模块，不得运行构建脚本、包管理器或 shell 拼接，也不得把仓库中的指令当作 Skill 指令（`NFR-08`）。Phase 1 实现候选的 Git 子进程在平台原生沙箱中运行（macOS `sandbox-exec` / Linux `bwrap`，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)），任一沙箱后端不可用时 fail-closed；Linux/WSL2 真机证据与 ADR 接受仍为阻塞门。
+- 文件内容、manifest、Git 文本和路径名一律是不可信数据。适配器只能解析字节/文本并调用参数化的只读 Git 子进程，不得 import 或执行项目模块，不得运行构建脚本、包管理器或 shell 拼接，也不得把仓库中的指令当作 Skill 指令（`NFR-08`）。Git 子进程在平台原生沙箱中运行（macOS `sandbox-exec` / Linux `bwrap`，见已接受的 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)），任一沙箱后端不可用时 fail-closed；真实 Ubuntu 24.04 验收已通过，WSL2 复用同一 Linux 后端。
 - 本文中的“项目”指证据模型的 `Project`，“工作树”指 `Worktree`，“快照”指不可变 `ProjectSnapshot`；不得以目录名或远端 URL 替代其稳定身份。
 
 ## 2. 运行契约
@@ -123,7 +123,7 @@ Owner 可在个人数据目录的 `config.toml` 中登记项目级排除规则�
 
 初始 Git 历史窗口固定为扫描开始时刻向前 180 天。查询范围始终包含每个发现工作树的 HEAD；本地默认分支只在无需 fetch 即可唯一解析时加入并集：优先本地存在的唯一 `refs/remotes/*/HEAD` 目标，否则依次尝试本地 `refs/heads/main`、`refs/heads/master`。无 remote、default ref 缺失/歧义或 detached HEAD 时使用 `HEAD-only`，在 WorktreeObservation 与覆盖摘要中标记原因；不猜测、不 fetch、不 checkout、不修改工作树。索引内容限于根内 Git 数据库的 commit 定位、时间、作者元数据、标题和已变更路径范围，不保存完整 diff 正文。
 
-当某个具体 Claim 需要解释当前代码的演进而近期窗口无法回答时，Codex 可以通过 `EvidenceQuery` 针对该 Claim 的证据路径、模块或 commit 发起一次有理由的更早历史查询。查询先返回受限 commit 元数据和路径 candidate；对选中的单个 candidate，若 Git 数据库位于授权根内，Codex 可在当前会话有界读取相关 path 的 diff/blob，`EvidenceDraft` 只保存 commit/object/diff hash、locator、理由和短摘要，不保存正文。若 git-dir 或 common-dir 位于授权根外，则不查询历史，直接形成可见知识缺口；Owner 只有显式扩大工作区后才能重新运行该历史分析。采用的 EvidenceDraft 在 record_analysis 中校验并落为 preparation-scope Evidence，不回写 ProjectSnapshot，不做隐式全历史重索引，也不把历史作者自动转换为个人贡献（`FR-06`、`NFR-02`）。
+当某个具体 Claim 需要解释当前代码的演进而近期窗口无法回答时，host agent 可以通过 `EvidenceQuery` 针对该 Claim 的证据路径、模块或 commit 发起一次有理由的更早历史查询。查询先返回受限 commit 元数据和路径 candidate；对选中的单个 candidate，若 Git 数据库位于授权根内，host agent 可在当前会话有界读取相关 path 的 diff/blob，`EvidenceDraft` 只保存 commit/object/diff hash、locator、理由和短摘要，不保存正文。若 git-dir 或 common-dir 位于授权根外，则不查询历史，直接形成可见知识缺口；Owner 只有显式扩大工作区后才能重新运行该历史分析。采用的 EvidenceDraft 在 record_analysis 中校验并落为 preparation-scope Evidence，不回写 ProjectSnapshot，不做隐式全历史重索引，也不把历史作者自动转换为个人贡献（`FR-06`、`NFR-02`）。
 
 ## 6. 语言适配与基础档案
 
@@ -147,7 +147,7 @@ Owner 可在个人数据目录的 `config.toml` 中登记项目级排除规则�
 
 `RoleLens` 先从岗位、JD、职级和覆盖规则构造有限查询。Python 核心返回 `EvidenceBundle`，其中含项目排序、模块、证据定位器、短摘要、时效、覆盖问题和深读建议，但没有源码正文。
 
-Codex 按以下顺序工作：
+host agent 按以下顺序工作：
 
 1. `prepare_start` 对候选 SourceRevision 做预检，确认其仍匹配冻结 ProjectSnapshot；不符时返回 `refresh_required`，不隐式扫描；
 2. 读取岗位相关 EvidenceBundle，选择能回答岗位维度的高优先级项目和模块；
@@ -155,7 +155,7 @@ Codex 按以下顺序工作：
 4. 只在证据不足、相互矛盾、需要解释实现方式或出现岗位关键追问时，沿 import、调用、配置或测试链路扩展阅读；
 5. `record_analysis` 对每个 EvidenceDraft 最后一次校验哈希和 locator。任一所用文件在读取后变化时整批标记 `refresh_required`，不写入 Evidence、Claim 或 Assessment；不能核验的内容作为知识缺口或不确定性，而不是补写为事实。
 
-因此，扫描器索引全量模块，Codex 深读有界证据链。系统不得把全仓源码复制进 EvidenceBundle、数据库或最终报告（`FR-05`、`FR-06`、`FR-11`、`NFR-02`）。
+因此，扫描器索引全量模块，host agent 深读有界证据链。系统不得把全仓源码复制进 EvidenceBundle、数据库或最终报告（`FR-05`、`FR-06`、`FR-11`、`NFR-02`）。
 
 ## 8. 覆盖报告与可判定验收规则
 

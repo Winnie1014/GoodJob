@@ -9,6 +9,8 @@ import sys
 import uuid
 from pathlib import Path
 
+import pytest
+
 RUNTIME_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -327,6 +329,145 @@ def test_documented_uv_launch_ignores_the_target_project(tmp_path: Path) -> None
     assert not list(installed_runtime.rglob("__pycache__"))
     assert not list(installed_runtime.rglob("*.pyc"))
     assert not (installed_runtime / ".venv").exists()
+
+
+def _start_launcher(
+    tmp_path: Path, data_dir: Path, *, env: dict[str, str] | None = None
+) -> subprocess.Popen[str]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    return subprocess.Popen(
+        [
+            sys.executable,
+            str(RUNTIME_DIR / "scripts" / "launch_broker.py"),
+            "--data-dir",
+            str(data_dir),
+            "--agent-runtime",
+            "opencode_task_runtime",
+        ],
+        cwd=workspace,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+
+def _assert_launcher_records_host_agent_runtime(
+    broker: subprocess.Popen[str], data_dir: Path, workspace: Path
+) -> None:
+    authorized = _send_json(
+        broker,
+        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    )
+
+    assert authorized["status"] == "ok"
+    _stop_broker(broker)
+    connection = sqlite3.connect(data_dir / "goodjob.sqlite3")
+    issuer_kind = connection.execute("SELECT issuer_kind FROM authorization_receipts").fetchone()
+    connection.close()
+    assert issuer_kind == ("opencode_task_runtime",)
+
+
+def test_launcher_uses_uv_and_records_host_agent_runtime(tmp_path: Path) -> None:
+    if shutil.which("uv") is None:
+        pytest.skip("uv path requires uv on PATH")
+    data_dir = tmp_path / "data"
+    broker = _start_launcher(tmp_path, data_dir)
+
+    _assert_launcher_records_host_agent_runtime(broker, data_dir, tmp_path / "workspace")
+
+
+def test_launcher_falls_back_to_python312_and_records_host_agent_runtime(
+    tmp_path: Path,
+) -> None:
+    executable_dir = tmp_path / "bin"
+    executable_dir.mkdir()
+    (executable_dir / "python3.12").symlink_to(sys.executable)
+    data_dir = tmp_path / "data"
+    broker = _start_launcher(
+        tmp_path,
+        data_dir,
+        env={**os.environ, "PATH": str(executable_dir)},
+    )
+
+    _assert_launcher_records_host_agent_runtime(broker, data_dir, tmp_path / "workspace")
+
+
+def test_launcher_falls_back_to_python3_at_least_312_and_records_host_agent_runtime(
+    tmp_path: Path,
+) -> None:
+    executable_dir = tmp_path / "bin"
+    executable_dir.mkdir()
+    (executable_dir / "python3").symlink_to(sys.executable)
+    data_dir = tmp_path / "data"
+    broker = _start_launcher(
+        tmp_path,
+        data_dir,
+        env={**os.environ, "PATH": str(executable_dir)},
+    )
+
+    _assert_launcher_records_host_agent_runtime(broker, data_dir, tmp_path / "workspace")
+
+
+def test_launcher_reports_a_stable_error_when_broker_process_cannot_start(
+    tmp_path: Path,
+) -> None:
+    executable_dir = tmp_path / "bin"
+    executable_dir.mkdir()
+    fake_uv = executable_dir / "uv"
+    fake_uv.write_text("#!/missing/interpreter\n", encoding="utf-8")
+    fake_uv.chmod(0o700)
+
+    result = subprocess.run(
+        [sys.executable, str(RUNTIME_DIR / "scripts" / "launch_broker.py")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": str(executable_dir)},
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "error: failed to start the GoodJob session broker\n"
+    assert str(tmp_path) not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_documented_launcher_entry_ignores_python_environment_injection(
+    tmp_path: Path,
+) -> None:
+    skill_text = (RUNTIME_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert (
+        "Start `python3 -I -B <runtime_dir>/scripts/launch_broker.py "
+        "--agent-runtime <agent-runtime>`" in skill_text
+    )
+
+    injection_dir = tmp_path / "injection"
+    injection_dir.mkdir()
+    marker = tmp_path / "sitecustomize-loaded"
+    (injection_dir / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('loaded', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(RUNTIME_DIR / "scripts" / "launch_broker.py"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": "", "PYTHONPATH": str(injection_dir)},
+    )
+
+    assert result.returncode == 1
+    assert not marker.exists()
+    assert "Traceback" not in result.stderr
 
 
 def test_job_input_preflight_blocks_bad_jd_before_scan_state(tmp_path: Path) -> None:

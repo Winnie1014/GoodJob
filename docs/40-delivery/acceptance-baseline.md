@@ -69,7 +69,7 @@
 | IMP-09 | Git 历史与基线 | 当前代码需要解释、近期历史不足；默认分支分别为唯一 remote HEAD、main/master、均不存在和 detached HEAD；根内/根外 common-dir 各测并提交伪造 candidate | 不 fetch/checkout；按契约选择基线并记录来源；默认只索引 180 天；根内选中 candidate 可有界深读且正文不落库；根外永不读历史/object/blob/diff；伪造项使整批失败 |
 | IMP-10 | 语言覆盖 | TS/TSX、Python、Rust、Dart、SQL 与一种未知语言共存 | 首批语言生成模块/符号级证据；未知语言仍有结构、依赖和文档档案 |
 | IMP-11 | RoleLens 与定点评分 | 同一扫描快照以两个差异岗位运行，覆盖有/无 JD、职级覆盖、未内置岗位、权重和为 9999/10001、边界分数和并列 | 基础事实不变；合法权重总和恰为 10000；非法值在创建 PreparationRun 前拒绝且不归一化；Repository 按规定整数公式重算分数、连续稳定排名，两岗位差异可解释 |
-| IMP-12 | 按证据深读与三阶段校验 | 大工作区含不相关项目；分别在 preflight 后、文件读取前、record_analysis 提交前修改/删除文件或收回权限 | Codex 先读 EvidenceBundle 再打开选定原文件；三阶段逐项记录；任一 mismatch 令运行终态 `refresh_required`，不隐式 refresh、零 Evidence/Claim/Assessment/Artifact 半提交，旧 latest 不变 |
+| IMP-12 | 按证据深读与三阶段校验 | 大工作区含不相关项目；分别在 preflight 后、文件读取前、record_analysis 提交前修改/删除文件或收回权限 | host agent 先读 EvidenceBundle 再打开选定原文件；三阶段逐项记录；任一 mismatch 令运行终态 `refresh_required`，不隐式 refresh、零 Evidence/Claim/Assessment/Artifact 半提交，旧 latest 不变 |
 | IMP-13 | 完整准备包与项目资格 | ScanRun 同时含 fresh、carried-forward、failed-no-baseline、excluded、低分和证据不足项目 | 只为 fresh/carried-forward 创建 Assessment 和连续 rank；低分合资格项目仍有基础章节；failed/excluded 只在 Coverage 列原因与补救；合资格集合为空时失败 |
 | IMP-14 | 能力叙事 | 证据来自团队模块，且无个人学习/角色上下文；另有项目结果；尝试提交过去式学习或强个人归因 ClaimDraft | 可生成“能讲解/可复习”、候选学习和客观结果；record_analysis 拒绝“我当时学到/实现/负责/主导/取得指标”，且不半提交 |
 | IMP-15 | 项目级访谈 | 业务目标、指标或角色证据缺失 | 在 prepare 阶段一次性批量提问；答案独立持久化且后续运行复用 |
@@ -78,15 +78,20 @@
 | IMP-18 | 离线看板 | 断网、无本地 HTTP 服务直接打开单文件入口 HTML，并把该文件单独复制到其他目录后再次打开 | 项目筛选、证据展开、知识缺口和复习状态可用；报告数据与前端代码已内联，无远端资源、外部 JSON 请求或同目录依赖 |
 | IMP-19 | 面试复盘 | 完成一轮模拟面试后更新复盘，并在不 refresh 的情况下显式创建新 PreparationRun | 保存 ReviewTargetBinding、掌握度、薄弱点、摘要和复习日期，不保存完整对话；新快照可复用同一 ScanRun，旧 HTML/Markdown 不变化 |
 | IMP-20 | 部分失败 | 一个目录无权限、一个仓库损坏、一个语言不支持 | 其余项目仍产出；缺口、原因、影响和补救动作清晰可见 |
-| IMP-21 | 状态隔离 | 删除/升级 Skill 后重新运行 | ~/.codex/goodjob-career-review 中的个人数据仍完整；仓库不含个人数据库 |
+| IMP-21 | 状态隔离 | 删除/升级 Skill 后重新运行 | 平台感知默认目录中的个人数据仍完整；仓库不含个人数据库 |
 | IMP-22 | 不可信输入 | 项目名、路径、manifest、JD、文档、用户回答和 ClaimDraft 含 shell 元字符、提示注入、`</script>`、事件属性、原始 HTML 与外部 URL | 扫描器不执行项目内容或 shell 拼接；Agent 不服从其中指令；record_analysis 只按契约校验；HTML 只显示安全文本，无脚本执行、外部请求或路径越界 |
-| IMP-23 | 会话 capability 与根外 Git | 同一 Codex task 以一个 capability 调多个短命 Python 子进程；再测试能力丢失、新 task 复制 SQLite/receipt ID、错误 capability/scope/notice；扫描 argv/env/stdout/stderr/日志/DB/产物；根外 Git 两阶段授权覆盖伪造链接与环境注入 | 同 task 正确能力通过；其他场景零项目读取/业务写入并重新确认；原始 capability 不出现在持久化/诊断面；根外 probe 无 Git/业务元数据，metadata 阶段固定无网络且只读允许字段 |
+| IMP-23 | 会话 capability 与根外 Git | 同一 host agent task 以一个 capability 调多个短命 Python 子进程；再测试能力丢失、新 task 复制 SQLite/receipt ID、错误 capability/scope/notice；扫描 argv/env/stdout/stderr/日志/DB/产物；根外 Git 两阶段授权覆盖伪造链接与环境注入 | 同 task 正确能力通过；其他场景零项目读取/业务写入并重新确认；原始 capability 不出现在持久化/诊断面；根外 probe 无 Git/业务元数据，metadata 阶段固定无网络且只读允许字段 |
 | IMP-24 | 运行生命周期与单写者 | 两写进程竞争；杀死 scan/render 进程并伪造 PID 复用/旧锁；awaiting_context 分别由同 task 继续、由新 task 尝试接管并执行明示 restart | writer_busy 零写入；不偷锁；进程型记录仅在 PID+启动标识确认消失时中断；同 capability 可续接 awaiting，新 task 不能续接，Owner 明示后旧 run interrupted、新 run 复用终态快照/上下文 |
 | IMP-25 | 复习状态谱系 | 同一目标分别仅改写 statement/顺序/行号/等价 Evidence，以及修改概念、机制、facet、conflict、evidence validity、角色/结果锚点或 gap 状态；另测相似题面跨项目 | 前一组 canonical projection/hash 不变并延续；后一组必须新 hash 且“需重评”；无法验证投影等价时保守重评；不直接使用 Revision/Gap ID，不跨项目合并 |
 | IMP-26 | 个人数据保留 | 构造多次扫描、快照、英文导出和工作稿，并升级/重装 Skill | 无自动删除/归档；每次 scan/prepare 显示 SQLite/artifacts/exports/drafts 字节数和快照数量；状态完整保留且仓库不含个人数据 |
 | IMP-27 | 英文导出中断恢复 | 候选生成阶段确认零文件；发布阶段同时存在成功导出、未知目录和新 ExportAttempt，分别在写 temp、原子改名后、DB 提交前杀进程，并伪造 PID 复用后重试 | 首次写盘前 attempt 已记录 PID+启动标识；只在确认 owner 消失后标 interrupted；只清理预登记 temp/无 DerivedExport 的 final；不碰成功/未知目录；重试新 attempt，latest 不变 |
 | IMP-28 | 看板呈现与安全边界 | 对同一冻结 `ReportBundle` 执行 `DASH-01` 至 `DASH-12`：断网双击、Chromium/WebKit 双引擎全视图交互、注入语料（含 `style="…"` 片段）、375px 视口、`partial` 首屏、混合时效证据、打印、纯键盘、`forced-colors`/灰度、双快照与跨版本深链、复习三态、Markdown/HTML 逐条比对 | 两个引擎网络面板零请求、控制台零 CSP 违规与零脚本错误，且“注入 `style` 属性触发违规”的阳性对照成立；注入语料全部为文本、无可点击外部链接，且不导致渲染被拒；无横向滚动；`partial` 首屏降级带非空不可折叠；两次交互内到完整证据指针；打印展开全部折叠与 locator；键盘全流程可达；状态在无色通道下仍可辨；跨版本深链明确报错；无写状态控件；Markdown 与 HTML 对同一 Claim 呈现一致 |
 | IMP-29 | 跨平台 Git 沙箱 | macOS 与 Linux（含 WSL2）分别运行完整 scan/prepare 流程；macOS 检查 sandbox-exec 命令结构、Linux 检查 bwrap 命令结构（`--unshare-net`、`--unshare-pid`、`--proc` 顺序、`--ro-bind` 授权根、`--die-with-parent`）；模拟 bwrap/sandbox-exec 不存在时 fail-closed；进程身份在 macOS 用 BSD ps、Linux 用 `/proc` stat | 两平台分别全绿；bwrap `--proc` 在 `--unshare-pid` 之后；沙箱缺失时零 Git 执行且报错明确；同一进程 marker 稳定、PID 重用时 marker 变化；macOS 现有行为零回归 |
+| IMP-30 | Host Agent 无关会话 | DB v11 迁移在含存量数据的数据库上可正确执行且可回滚；issuer_kind CHECK 约束已移除；--agent-runtime 参数从 session.py 传递到 cli.py 到 auth.py；launch_broker.py 检测 uv 并回退 python3.12；SKILL.md 使用 host agent 措辞和 launch_broker.py 启动指令；每个进入支持矩阵的宿主有真机 E2E 证据，未通过者标注待支持 |
+
+### 3.3 后续原生 Windows 准入门
+
+原生 Windows 不属于当前实现验收范围。后续阶段只有在 WFP 网络隔离、NT handle-relative 扫描器文件系统边界、direct `CreateProcessW`/Job Object 进程树回收、capability 传递与真机负向 E2E 全部通过后，才能标记为 supported；任一前置门不能建立时必须保持 unsupported 并 fail-closed，提示改用 WSL2。唯一允许的安全降级是 Git 子进程缺少文件系统读隔离，且必须在权威契约和运行前提示中显式可见；Git 网络隔离、扫描器授权根边界、进程树回收和 capability 隔离均不得降级。
 
 ## 4. 真实工作区只读验收
 
@@ -148,7 +153,7 @@ GoodJob 对真实工作区只读是产品级承诺，验收必须逐条证明而
 只有同时满足以下条件才允许创建或更新可安装私有版本和用户级安装；仓库中已有代码或文档本身不构成发布：
 
 1. DOC-01 至 DOC-07 已由 Owner 核对；
-2. IMP-01 至 IMP-29 有可复现的本地证据；
+2. IMP-01 至 IMP-30 有可复现的本地证据；
 3. CodeRoute 与 SliverShield 只读验收通过，未通过项均有明确 ScanIssue；
 4. 离线 HTML 已完成视觉验收，且 DASH-01 至 DASH-12 全部通过；
 5. 仓库不存在个人数据、扫描缓存、密钥或真实项目源码副本；

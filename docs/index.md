@@ -7,7 +7,7 @@
 
 ## 当前阶段
 
-GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 Codex Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。Phase 1 实现候选覆盖 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；真实 Ubuntu 24.04 的完整 `make gate` 已通过，WSL2 复用同一 Linux 后端，当前阻塞门只剩 ADR-0009 的 Owner/Architect 接受，原生 Windows 支持留待后续阶段。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
+GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 host agent Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。Phase 1 覆盖 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；真实 Ubuntu 24.04 的完整 `make gate` 已通过，ADR-0009 已接受，WSL2 复用同一 Linux 后端，原生 Windows 支持留待后续阶段。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
 
 当前阶段的边界如下：
 
@@ -44,7 +44,8 @@ GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的
 | [看板呈现契约](20-architecture/dashboard-design.md) | 待 Owner 核对 | 看板信息架构、首屏顺序、状态视觉编码、图表形式、布局交互、呈现层安全规则、`DASH-*` | 不定义 ReportBundle 字段、产物文件集合或简历文案口径 |
 | [决策账本](30-decisions/decision-log.md) | 待 Owner 核对 | 已决定事项的索引和首版排除项 | 不替代 ADR 的论证或设计文档的完整契约 |
 | [ADR-0001](30-decisions/adrs/ADR-0001-skill-and-state-isolation.md) 至 [ADR-0008](30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md) | 已接受 | 难以逆转决策的理由、后果和替代方案 | 不作为功能需求清单 |
-| [ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md) | 待 Owner/Architect 接受 | macOS/Linux/WSL2 沙箱后端选择、进程身份、fail-closed 边界和平台等价性 | 不定义 agent 无关化或原生 Windows 支持 |
+| [ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md) | 已接受 | macOS/Linux/WSL2 沙箱后端选择、进程身份、fail-closed 边界和平台等价性 | 不定义 agent 无关化或原生 Windows 支持 |
+| [ADR-0010](30-decisions/adrs/ADR-0010-host-agent-neutral-session.md) | 待 Owner/Architect 接受 | Host Agent 无关会话：解除 Codex 硬编码绑定，宿主兼容性探针准入矩阵 | 不定义平台沙箱后端选择或原生 Windows 支持 |
 | [验收基线](40-delivery/acceptance-baseline.md) | 待 Owner 核对 | `G-*`、`FR-*`、`NFR-*` 的测试与交付门槛 | 不重新解释产品意图 |
 | [任务池](40-delivery/backlog.md) | 协作运行区 | 任务状态、归属与裁决引注 | 不定义任何产品或技术契约 |
 | [协作运行区](collab/) | 协作运行区 | 双 agent 协作协议、角色手册、反模式池、信道与任务卡 | 不定义任何产品或技术契约；与上表任一权威文档冲突时权威文档优先 |
@@ -85,17 +86,18 @@ GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的
 | 项目访谈、模拟面试与复习 | D-029、D-032、D-033 | ADR-0002、ADR-0007、产物与学习闭环、验收基线 |
 | 运行恢复与个人数据保留 | D-037、D-038 | 系统设计、证据模型、验收基线 |
 | 不可信输入与安全呈现 | D-036、D-041、D-043 | ADR-0008、系统设计、扫描与分析设计、证据模型、看板呈现契约 |
+| 跨平台与 host agent 会话 | D-045；D-046 待接受 | ADR-0009、ADR-0010、系统设计、验收基线 |
 | 明确延后能力 | F-001 至 F-009 | 决策账本“明确的非首版能力” |
 
 ## Owner 核对清单
 
 Owner 可复核以下边界是否符合真实意图；它们约束已有实现和后续变更：
 
-1. 产品以显式 Codex Skill 为入口，一次运行只聚焦一个工作区和一个主岗位。
+1. 产品以显式 host agent Skill 为入口，一次运行只聚焦一个工作区和一个主岗位。
 2. “我实现/负责/主导”需要项目级角色上下文，“我取得结果”还需要可信结果证据，“我当时学到”需要项目级学习上下文；不足时只保留客观实现、客观项目结果、能力叙事与候选学习要点。
 3. 动态 RoleLens 能接受任意岗位、可选 JD 与职级覆盖，并允许不同岗位复用同一证据图谱。
 4. 扫描保持项目内容只读，个人状态与 Skill/Git 分离；根外只允许扫描契约定义的受限 Git 元数据。
-5. 每个 Codex task 用不落库的易失 SessionCapability 绑定授权；SQLite receipt ID 不能跨 task 复用，能力丢失就重新确认。这不是逐条 Claim 确认，也不改变 Codex 平台数据边界。
+5. 每个 host agent task 用不落库的易失 SessionCapability 绑定授权；SQLite receipt ID 不能跨 task 复用，能力丢失就重新确认。这不是逐条 Claim 确认，也不改变 host agent 平台数据边界。
 6. 根外 Git 先对候选做精确关系探测授权，再对解析后的 git-dir/common-dir 做精确元数据授权；任一阶段拒绝或绑定失败都只形成可见缺口。
 7. 首版输出中文完整准备包、可编辑 Markdown 工作稿和离线 HTML；英文按需且每次有 ExportAttempt 恢复账本；复习状态按结构化语义而非 Revision ID 延续，纯文案改写不断档。
 8. 多岗位比较、额外语言深读、主动提醒、公开发布、常驻服务和独立桌面程序均不进入首版。

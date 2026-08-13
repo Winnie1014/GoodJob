@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_DATA_DIR = Path.home() / ".codex" / "goodjob-career-review"
 CONFIG_TEMPLATE = "[goodjob]\nconfig_version = 1\n"
+
+
+def _default_data_dir() -> Path:
+    legacy_data_dir = Path.home() / ".codex" / "goodjob-career-review"
+    if legacy_data_dir.exists():
+        return legacy_data_dir
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA")
+        return (
+            Path(base) / "goodjob-career-review" if base else Path.home() / "goodjob-career-review"
+        )
+    if sys.platform.startswith("linux"):
+        return Path.home() / ".local" / "share" / "goodjob-career-review"
+    return legacy_data_dir
 
 
 @dataclass(frozen=True)
@@ -20,7 +35,7 @@ class DataPaths:
 
     @classmethod
     def from_argument(cls, raw_path: str | None) -> DataPaths:
-        path = Path(raw_path).expanduser() if raw_path else DEFAULT_DATA_DIR
+        path = Path(raw_path).expanduser() if raw_path else _default_data_dir()
         return cls(path)
 
     @property

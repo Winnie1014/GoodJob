@@ -9,7 +9,7 @@
 
 一次岗位准备围绕一个主岗位进行。它冻结一个 `PreparationRun`：已终态的 `ScanRun`、一个动态 `RoleLens`、所选 `ClaimRevision`、`ProjectContextFact`、覆盖状态、知识缺口和中文主语言。`PreparationRun`、`ArtifactSnapshot`、`ExportAttempt`、`DerivedExport`、`InterviewReview` 的字段与状态以[证据模型](evidence-model.md)为唯一事实源。
 
-- Owner 通过显式 Skill 会话提供工作区、主岗位、可选 JD、可选职级覆盖和可选英文导出请求，并在任何项目衍生信息进入 Codex 分析前确认本会话范围回执；无 JD 不阻断流程，但指定而不可读/不可解码的 JD 必须先修正或显式选择 `continue_without_jd`（`FR-01`、`FR-02`、`FR-05`）。
+- Owner 通过显式 Skill 会话提供工作区、主岗位、可选 JD、可选职级覆盖和可选英文导出请求，并在任何项目衍生信息进入 host agent 分析前确认本会话范围回执；无 JD 不阻断流程，但指定而不可读/不可解码的 JD 必须先修正或显式选择 `continue_without_jd`（`FR-01`、`FR-02`、`FR-05`）。
 - 首版主包语言固定为中文。英文简历和英文问答从已成功的中文主快照按需派生，不触发重新扫描，也不得引入新事实（`FR-13`）。
 - 只有包含至少一个 `fresh|carried_forward` 且具有 `ProjectSnapshot` 项目的终态扫描运行可以开始岗位准备。`partial` 扫描允许生成带缺口的 `partial` 准备包；`failed_no_baseline|excluded` 项目只进入 Coverage，不评分；`failed` 或 `interrupted` ScanRun 不能发布新 `ArtifactSnapshot`（`FR-15`、`NFR-05`）。
 - Markdown、HTML 和 manifest 必须由同一个冻结 `ReportBundle v1` 生成。渲染阶段不得重新发现项目、重新分析源码或改变 Claim（`FR-12`、`NFR-04`）。

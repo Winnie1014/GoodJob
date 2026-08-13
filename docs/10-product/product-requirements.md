@@ -7,7 +7,7 @@
 
 ## 1. 产品边界与默认值
 
-GoodJob 是由 Codex 显式调用的个人职业准备 Skill，而不是一个自动后台扫描服务或独立桌面程序。一次准备运行围绕**一个主岗位**和**一个工作区根**组织；用户可以对不同工作区或不同岗位分别创建准备运行，但首版不生成多岗位并排比较报告。
+GoodJob 是由 host agent 显式调用的个人职业准备 Skill，而不是一个自动后台扫描服务或独立桌面程序。一次准备运行围绕**一个主岗位**和**一个工作区根**组织；用户可以对不同工作区或不同岗位分别创建准备运行，但首版不生成多岗位并排比较报告。
 
 以下默认值是首版固定契约：
 
@@ -22,17 +22,17 @@ GoodJob 是由 Codex 显式调用的个人职业准备 Skill，而不是一个�
 | 刷新 | 首次全量扫描，之后只由用户显式触发 `refresh`；不建立文件监听或定时任务。 |
 | 深读 | 首版深读 TS/TSX、Python、Rust、Dart、SQL；其余语言保留可靠基础档案和可见的能力边界。 |
 | 个人信息 | 工作区注册、用户回答、SQLite、快照和复习状态位于 Skill 外的个人数据目录，不进入版本化 Skill 或 GitHub。 |
-| 源码分析授权 | 每个 Codex task 生成不落库的易失 SessionCapability；每个显式 Skill 会话以其 binding digest 形成范围级 `AuthorizationReceipt`，能力丢失即重新确认。 |
+| 源码分析授权 | 每个 host agent task 生成不落库的易失 SessionCapability；每个显式 Skill 会话以其 binding digest 形成范围级 `AuthorizationReceipt`，能力丢失即重新确认。 |
 
 其中 `target_role`、`job_description` 和 `level_override` 是一次运行的岗位输入；具体 RoleLens 字段和保存方式由 [证据模型](../20-architecture/evidence-model.md) 定义。
 
 ## 2. 用户流程
 
 1. 用户显式调用 Skill，说明工作区路径和目标岗位；可同时提供 JD 与职级覆盖。
-2. Skill 显示规范化工作区、将处理的源码/配置/文档/Git 元数据类别，以及“本地扫描器不新增上传，但 Codex 打开的原文件会进入当前会话的模型处理链路并受当前产品/账户/工作区策略约束”的提示；Owner 一次范围级确认后形成当次 `AuthorizationReceipt`，不逐条确认 Claim。
+2. Skill 显示规范化工作区、将处理的源码/配置/文档/Git 元数据类别，以及“本地扫描器不新增上传，但 host agent 打开的原文件会进入当前会话的模型处理链路并受当前产品/账户/工作区策略约束”的提示；Owner 一次范围级确认后形成当次 `AuthorizationReceipt`，不逐条确认 Claim。
 3. Skill 验证工作区和 JD 输入。显式指定但不可读的 JD 必须由 Owner 更正，或由 Owner 明确选择无 JD 模式后才可继续。
 4. 扫描器发现项目、工作树和模块，建立或刷新本地证据索引；任何跳过、权限问题、未授权根外 Git 元数据或不支持能力被记录为可见问题。
-5. Codex 根据岗位输入、可选 JD、岗位参考和证据生成并持久化本次 RoleLens；无 JD 时保留明确假设而不是停止。
+5. host agent 根据岗位输入、可选 JD、岗位参考和证据生成并持久化本次 RoleLens；无 JD 时保留明确假设而不是停止。
 6. 系统先对候选 SourceRevision 做准备预检，再从岗位相关证据包形成材料，并按具体问题深读本地原文件。预检、读取前或提交前发现内容变化时，明确要求 Owner refresh，不隐式重扫。
 7. 系统生成并保存不可变中文岗位主快照（完整报告 Markdown、简历源稿和离线 HTML），并可显式导出可编辑工作稿；`latest` 指向最近一次成功的中文主快照。
 8. 用户可继续进行模拟面试、记录复盘和下次复习日期，或从既有快照按需导出英文简历和英文问答。复习状态只在稳定目标及事实指纹兼容时显示为延续状态。
@@ -43,9 +43,9 @@ GoodJob 是由 Codex 显式调用的个人职业准备 Skill，而不是一个�
 
 Skill 必须通过 `$goodjob-career-review` 显式调用。首版支持“首次扫描/准备”“显式刷新”“基于既有快照继续模拟面试”“按需导出英文材料”四类对话意图。系统不得在未调用时扫描、监听或修改用户工作区。
 
-在本会话第一次访问源码、源码衍生证据或既有项目材料前，Skill 必须显示工作区、处理类别、GoodJob 的本地处理边界，并明确说明 Codex 打开的原文件会进入当前会话所使用的模型处理链路、其处理与保留受当前产品/账户/工作区策略约束。Owner 必须确认其有权分析该范围且会自行审阅对外材料中的保密内容。路径具有读取权限不等于该确认；确认仅覆盖当前显式会话，不要求逐条确认 Claim。拒绝、缺失或提示版本变化时，系统不得创建新的 `ScanRun`、`PreparationRun`、`EvidenceBundle` 或模型驱动导出；既有离线产物仍可由 Owner 在本机直接打开。
+在本会话第一次访问源码、源码衍生证据或既有项目材料前，Skill 必须显示工作区、处理类别、GoodJob 的本地处理边界，并明确说明 host agent 打开的原文件会进入当前会话所使用的模型处理链路、其处理与保留受当前产品/账户/工作区策略约束。Owner 必须确认其有权分析该范围且会自行审阅对外材料中的保密内容。路径具有读取权限不等于该确认；确认仅覆盖当前显式会话，不要求逐条确认 Claim。拒绝、缺失或提示版本变化时，系统不得创建新的 `ScanRun`、`PreparationRun`、`EvidenceBundle` 或模型驱动导出；既有离线产物仍可由 Owner 在本机直接打开。
 
-“同一会话”由当前 Codex task 的易失 `SessionCapability` 技术绑定：编排运行时生成至少 256 bit 随机值并只持有原始值，SQLite 仅保存 domain-separated digest。每个受保护请求临时证明持有原始 capability；新 task、能力丢失、digest/scope/notice 不匹配都必须重新确认，不能仅凭 receipt ID 继续。原始 capability 不得进入 argv、环境变量、GoodJob 日志、数据库、产物或用户可见输出；Codex host 对当前 task trace 的处理仍服从其既有边界。若运行时不能提供 task-scoped 易失状态，首版必须 fail closed。
+“同一会话”由当前 host agent task 的易失 `SessionCapability` 技术绑定：编排运行时生成至少 256 bit 随机值并只持有原始值，SQLite 仅保存 domain-separated digest。每个受保护请求临时证明持有原始 capability；新 task、能力丢失、digest/scope/notice 不匹配都必须重新确认，不能仅凭 receipt ID 继续。原始 capability 不得进入 argv、环境变量、GoodJob 日志、数据库、产物或用户可见输出；host agent 对当前 task trace 的处理仍服从其既有边界。若运行时不能提供 task-scoped 易失状态，首版必须 fail closed。
 
 **验收结果：** 用户能明确看到本次准备运行的工作区、主岗位、JD/职级输入状态、AuthorizationReceipt 状态和产物状态。
 
@@ -102,7 +102,7 @@ refresh 不得覆盖用户补充的项目背景、项目级访谈答案、历史
 | 实现 | 模块承担什么职责、怎样协作、数据/控制如何流动、关键机制怎样实现、有哪些设计取舍和验证手段？ |
 | 学习 | 用户应能重新掌握哪些概念、模式、调试/测试方法和系统取舍？哪些点还需要阅读、追问或练习？ |
 
-扫描器负责结构化盘点，Codex 负责在岗位相关证据包基础上归纳；遇到具体问题时，Codex 必须能够继续打开本地原文件深读，而非仅依赖数据库摘要。
+扫描器负责结构化盘点，host agent 负责在岗位相关证据包基础上归纳；遇到具体问题时，host agent 必须能够继续打开本地原文件深读，而非仅依赖数据库摘要。
 
 ### FR-07：能力叙事、贡献叙事与结果边界
 
@@ -183,10 +183,10 @@ GoodJob 不要求用户对每个 Claim 逐条确认，但必须严格区分以�
 GoodJob 的访问边界分为三层，缺一不可：
 
 1. `workspace_path` 只授权 Python 在本机读取指定根内的合资格内容；显式 JD 只作为岗位输入读取，不扩展扫描范围。
-2. 每个显式会话的 `AuthorizationReceipt(source_analysis)` 才授权 GoodJob 让当前 Codex 会话分析该工作区。回执只记录 scope、notice、确认时间与当前 task capability 的 digest；原始 capability 由 Codex task 易失编排状态持有，每次受保护请求经专用 stdin/继承 FD 传给本地核心并 constant-time compare，不落库、不记日志、不能从旧 receipt 恢复。能力缺失或运行时不支持时必须重新确认。按证据打开的原文件会进入该会话的模型处理链路；GoodJob 不扩大当前产品/账户/工作区的数据处理与保留边界。
+2. 每个显式会话的 `AuthorizationReceipt(source_analysis)` 才授权 GoodJob 让当前 host agent 会话分析该工作区。回执只记录 scope、notice、确认时间与当前 task capability 的 digest；原始 capability 由 host agent task 易失编排状态持有，每次受保护请求经专用 stdin/继承 FD 传给本地核心并 constant-time compare，不落库、不记日志、不能从旧 receipt 恢复。能力缺失或运行时不支持时必须重新确认。按证据打开的原文件会进入该会话的模型处理链路；GoodJob 不扩大当前产品/账户/工作区的数据处理与保留边界。
 3. 工作区内 `.git` 标记只是根外 Git 目录的**不可信候选**。系统先只读取根内标记并展示 marker kind 与精确候选；Owner 对这些候选授予 `external_git_relation_probe` 后，系统才可解析规范化 git-dir/common-dir、互指关系和目录身份。系统展示解析结果和拟读取字段后，还须取得同时绑定精确路径与身份的 `AuthorizationReceipt(external_git_metadata)`，才能以描述符直接读取关系与 HEAD/ref。外部阶段不得启动 Git；根外 index/dirty、源码、配置、模块、blob、diff 和 Git 历史都不得被扫描或读取。
 
-GoodJob 不得写入、格式化、构建、测试、提交或以其他方式改变被扫描项目，也不得引入当前 Codex 会话之外的外部分析服务、源码上传通道、遥测或扫描网络依赖。
+GoodJob 不得写入、格式化、构建、测试、提交或以其他方式改变被扫描项目，也不得引入当前 host agent 会话之外的外部分析服务、源码上传通道、遥测或扫描网络依赖。
 
 ### NFR-02：最小化证据保存与可核验性
 
@@ -226,11 +226,19 @@ WSL1 不支持用户命名空间（bwrap 依赖），因此 WSL1 上 bwrap 后�
 
 **验收结果：** 在 macOS 和 Linux（含 WSL2）上分别能运行完整 scan/prepare 流程，Git 子进程被各自平台的沙箱限制；任一沙箱后端缺失时明确报错且零 Git 执行。
 
+### FR-17：Host Agent 无关会话
+
+通过 `--agent-runtime` 参数标识宿主运行时；`issuer_kind` 为自由文本，默认 `codex_task_runtime` 保持向后兼容；`uv` 不存在时自动回退到 `python3.12`。
+
 ### NFR-09：跨平台沙箱等价性与 fail-closed 边界
 
 macOS Seatbelt 和 Linux bwrap 沙箱在安全语义上必须等价：都拒绝网络、限制文件系统读取范围、隔离进程命名空间。两者的安全差异（bwrap 额外只读挂载 `/usr`、`/lib`、`/etc` 等系统路径以使 Git 二进制和身份解析可用）必须在 ADR-0009 中记录并接受。
 
 平台后端选择在运行时按 `sys.platform` 自动决定，不提供手动覆盖。沙箱后端不存在（`sandbox-exec` 缺失或 `bwrap` 未安装/无法运行）时必须 fail-closed，不得回退到无沙箱或弱化沙箱。bwrap 已安装但无法运行（如 WSL1 的用户命名空间限制、AppArmor 限制、容器环境）时也必须 fail-closed 并给出安装/启用指引。
+
+### NFR-10：宿主兼容性探针准入
+
+每个宿主 agent 必须通过 5 项探针（发现路径、长驻 stdin、JSONL 往返、退出清理、真机 E2E）后才可进入支持矩阵；未通过者明确标注待支持。
 
 ## 5. 关键失败路径
 
@@ -238,7 +246,7 @@ macOS Seatbelt 和 Linux bwrap 沙箱在安全语义上必须等价：都拒绝�
 | --- | --- | --- |
 | 工作区根不存在或不可读 | 明确输入错误，指出路径与修复方式，不生成伪造材料 | 否，等待新的有效输入 |
 | 源码分析授权未确认、被拒绝或提示版本已变化 | 显示规范化工作区、处理类别和当前会话边界提示；不创建新 ScanRun/PreparationRun | 否，等待本会话明确确认 |
-| SessionCapability 丢失、digest 不匹配或进入新的 Codex task | receipt ID 不能单独通过；活动 PreparationRun 不能续接模型内存 | 重新确认；Owner 明示 abandon/restart 后复用终态快照与持久上下文 |
+| SessionCapability 丢失、digest 不匹配或进入新的 host agent task | receipt ID 不能单独通过；活动 PreparationRun 不能续接模型内存 | 重新确认；Owner 明示 abandon/restart 后复用终态快照与持久上下文 |
 | 指定 JD 文件不可读 | 明确指出 JD 无法使用；用户可改正，或明确选择无 JD 模式 | 不自动忽略 JD |
 | 根外 Git 元数据未授权或绑定校验失败 | 记录 `external_git_not_authorized`、`untrusted_git_pointer` 或关系不匹配 ScanIssue；不读取目标派生数据 | 是，作为可见覆盖缺口继续根内范围 |
 | 岗位名称未知或无 JD | 生成带假设的候选 RoleLens，并在准备包中展示假设 | 是 |

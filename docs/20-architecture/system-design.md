@@ -7,13 +7,13 @@
 
 ## 1. 设计摘要
 
-GoodJob 是一个由 Codex 显式调用的个人 Skill，而不是独立桌面应用。Codex 负责理解岗位、读取本地证据、生成叙事与开展访谈；随 Skill 分发的 Python 核心负责确定性的发现、索引、SQLite 持久化和产物编排；预构建的 TypeScript 前端只负责渲染无需服务的离线 HTML 看板。每个显式会话先形成范围级 `AuthorizationReceipt`，它确认 Owner 有权让当前 Codex 会话分析该工作区，但不重新定义 Codex 平台的数据边界。运行时支持 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）。
+GoodJob 是一个由 host agent 显式调用的个人 Skill，而不是独立桌面应用。host agent 负责理解岗位、读取本地证据、生成叙事与开展访谈；随 Skill 分发的 Python 核心负责确定性的发现、索引、SQLite 持久化和产物编排；预构建的 TypeScript 前端只负责渲染无需服务的离线 HTML 看板。每个显式会话先形成范围级 `AuthorizationReceipt`，它确认 Owner 有权让当前 host agent 会话分析该工作区，但不重新定义 host agent 平台的数据边界。运行时支持 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）。
 
 同一份岗位无关证据目录可以被不同 `RoleLens` 重排。源码仍以用户指定工作区内的原文件为事实源；数据库只保存证据指针、哈希、短摘要和结构化结论。版本化 Skill 目录与持续增长的个人数据目录严格分离。
 
 ```mermaid
 flowchart LR
-    U["Owner"] -->|"工作区、岗位、可选 JD/职级"| S["ARCH-C01 Codex Skill 编排器"]
+    U["Owner"] -->|"工作区、岗位、可选 JD/职级"| S["ARCH-C01 host agent Skill 编排器"]
     S -->|"scan / refresh"| P["ARCH-C02 Python 本地核心"]
     P -->|"只读"| W["授权工作区"]
     P <-->|"结构化状态"| DB["ARCH-C03 SQLite 个人证据库"]
@@ -42,10 +42,10 @@ Skill 运行期间不得修改安装目录。升级、重装或删除 Skill 不�
 
 ### 2.2 个人数据目录
 
-默认数据根为 `~/.codex/goodjob-career-review/`，可由每次调用的显式 `data-dir` 覆盖。固定布局如下：
+默认数据根为平台感知路径（macOS: ~/.codex/goodjob-career-review/；Linux: ~/.local/share/goodjob-career-review/；legacy 目录存在时优先沿用），可由每次调用的显式 `data-dir` 覆盖。固定布局如下：
 
 ```text
-~/.codex/goodjob-career-review/
+~/.codex/goodjob-career-review/  (macOS 默认；Linux 为 ~/.local/share/goodjob-career-review/)
 ├── config.toml                 # config_revision、默认岗位、项目级排除规则
 ├── goodjob.sqlite3             # 证据、运行、访谈与复习状态
 ├── artifacts/
@@ -62,30 +62,30 @@ Skill 运行期间不得修改安装目录。升级、重装或删除 Skill 不�
 
 ### 2.3 进程与网络边界
 
-- Owner 提供的 `workspace_path` 仅定义本机文件范围。`ARCH-C01` 必须先取得当次 `AuthorizationReceipt(source_analysis)`，再让 Codex 或 Python 处理源码、源码衍生证据或既有项目材料；回执拒绝/缺失时不建立新运行。扫描器只可把 `.git` 标记当作不可信候选：先只检查根内标记，再以绑定 marker kind 与精确候选的 `external_git_relation_probe` 回执解析关系和目录身份；解析后展示 git-dir/common-dir、身份与字段并取得精确 `external_git_metadata` 回执。双向绑定通过后也只能用描述符直接读取关系与 HEAD/ref，不得启动外部 Git 或扫描根外项目内容、配置、index/dirty 或历史。
-- Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。Phase 1 实现候选的 Git 子进程在平台原生沙箱中运行：macOS 使用 `sandbox-exec` Seatbelt（拒网络、只读授权根、禁 hooks），Linux 使用 `bwrap`（等价安全语义，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；任一沙箱后端不可用时 fail-closed，Linux/WSL2 真机证据与 ADR 接受仍为阻塞门。
+- Owner 提供的 `workspace_path` 仅定义本机文件范围。`ARCH-C01` 必须先取得当次 `AuthorizationReceipt(source_analysis)`，再让 host agent 或 Python 处理源码、源码衍生证据或既有项目材料；回执拒绝/缺失时不建立新运行。扫描器只可把 `.git` 标记当作不可信候选：先只检查根内标记，再以绑定 marker kind 与精确候选的 `external_git_relation_probe` 回执解析关系和目录身份；解析后展示 git-dir/common-dir、身份与字段并取得精确 `external_git_metadata` 回执。双向绑定通过后也只能用描述符直接读取关系与 HEAD/ref，不得启动外部 Git 或扫描根外项目内容、配置、index/dirty 或历史。
+- Python 核心作为短生命周期子进程运行；首版没有守护进程、后台监听或常驻 HTTP 服务。Git 子进程在平台原生沙箱中运行：macOS 使用 `sandbox-exec` Seatbelt（拒网络、只读授权根、禁 hooks），Linux 使用 `bwrap`（等价安全语义，见 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；任一沙箱后端不可用时 fail-closed。真实 Ubuntu 24.04 门已通过，ADR-0009 已接受，WSL2 复用同一 Linux 后端。
 - SQLite 是唯一结构化持久层。前端不得直接打开或修改 SQLite。
 - 离线 HTML 不请求远端 API、CDN、字体或分析服务，也不通过 `file://` 再读取外部 JSON；报告数据随 HTML 产物内嵌。
-- GoodJob 不引入当前 Codex 会话之外的分析服务、源码上传通道或遥测。Codex 对源码的访问属于当前工作区会话中的直接读取，受该会话既有的数据边界约束；扫描器不额外复制或传输源码。GoodJob 不判断 Owner 的 NDA、版权或组织策略是否允许该会话分析或对外使用材料。
+- GoodJob 不引入当前 host agent 会话之外的分析服务、源码上传通道或遥测。host agent 对源码的访问属于当前工作区会话中的直接读取，受该会话既有的数据边界约束；扫描器不额外复制或传输源码。GoodJob 不判断 Owner 的 NDA、版权或组织策略是否允许该会话分析或对外使用材料。
 
 ## 3. 组件职责
 
 | ID | 组件 | 唯一职责 | 明确不负责 |
 | --- | --- | --- | --- |
-| `ARCH-C01` | Codex Skill 编排器 | 收集输入、在 Codex task 易失状态生成/持有 SessionCapability、取得会话/根外授权回执、调用本地核心、控制深读与访谈 | 持久化/显示/记录原始 capability，把路径可读性当授权，遍历全工作区，直接写 SQLite |
+| `ARCH-C01` | host agent Skill 编排器 | 收集输入、在 host agent task 易失状态生成/持有 SessionCapability、取得会话/根外授权回执、调用本地核心、控制深读与访谈 | 持久化/显示/记录原始 capability，把路径可读性当授权，遍历全工作区，直接写 SQLite |
 | `ARCH-C02` | Python 本地核心 | 项目发现、确定性扫描、增量索引、证据查询、运行状态与快照编排 | 自行推断岗位价值、冒充用户声明贡献、依赖常驻服务 |
 | `ARCH-C03` | SQLite 个人证据库 | 保存证据图谱、回执的 session binding digest、运行/导出尝试、快照、结构化访谈、复习语义投影与状态 | 保存源码全文或原始 SessionCapability、作为前端运行时 API |
-| `ARCH-C04` | RoleLens 与准备引擎 | 由 Codex 根据岗位/JD/职级构造镜头，按镜头排序证据、形成 Claim、识别知识缺口 | 把岗位限制为固定枚举、重新扫描同一工作区、把文档计划判作已实现 |
+| `ARCH-C04` | RoleLens 与准备引擎 | 由 host agent 根据岗位/JD/职级构造镜头，按镜头排序证据、形成 Claim、识别知识缺口 | 把岗位限制为固定枚举、重新扫描同一工作区、把文档计划判作已实现 |
 | `ARCH-C05` | 产物生成器 | 校验报告契约，生成中文报告/简历/HTML、工作稿、英文派生导出、manifest 和 `latest`；每次英文导出维护 ExportAttempt 与可恢复路径 | 改写 Claim、隐藏覆盖缺口、覆盖人工工作稿、让派生导出改写主快照 |
 | `ARCH-C06` | 离线 TypeScript 看板 | 在浏览器内完成导航、搜索、筛选、证据展开和复习状态展示 | 访问网络、启动服务、持久化新的数据库状态或执行源码扫描 |
 
 ### 3.1 `ARCH-C01`：Skill 编排器
 
-Skill 只能由用户显式调用（FR-01）。当前 Codex task 首次进入 GoodJob 授权流程时，编排运行时必须用密码学安全随机源生成至少 256 bit `SessionCapability`，只保存在 task-scoped 易失状态；Owner 确认范围后，Python 仅持久化其 domain-separated SHA-256 digest 到 `AuthorizationReceipt`。原始 capability 只能通过专用 stdin/继承 FD 随受保护请求传递，不能进入 argv、环境变量、数据库、GoodJob 日志、产物或用户可见输出；Codex task trace 仍受 host 既有边界约束。task 结束、状态丢失或运行时不支持该易失能力时必须重新确认，不能读取 SQLite 恢复旧 capability。
+Skill 只能由用户显式调用（FR-01）。当前 host agent task 首次进入 GoodJob 授权流程时，编排运行时必须用密码学安全随机源生成至少 256 bit `SessionCapability`，只保存在 task-scoped 易失状态；Owner 确认范围后，Python 仅持久化其 domain-separated SHA-256 digest 到 `AuthorizationReceipt`。原始 capability 只能通过专用 stdin/继承 FD 随受保护请求传递，不能进入 argv、环境变量、数据库、GoodJob 日志、产物或用户可见输出；host agent task trace 仍受 host 既有边界约束。task 结束、状态丢失或运行时不支持该易失能力时必须重新确认，不能读取 SQLite 恢复旧 capability。
 
-授权前必须显示规范化工作区、处理类别、GoodJob 本地持久化边界，并说明按证据打开的原文件会进入当前 Codex 会话的模型处理链路、其边界由当前产品/账户/工作区策略决定；Owner 确认后形成 `AuthorizationReceipt(source_analysis)`。一次准备会话随后形成 `PreparationRequest`：授权工作区、回执、主岗位、可选 JD、可选职级覆盖、可选英文导出请求和可选数据目录；首版主包语言固定为中文（FR-02、FR-13）。
+授权前必须显示规范化工作区、处理类别、GoodJob 本地持久化边界，并说明按证据打开的原文件会进入当前 host agent 会话的模型处理链路、其边界由当前产品/账户/工作区策略决定；Owner 确认后形成 `AuthorizationReceipt(source_analysis)`。一次准备会话随后形成 `PreparationRequest`：授权工作区、回执、主岗位、可选 JD、可选职级覆盖、可选英文导出请求和可选数据目录；首版主包语言固定为中文（FR-02、FR-13）。
 
-编排器遵循固定顺序：确认输入与授权回执 → 确认或刷新索引 → 生成单岗位 `RoleLens` → 预检候选 SourceRevision → 请求岗位相关 `EvidenceBundle` → 按缺口打开本地原文件 → 形成 ClaimDraft → 必要时做一次项目级批量访谈 → 由 Python 校验并持久化分析 → 生成不可变准备快照。它不得让 Codex 在无边界的情况下通读全部仓库，也不得绕过 Python 直接把模型草稿写成 ClaimRevision。预检、读取前或提交前出现哈希不匹配时，它只能引导 Owner 显式 refresh，不得静默重扫。
+编排器遵循固定顺序：确认输入与授权回执 → 确认或刷新索引 → 生成单岗位 `RoleLens` → 预检候选 SourceRevision → 请求岗位相关 `EvidenceBundle` → 按缺口打开本地原文件 → 形成 ClaimDraft → 必要时做一次项目级批量访谈 → 由 Python 校验并持久化分析 → 生成不可变准备快照。它不得让 host agent 在无边界的情况下通读全部仓库，也不得绕过 Python 直接把模型草稿写成 ClaimRevision。预检、读取前或提交前出现哈希不匹配时，它只能引导 Owner 显式 refresh，不得静默重扫。
 
 ### 3.2 `ARCH-C02`：Python 本地核心
 
@@ -116,14 +116,14 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 
 | ID | 发起方 → 接收方 | 接口 | 输入 | 输出与保证 |
 | --- | --- | --- | --- | --- |
-| `ARCH-I01` | Owner → `ARCH-C01` | `$goodjob-career-review` | `workspace_path`、`target_role`、可选 `jd`、`level_override`、`requested_exports`、`data_dir`、授权响应 | 当前 Codex task 生成易失 SessionCapability；确认后只持久化 binding digest 与 AuthorizationReceipt；主包固定为中文 |
+| `ARCH-I01` | Owner → `ARCH-C01` | `$goodjob-career-review` | `workspace_path`、`target_role`、可选 `jd`、`level_override`、`requested_exports`、`data_dir`、授权响应 | 当前 host agent task 生成易失 SessionCapability；确认后只持久化 binding digest 与 AuthorizationReceipt；主包固定为中文 |
 | `ARCH-I02` | `ARCH-C01` → `ARCH-C02` | `scan` | `ScanRequest(workspace_path, config_revision, authorization_receipt_id)` | 首次登记并生成 `ScanRun`、覆盖摘要、问题列表和 workspace/project ID；根外 Git 另走 relation-probe 与 metadata 两阶段精确回执 |
 | `ARCH-I03` | `ARCH-C01` → `ARCH-C02` | `refresh` | `RefreshRequest(workspace_id, config_revision, change_detection_mode, authorization_receipt_id)` | 显式增量运行；未变化证据保持身份，变化证据生成新版本，失败项目保留并标旧 |
 | `ARCH-I04` | `ARCH-C01/C04` → `ARCH-C02/C03` | `prepare_start` | `PreparationRequest`、待冻结 `RoleLens`、authorization receipt | 校验并持久化 JobInput/RoleLens，冻结扫描快照并创建 PreparationRun；预检通过后返回按 RoleLens 临时优先级组织的 EvidenceBundle，失效时返回 `refresh_required` |
 | `ARCH-I05` | `ARCH-C04` → `ARCH-C02/C03` | `interview` | `InterviewInput(mode=context\|mock_review, run_id, authorization_receipt_id, structured_answers)` | 追加结构化项目上下文或模拟面试复盘；绑定稳定 ReviewTarget，不保存完整逐字对话，不覆盖旧回答 |
 | `ARCH-I06` | `ARCH-C04` → `ARCH-C02/C03` | `record_analysis` | `AnalysisCommitRequest`：EvidenceDraft、ClaimDraft、eligible ProjectAssessment 草稿与 KnowledgeGap | 校验深读文件哈希/locator 或定向 Git candidate、facet/反证/作用域/个人归因；任一失效映射为 `refresh_required` 且整批不提交；按冻结 RoleLens 重算 eligible 项目的分数与稳定排名后原子冻结分析集 |
 | `ARCH-I07` | `ARCH-C01/C04` → `ARCH-C02/C05` | `render` | `ready` 或 `render_failed` 且已冻结分析集的 PreparationRun、主包选项 | 每次创建 RenderAttempt，只从同一已提交分析集原子生成中文 ArtifactSnapshot；成功后更新 latest，失败清理临时产物并允许重试 |
-| `ARCH-I08` | `ARCH-C02/C04` → Codex | `EvidenceBundle` | 岗位维度、项目/模块过滤、证据类型、数量上限、可选定向历史目标/理由 | 返回证据指针或受限 Git 候选、短摘要、状态、覆盖和深读建议；绝不返回数据库中的源码全文或 diff 正文 |
+| `ARCH-I08` | `ARCH-C02/C04` → host agent | `EvidenceBundle` | 岗位维度、项目/模块过滤、证据类型、数量上限、可选定向历史目标/理由 | 返回证据指针或受限 Git 候选、短摘要、状态、覆盖和深读建议；绝不返回数据库中的源码全文或 diff 正文 |
 | `ARCH-I09` | `ARCH-C05` → `ARCH-C06` | `ReportBundle v1` | 一次冻结 PreparationRun 的岗位、项目、Claim、证据、缺口、ReviewSubjectProjection 与复习摘要 | canonical hash 稳定、自包含、可校验版本、无数据库内部表字段耦合、断网可渲染；重试不得改变 bundle hash |
 | `ARCH-I10` | `ARCH-C01` → `ARCH-C05` | `translate_export` | `TranslationExportRequest`、task 内存中的翻译候选、SessionAuthorizationEnvelope | 候选不落盘；单个持锁发布子进程先创建 ExportAttempt/owner identity，再写 temp、校验、改名和提交 DerivedExport；不更新 latest |
 | `ARCH-I11` | `ARCH-C01/C04` → `ARCH-C02` | `verify_source_revision` | `PreparationRun`、一组 SourceRevision/locator | 对预检、读取前和提交前的精确证据做哈希/定位器校验；返回 passed 或 `refresh_required`，不写入新事实 |
@@ -142,7 +142,7 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 ### 5.2 岗位准备
 
 1. `ARCH-C04` 基于岗位输入、JD 和项目概览生成候选 `RoleLens`；`ARCH-I04` 先校验授权回执、定点权重及 fresh/carried-forward 合资格项目集，再冻结镜头和扫描快照。合资格集合为空则失败。
-2. `ARCH-C02` 先对候选 SourceRevision 做 preflight，再按镜头返回有限的 `EvidenceBundle`；Codex 在打开关键原文件前再次校验并记录所用 SourceRevision/hash。对 Git 数据仍在工作区授权根内的项目，近期历史不足时可带理由请求候选并对选中项做有界 diff/blob 深读，内容只进入当前会话而不落库；根外 Git 永不执行历史或对象深读。
+2. `ARCH-C02` 先对候选 SourceRevision 做 preflight，再按镜头返回有限的 `EvidenceBundle`；host agent 在打开关键原文件前再次校验并记录所用 SourceRevision/hash。对 Git 数据仍在工作区授权根内的项目，近期历史不足时可带理由请求候选并对选中项做有界 diff/blob 深读，内容只进入当前会话而不落库；根外 Git 永不执行历史或对象深读。
 3. `ARCH-C04` 将新的精确定位先形成 EvidenceDraft，再形成技术、业务、架构、实现方式、学习、贡献与结果 ClaimDraft。“我实现/负责/主导”必须有项目级 role/ownership 上下文或可核验个人角色 Evidence；“我取得结果”还必须有可核验的项目结果/指标 Evidence。
 4. 若业务目标、指标或个人角色仍有关键缺口，`ARCH-C01` 一次性按项目提出批量问题，并追加结构化答案；不逐条确认 Claim。
 5. `ARCH-I06` 在提交事务内完成第三次 SourceRevision 校验，再校验定向查询来源、Evidence 范围、facet、worktree scope、个人归因与反证；只为合资格项目按冻结 RoleLens 的定点公式重算分数和连续排名。任一源码失配把运行终止为 `refresh_required`，任何验证失败均不产生 Evidence、ClaimRevision、ProjectAssessment、PreparationClaim、KnowledgeGap 或半提交分析集。
@@ -160,7 +160,7 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 
 ### 5.5 英文导出
 
-`translate_export` 先在当前 Codex task 内存中从冻结 source-item 形成翻译候选，不写文件。候选完成后启动一个短生命周期发布子进程；它取得写锁，在首次文件写入前创建 `ExportAttempt(running)`，记录 PID + 进程启动标识、`exports/.tmp/<export-attempt-id>/` 与唯一 final path。随后只在 temp 写入并完成 manifest/hash/事实锚点校验，原子改名到 final path，最后在同一持锁发布流程的数据库事务中创建 DerivedExport、把 attempt 标为 succeeded。
+`translate_export` 先在当前 host agent task 内存中从冻结 source-item 形成翻译候选，不写文件。候选完成后启动一个短生命周期发布子进程；它取得写锁，在首次文件写入前创建 `ExportAttempt(running)`，记录 PID + 进程启动标识、`exports/.tmp/<export-attempt-id>/` 与唯一 final path。随后只在 temp 写入并完成 manifest/hash/事实锚点校验，原子改名到 final path，最后在同一持锁发布流程的数据库事务中创建 DerivedExport、把 attempt 标为 succeeded。
 
 任一正常失败标为 failed 并清理预登记临时路径；发布进程在写 temp、改名后或数据库提交前退出时，内核释放写锁，下一个写会话只有在 PID+启动标识确认原进程不存在后才把 attempt 标为 interrupted，并清理 temp，或清理“已在 final path 但无 DerivedExport”的孤儿目录。重试创建新 attempt，不续写旧目录，也不改中文快照或 `latest`。
 
@@ -181,7 +181,7 @@ Python 向前端提供版本化 `ReportBundle`，前端不得依赖数据库表�
 | `ARCH-INV-11` | 工作区、JD、用户上下文和模型输出都是不可信数据：不能改变控制流或权限；进入 HTML 时必须安全编码，不能产生可执行标记、脚本、事件处理器或外部 URL。 |
 | `ARCH-INV-12` | 多 worktree 相同内容只复用解析/折叠展示，不合并 provenance；分支差异必须保留 worktree scope 或显式冲突，不能拼成一个不存在的项目状态。 |
 | `ARCH-INV-13` | record_analysis 成功后，渲染重试只能复用冻结分析集；失败只追加 RenderAttempt，不重新生成 Claim、不发布半成品、不更新 latest。 |
-| `ARCH-INV-14` | 路径可读、配置、项目文本或 SQLite receipt 均不能替代当前 Codex task 的原始 SessionCapability；只有 capability digest、scope、notice 全部匹配的回执有效，能力丢失必须重新确认。 |
+| `ARCH-INV-14` | 路径可读、配置、项目文本或 SQLite receipt 均不能替代当前 host agent task 的原始 SessionCapability；只有 capability digest、scope、notice 全部匹配的回执有效，能力丢失必须重新确认。 |
 | `ARCH-INV-15` | `.git` 标记不能授权根外访问；根内 candidate inspection 后，relation-probe 回执必须绑定 marker kind 与精确候选，metadata 回执必须绑定解析后的 git-dir/common-dir 及目录身份；外部阶段不启动 Git，最终也只能直接读取关系、HEAD/ref，不能读取 index/dirty、根外历史、对象、配置或源码。 |
 | `ARCH-INV-16` | preflight、before_read 或 commit 任一 SourceRevision 校验失配都必须原子转为 `refresh_required`；不得隐式 refresh、半提交或移动 `latest`。 |
 | `ARCH-INV-17` | 复习连续性依赖稳定 ReviewTarget 与 canonical ReviewSubjectProjection；不得直接 hash Revision/Gap ID 或题面。纯文案修订保持连续，实质语义变化或无法证明等价时必须重评。 |

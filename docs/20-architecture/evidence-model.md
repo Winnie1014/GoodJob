@@ -76,7 +76,7 @@
 | `EVID-E20` | `EvidenceContext` | `evidence_id`、`context_fact_id` | `evidence_kind=user_statement` 时的一对一来源关系；让用户上下文进入统一 ClaimEvidence 链路 |
 | `EVID-E21` | `EvidenceValidity` | `scan_run_id`、`evidence_id`、`validity`、可选 `replacement_evidence_id`、`resolved_at` | 以扫描快照为坐标追加时效状态；不得回写 Evidence |
 
-`origin_kind` 是 `source_revision`、`git_commit` 或 `context_fact`。`acquisition_scope` 是 `scan`、`preparation` 或 `context`：扫描器基础证据绑定 ProjectSnapshot；Codex 深读形成的精确文件证据绑定 PreparationRun，且其 SourceRevision 必须属于该运行冻结的 ProjectSnapshot；定向 Git 证据绑定 PreparationRun、commit locator 和 `query_reason`；用户陈述通过 `EvidenceContext` 指向 `ProjectContextFact`。Preparation-scope Evidence 是对冻结事实的追加定位，不得回写 ProjectSnapshot 或出现在其他运行中，除非后续运行重新校验并创建/复用合资格 Evidence。
+`origin_kind` 是 `source_revision`、`git_commit` 或 `context_fact`。`acquisition_scope` 是 `scan`、`preparation` 或 `context`：扫描器基础证据绑定 ProjectSnapshot；host agent 深读形成的精确文件证据绑定 PreparationRun，且其 SourceRevision 必须属于该运行冻结的 ProjectSnapshot；定向 Git 证据绑定 PreparationRun、commit locator 和 `query_reason`；用户陈述通过 `EvidenceContext` 指向 `ProjectContextFact`。Preparation-scope Evidence 是对冻结事实的追加定位，不得回写 ProjectSnapshot 或出现在其他运行中，除非后续运行重新校验并创建/复用合资格 Evidence。
 
 `locator` 是结构化定位器。文件型证据至少包含相对路径，并可包含 `start_line/end_line`、symbol 或配置 key；Git 历史包含 commit；用户陈述包含 context fact ID。行号只用于导航；`source_revision_id` 和 `content_sha256` 才用于判断文件内容是否仍一致。
 
@@ -100,14 +100,14 @@
 | `EVID-E29` | `DerivedExport` | `derived_export_id`、`export_attempt_id`、`source_artifact_snapshot_id`、`source_report_bundle_sha256`、`source_projection_sha256`、`language`、`export_kinds`、`manifest_sha256`、`output_path`、`created_at` | 只由成功 ExportAttempt 创建的不可变派生物；首版仅 `language=en` 且 `export_kinds=resume,interview_qa`；不创建 HTML、不更新 `latest` |
 | `EVID-E30` | `RenderAttempt` | `render_attempt_id`、`preparation_run_id`、`owner_process_identity`、`report_bundle_sha256`、`generator_version`、`started_at`、可选 `finished_at`、`status`、可选 `error_summary` | PID+启动标识用于确定中断；重试读取同一 ReportBundle hash；未成功不创建 ArtifactSnapshot/latest |
 | `EVID-E31` | `ProjectAssessment` | `preparation_run_id`、`project_id`、`project_snapshot_id`、`snapshot_disposition`、`dimension_scores_milli`、`evidence_and_gap_refs`、`rationale`、`coverage_bps`、`base_score_milli`、`final_score_milli`、`rank` | 只为 fresh/carried-forward 项目创建且每个合资格项目恰有一条；Repository 用整数定点数重算连续排名，低分项目不得删除 |
-| `EVID-E32` | `AuthorizationReceipt` | `authorization_receipt_id`、`receipt_kind`、`session_binding_digest`、`issuer_kind`、`scope_descriptor`、`notice_version`、`confirmed_at` | 不保存原始 capability；`issuer_kind=codex_task_runtime`；只有持有当前任务易失 capability、且 scope/notice 均匹配的请求有效 |
+| `EVID-E32` | `AuthorizationReceipt` | `authorization_receipt_id`、`receipt_kind`、`session_binding_digest`、`issuer_kind`、`scope_descriptor`、`notice_version`、`confirmed_at` | 不保存原始 capability；`issuer_kind` 为自由文本（默认 codex_task_runtime，由 --agent-runtime 参数传入）；只有持有当前任务易失 capability、且 scope/notice 均匹配的请求有效 |
 | `EVID-E33` | `ReviewTarget` | `review_target_id`、`target_kind`、`stable_subject_id`、`topic_contract_version`、`created_at` | `target_kind=claim\|topic`；稳定锚点只能是 `Claim.claim_id` 或版本化 `topic_key`，不得用题面/摘要模糊匹配 |
 | `EVID-E34` | `ReviewTargetBinding` | `review_target_binding_id`、`review_target_id`、`preparation_run_id`、`subject_projection_sha256`、`subject_fingerprint`、`continuity_status`、`bound_at` | fingerprint 绑定 canonical ReviewSubjectProjection 而非 Revision/GAP ID；`continuity_status=new\|continued\|reassess_required` |
 | `EVID-E35` | `PreparationSourceCheck` | `source_check_id`、`preparation_run_id`、`source_revision_id`、`phase`、`expected_sha256`、`observed_at`、`status` | `phase=preflight\|before_read\|commit`，`status=passed\|mismatch`；每个实际使用的 SourceRevision 必须覆盖相应阶段 |
 | `EVID-E36` | `PreparationSourceMismatch` | `source_mismatch_id`、`source_check_id`、`mismatch_kind`、可选 `observed_sha256`、`detected_at` | `mismatch_kind=missing\|unreadable\|sha256_mismatch`；一旦存在即把运行转为 `refresh_required` |
 | `EVID-E37` | `ExportAttempt` | `export_attempt_id`、`derived_export_id`、`source_artifact_snapshot_id`、`source_projection_sha256`、`generator_version`、`owner_process_identity`、`temp_relative_path`、`final_relative_path`、`started_at`、可选 `finished_at/error_summary`、`status` | `status=running\|succeeded\|failed\|interrupted`；发布子进程先落库再首次写盘；PID+进程启动标识防重用误判；路径由 attempt ID 唯一归属 |
 
-`AuthorizationReceipt.receipt_kind` 是 `source_analysis|external_git_relation_probe|external_git_metadata`。原始 `SessionCapability` 不是数据库实体：`ARCH-C01` 在当前 Codex task 首次授权前用密码学安全随机源生成至少 256 bit capability，并只保存在该 task 的易失编排状态。持久层仅保存：
+`AuthorizationReceipt.receipt_kind` 是 `source_analysis|external_git_relation_probe|external_git_metadata`。原始 `SessionCapability` 不是数据库实体：`ARCH-C01` 在当前 host agent task 首次授权前用密码学安全随机源生成至少 256 bit capability，并只保存在该 task 的易失编排状态。持久层仅保存：
 
 ```text
 session_binding_digest = SHA256(
@@ -115,7 +115,7 @@ session_binding_digest = SHA256(
 )
 ```
 
-每个受保护请求都临时携带原始 capability；Repository 重新计算 digest 并以 constant-time compare 对照回执。原始值不得进入 SQLite、配置、argv、环境变量、stdout/stderr、诊断、manifest、产物或 Codex 可见文本；本地核心只可通过专用 stdin/继承文件描述符接收，且禁止记录完整请求载荷。Codex task 结束、编排状态丢失或运行时不能提供 task-scoped 易失状态时，能力立即失效并要求 Owner 重新确认，绝不能从 SQLite 恢复。该 capability 防止 GoodJob 在另一个 Codex task 中误复用回执，不构成对控制本机与数据库的 Owner 的安全沙箱。
+每个受保护请求都临时携带原始 capability；Repository 重新计算 digest 并以 constant-time compare 对照回执。原始值不得进入 SQLite、配置、argv、环境变量、stdout/stderr、诊断、manifest、产物或 host agent 可见文本；本地核心只可通过专用 stdin/继承文件描述符接收，且禁止记录完整请求载荷。host agent task 结束、编排状态丢失或运行时不能提供 task-scoped 易失状态时，能力立即失效并要求 Owner 重新确认，绝不能从 SQLite 恢复。该 capability 防止 GoodJob 在另一个 host agent task 中误复用回执，不构成对控制本机与数据库的 Owner 的安全沙箱。
 
 `RoleLens.dimensions` 等结构化字段必须被当作版本化值对象保存，而非依赖当前 Skill 中的模板重新计算。`JobInput.jd_text` 可以保存用户主动提供的完整 JD，因为它不是扫描到的项目源码；如通过路径提供，应同时保存当次内容哈希，避免后续文件变化导致镜头来源不明。`DerivedExport` 只投影源 `ArtifactSnapshot` 已冻结的事实，不重新扫描、生成 Claim 或改变 RoleLens。
 
@@ -147,7 +147,7 @@ final_score_milli =
 | `EvidenceQuery` | `scan_run_id`、`role_lens_id`、岗位维度、可选项目/模块/类型过滤、每组数量上限、可选定向历史目标与理由 | 查询必须可由同一快照与 RoleLens 重放；定向历史只返回 commit 元数据/路径候选并记录理由，不能以数据库当前指针替换显式 run |
 | `EvidenceBundle` | `contract_version`、`scan_run_id`、`role_lens_id`、临时查询优先级、证据项/候选项、覆盖摘要、`ScanIssue` 摘要、深读建议 | 查询优先级只用于控制阅读预算，不是最终 ProjectAssessment；已持久化项含 ID，候选项含 candidate ID/来源；均含项目/worktree/模块、locator、状态与 hash/commit locator；不含源码正文 |
 | `InterviewInput` | `mode=context\|mock_review`、`run_id`、`authorization_receipt_id`、项目/问题 ID、可选 `review_target_binding_id`、结构化答案或复盘 | context 产生 ContextAnswer；mock_review 必须绑定稳定 ReviewTarget 并产生 InterviewReview；后者不接受完整对话落库 |
-| `EvidenceDraft` | `draft_id`、origin/evidence kind、冻结 SourceRevision + locator + observed hash，或定向 Git candidate + query_reason + 可选 object/diff hash、summary、可选 module/worktree | 只描述 Codex 已深读的精确证据；Repository 必须验证文件仍匹配冻结哈希、定位器在范围内，或 Git candidate/对象哈希来自本次受限查询；不得携带源码/diff 正文 |
+| `EvidenceDraft` | `draft_id`、origin/evidence kind、冻结 SourceRevision + locator + observed hash，或定向 Git candidate + query_reason + 可选 object/diff hash、summary、可选 module/worktree | 只描述 host agent 已深读的精确证据；Repository 必须验证文件仍匹配冻结哈希、定位器在范围内，或 Git candidate/对象哈希来自本次受限查询；不得携带源码/diff 正文 |
 | `ClaimDraft` | `draft_id`、category、scope_kind/ID、statement、proposed facets、`review_semantic_projection`、Evidence/EvidenceDraft 关系、可选个人归因类型 | 模型候选值；投影必须由相同证据支持；分支特有证据不得提交为无 worktree 的项目事实 |
 | `AnalysisCommitRequest` | `preparation_run_id`、`role_lens_id`、EvidenceDraft、有序 ClaimDraft、ProjectAssessment 草稿、KnowledgeGap 草稿 | Repository 校验冻结范围、facet/反证/个人归因和 review semantic projection，canonicalize/hash 后原子提交；投影无法与 statement/证据一致时拒绝或保守换 hash |
 | `ReviewSubjectProjection` | `review_target_id`、`topic_contract_version`、排序后的 `claim_atoms(claim_id, review_semantic_sha256, equivalence_status)`、排序后的 `gap_atoms(gap_key, dimension, severity, resolution_kind, status)`、`question_contract_version` | verified 时不含 Revision/Gap ID、题面或文案；unverified 时含 fallback semantic hash 并保守触发重评 |
@@ -241,7 +241,7 @@ erDiagram
 - `stale`：同路径已出现新 Revision，或分析器/配置 revision 已变化；
 - `missing`：原路径当前不存在，但历史元数据仍可追溯。
 
-用户陈述的时效由 `ProjectContextFact.status=current|superseded|withdrawn` 解析。Codex 在把任一证据用于新的准备运行前必须校验其相对于该运行所引用 ScanRun/配置 revision 的状态。如果只能使用 `stale/missing/superseded` 历史证据，Claim 与产物必须显示该限制；不得依据旧摘要静默生成当前事实。
+用户陈述的时效由 `ProjectContextFact.status=current|superseded|withdrawn` 解析。host agent 在把任一证据用于新的准备运行前必须校验其相对于该运行所引用 ScanRun/配置 revision 的状态。如果只能使用 `stale/missing/superseded` 历史证据，Claim 与产物必须显示该限制；不得依据旧摘要静默生成当前事实。
 
 ### 5.3 Claim 分类与 facet
 
@@ -265,7 +265,7 @@ erDiagram
 - “我负责/主导”必须经 `ClaimEvidence -> EvidenceContext` 关联 `fact_kind=role|ownership` 的当前 `ProjectContextFact`。
 - 客观的项目结果可由当前 `fact_kind=outcome|metric` 的 `ProjectContextFact`，或项目中可核验的结果/指标 Evidence 支持。“我推动/取得某结果”还必须关联当前 `fact_kind=role|ownership` 的 ProjectContextFact 或可核验个人角色 Evidence，把该结果与用户职责明确连接；仓库指标名或 Git 作者信息不足以单独完成个人归因。
 - Git 作者只用于检索贡献线索。GoodJob 不按作者排除代码，也不自动把某作者的提交等同于用户个人贡献。
-- Codex 可从实现证据归纳“可复习/可讲解的学习要点”和客观“如何实现”，分别落为 `learning` 与 `implementation_method` Claim。“我当时学到了……”这类过去式个人复盘还必须关联当前 `fact_kind=learning` 的 ProjectContextFact；否则只能输出候选学习要点。
+- host agent 可从实现证据归纳“可复习/可讲解的学习要点”和客观“如何实现”，分别落为 `learning` 与 `implementation_method` Claim。“我当时学到了……”这类过去式个人复盘还必须关联当前 `fact_kind=learning` 的 ProjectContextFact；否则只能输出候选学习要点。
 
 ## 6. 增量与快照契约
 
@@ -302,7 +302,7 @@ analysis_fingerprint = SHA256(content_sha256 + adapter_id + adapter_version + co
 
 refresh 不得更新已完成 PreparationRun。想采用新源码、新 RoleLens、修订后的 Claim 或补充访谈信息，必须创建新的 PreparationRun；历史 ArtifactSnapshot 保持不变。
 
-PreparationRun 只为其 `ScanRunProject.snapshot_disposition=fresh|carried_forward` 且 `project_snapshot_id` 非空的项目建立 `ProjectAssessment`。`failed_no_baseline` 与 `excluded` 只进入 Coverage。准备开始前为所有候选 SourceRevision 记录 `preflight` 检查；Codex 打开原文件前记录 `before_read` 检查；`record_analysis` 原子提交前记录 `commit` 检查。任何缺失、不可读或 SHA-256 不一致都会创建 `PreparationSourceMismatch`，把运行转为终态 `refresh_required`，不隐式扫描、不创建新 Evidence/Claim/Assessment/Artifact，也不改变 `latest`。
+PreparationRun 只为其 `ScanRunProject.snapshot_disposition=fresh|carried_forward` 且 `project_snapshot_id` 非空的项目建立 `ProjectAssessment`。`failed_no_baseline` 与 `excluded` 只进入 Coverage。准备开始前为所有候选 SourceRevision 记录 `preflight` 检查；host agent 打开原文件前记录 `before_read` 检查；`record_analysis` 原子提交前记录 `commit` 检查。任何缺失、不可读或 SHA-256 不一致都会创建 `PreparationSourceMismatch`，把运行转为终态 `refresh_required`，不隐式扫描、不创建新 Evidence/Claim/Assessment/Artifact，也不改变 `latest`。
 
 复习状态通过 `ReviewTarget` 跨快照连续，而不是依赖问题文本相似度或 Revision ID。Repository 先 canonicalize `ReviewSubjectProjection`，再定义：
 
@@ -342,7 +342,7 @@ render_failed -> rendering
 running -> succeeded | failed | interrupted
 ```
 
-`awaiting_context` 只在关键上下文缺口会改变材料时使用；它持久化且不持有写锁、不按时间过期，但只能由持有原 SessionCapability 的同一 Codex task 回答、跳过或取消。task/capability 丢失时不能恢复模型分析；新 task 经 Owner 重新授权后只能显式执行 `abandon_and_restart`，把旧运行标为 interrupted，再复用其终态 ScanRun 与已持久化上下文创建新 PreparationRun。`ready` 表示分析集已冻结；render_failed 可用新 RenderAttempt 重试同一 bundle。所有失败/中断/取消/刷新要求都不得创建 ArtifactSnapshot 或更新 latest。
+`awaiting_context` 只在关键上下文缺口会改变材料时使用；它持久化且不持有写锁、不按时间过期，但只能由持有原 SessionCapability 的同一 host agent task 回答、跳过或取消。task/capability 丢失时不能恢复模型分析；新 task 经 Owner 重新授权后只能显式执行 `abandon_and_restart`，把旧运行标为 interrupted，再复用其终态 ScanRun 与已持久化上下文创建新 PreparationRun。`ready` 表示分析集已冻结；render_failed 可用新 RenderAttempt 重试同一 bundle。所有失败/中断/取消/刷新要求都不得创建 ArtifactSnapshot 或更新 latest。
 
 新写进程取得 OS 排他锁后，只对记录了 `owner_process_identity` 且 PID+启动标识确认进程不存在的 ScanRun/RenderAttempt/ExportAttempt 自动标 `interrupted`。PreparationRun 不按 PID/时间自动恢复：同 capability 可继续；新 task 必须由 Owner 显式 `abandon_and_restart`。事务提交后，只清理实体预登记、能由 run/attempt ID 证明归属且位于个人数据目录内的路径；无 DerivedExport 的 interrupted final path 可清理，已有 DerivedExport 绝不清理。interrupted ScanRun 不能成为准备基线；新运行可复用历史终态快照。
 
@@ -367,7 +367,7 @@ running -> succeeded | failed | interrupted
 | `EVID-INV-15` | 深读与定向历史只可通过 EvidenceDraft 进入 record_analysis；候选查询来源校验失败时整批不得提交；文件缺失、不可读或哈希不符时运行必须转为 `refresh_required`，ProjectSnapshot 保持不变。 |
 | `EVID-INV-16` | record_analysis 成功后的分析集不可改写；渲染失败只追加 RenderAttempt 并可重试同一 canonical ReportBundle hash，不得重新解释 Claim 或更新 latest。 |
 | `EVID-INV-17` | 每个 fresh/carried-forward 且有 ProjectSnapshot 的合资格项目必须恰有一个 ProjectAssessment；总分/连续排名由冻结 RoleLens 定点权重和覆盖规则重算，任何合资格项目不得因低分或缺口被静默删除。 |
-| `EVID-INV-18` | 工作区可读、配置、项目文本、SQLite 记录或历史回执均不能生成/恢复 SessionCapability；只有当前 Codex task 易失状态中的原始 capability、匹配 digest/scope/notice 的回执才有效，丢失时必须重新确认。 |
+| `EVID-INV-18` | 工作区可读、配置、项目文本、SQLite 记录或历史回执均不能生成/恢复 SessionCapability；只有当前 host agent task 易失状态中的原始 capability、匹配 digest/scope/notice 的回执才有效，丢失时必须重新确认。 |
 | `EVID-INV-19` | `.git` 标记只是根外路径候选；根内 candidate inspection 后，首次精确回执绑定 marker kind 与候选且只允许探测关系文件，解析出规范化 git-dir/common-dir 与目录身份后还必须取得第二个精确 metadata 回执；外部阶段不启动 Git，最终只保存关系、HEAD/ref，index/dirty 与源码 commit state 标为不可用，绝不读取根外历史、对象、blob、diff、配置或源码。 |
 | `EVID-INV-20` | ReviewTarget 必须锚定稳定 Claim ID 或版本化 topic key；fingerprint 不能直接使用 Revision/Gap ID 或题面。verified 投影按结构化语义判断；unverified 投影必须加入 statement+事实锚点 fallback hash 并保守重评。 |
 | `EVID-INV-21` | 每个被使用的 SourceRevision 必须通过 preflight、before_read、commit 三阶段校验；任一 mismatch 都以 `refresh_required` 原子终止准备，不允许隐式 refresh 或半提交。 |
@@ -384,7 +384,7 @@ running -> succeeded | failed | interrupted
 
 | 需求 | 核心实体/约束 | 可验证结果 |
 | --- | --- | --- |
-| `FR-01`、`FR-02` | `SessionCapability`、`AuthorizationReceipt`、`JobInput`、`EVID-INV-18` | 回执只能由当前 Codex task 的易失 capability 使用；不可读 JD 不生成半成品岗位输入或运行 |
+| `FR-01`、`FR-02` | `SessionCapability`、`AuthorizationReceipt`、`JobInput`、`EVID-INV-18` | 回执只能由当前 host agent task 的易失 capability 使用；不可读 JD 不生成半成品岗位输入或运行 |
 | `FR-03`、`FR-04` | `Workspace` 至 `ProjectSnapshot`、`EVID-INV-06/07` | Git/非 Git、worktree、模块可追踪；显式 refresh 追加新版本 |
 | `FR-05`、`FR-06` | `JobInput`、`RoleLens`、`PreparationRun`、`PreparationClaim` | 同一证据图谱可被动态岗位镜头重排且不重复扫描 |
 | `FR-07`、`FR-10` | `ProjectContextFact`、`ContextAnswer`、`EvidenceContext`、`EVID-INV-05` | 能力叙事不冒充主导/结果；项目级回答可持续复用 |

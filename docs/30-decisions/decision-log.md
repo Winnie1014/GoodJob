@@ -62,6 +62,12 @@
 | D-044 | 呈现层动态几何与行为验收 | 呈现层禁用全部 `.style` 运行时写入，动态几何用内联 SVG 几何属性配合整数 `viewBox`；看板行为由跨 Chromium/WebKit 的真实文档核对验收，并以「注入 `style` 属性必须触发违规」为阳性对照，不以源码字符串匹配代替行为断言 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[看板呈现契约](../20-architecture/dashboard-design.md)、[验收基线](../40-delivery/acceptance-baseline.md) |
 | D-045 | 跨平台运行时安全 | macOS 与 Linux（含 WSL2）使用等价的 Git 沙箱后端（sandbox-exec / bwrap）与进程身份（BSD ps / /proc）；任一后端不可用时 fail-closed，不回退到无沙箱。ADR-0009 部分替代 ADR-0001/ADR-0006 的 macOS-only 平台限定 | [ADR-0009](adrs/ADR-0009-cross-platform-runtime-security.md) |
 
+## 待接受决策
+
+| ID | 决策 | 候选结果 | 权威来源 |
+| --- | --- | --- | --- |
+| D-046 | Host Agent 无关会话 | 候选契约解除 `issuer_kind` CHECK 约束（DB v11），参数化宿主运行时，新增 uv+python 回退启动器，并以五项探针管理宿主准入。ADR-0010 接受后才部分替代 ADR-0001/0003/0006/0007 | [ADR-0010](adrs/ADR-0010-host-agent-neutral-session.md) |
+
 ## 明确的非首版能力
 
 | ID | 能力 | 首版处理 |
