@@ -314,11 +314,13 @@ def test_bwrap_sandbox_builds_correct_command_structure() -> None:
     assert "--unshare-pid" in command
 
     unshare_pid_idx = command.index("--unshare-pid")
+    tmpfs_idx = command.index("--tmpfs")
+    ro_bind_idx = command.index("--ro-bind")
+    assert unshare_pid_idx < tmpfs_idx < ro_bind_idx
     proc_idx = command.index("--proc")
     assert proc_idx > unshare_pid_idx, "--proc must come after --unshare-pid"
 
     assert "--ro-bind" in command
-    ro_bind_idx = command.index("--ro-bind")
     assert command[ro_bind_idx + 1] == "/test/workspace"
     assert command[ro_bind_idx + 2] == "/test/workspace"
 
