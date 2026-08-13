@@ -7,7 +7,7 @@
 
 ## 当前阶段
 
-GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 Codex Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。Phase 1 实现候选覆盖 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；Linux/WSL2 真机验收和 ADR-0009 接受仍是阻塞门，原生 Windows 支持留待后续阶段。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
+GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 Codex Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。Phase 1 实现候选覆盖 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；真实 Ubuntu 24.04 的完整 `make gate` 已通过，WSL2 复用同一 Linux 后端，当前阻塞门只剩 ADR-0009 的 Owner/Architect 接受，原生 Windows 支持留待后续阶段。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
 
 当前阶段的边界如下：
 

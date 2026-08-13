@@ -1,6 +1,6 @@
 # ADR-0009：跨平台运行时安全（macOS/Linux/WSL2 沙箱与 fail-closed 边界）
 
-> 状态：待 Owner/Architect 接受（实现返工中）
+> 状态：待 Owner/Architect 接受（真实 Linux 门已通过）
 > 日期：2026-08-12
 > 权威范围：macOS、Linux（含 WSL2）的 Git 沙箱后端选择、进程身份、fail-closed 边界和平台等价性契约
 > 上游：[产品需求](../../10-product/product-requirements.md)（FR-16、NFR-09）、[跨平台多 Agent 适配计划](../../40-delivery/cross-platform-multi-agent-plan.md) §4
@@ -93,7 +93,7 @@ macOS 分支保持现有 `/bin/ps -o lstart=` 不变。Linux 分支读取 `/proc
 
 ## 验证
 
-- `make gate` 在 macOS 和 Linux（含 WSL2）上分别全绿；当前 macOS 证据已具备，Linux/WSL2 证据待真机补验
+- `make gate` 在 macOS 和 Linux（含 WSL2）上分别全绿；macOS 证据已具备，Linux 证据为 Ubuntu 24.04 / bwrap 0.9.0 上对提交 `96cffc9` 的完整真机门：Python `303 passed, 4 skipped`（仅跳过 macOS Seatbelt 用例），前端 typecheck/lint/unit/build-check 全绿，文档门全绿；WSL2 复用同一 Linux 后端，未单列第二套实现
 - macOS sandbox-exec 测试加 `@pytest.mark.skipif(sys.platform != "darwin")`，Linux bwrap 测试加 `@pytest.mark.skipif(not linux or not bwrap)`
 - E2E broker 测试在两个平台各跑一次真实沙箱
 - `BwrapSandbox.build_command()` 测试断言 `--tmpfs /tmp` 先于授权根 `--ro-bind`，`--proc` 出现在 `--unshare-pid` 之后，且显式 `--chdir` 到授权根内的具体 worktree；授权根可能包含多个项目，不能用它替代 Git 当前工作目录
