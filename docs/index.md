@@ -7,7 +7,7 @@
 
 ## 当前阶段
 
-GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 host agent Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。Phase 1 覆盖 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；真实 Ubuntu 24.04 的完整 `make gate` 已通过，ADR-0009 已接受，WSL2 复用同一 Linux 后端。原生 Windows 的 WFP/Job、NT handle-relative FS 与 direct launcher 候选契约已形成于 [ADR-0011](30-decisions/adrs/ADR-0011-native-windows-security-contract.md)，仍待 Owner/Architect 接受；运行时代码和 [IMP-31](40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 也尚未完成，因此当前仍为 unsupported 并推荐 WSL2。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
+GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 host agent Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。Phase 1 覆盖 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；真实 Ubuntu 24.04 的完整 `make gate` 已通过，ADR-0009 已接受，WSL2 复用同一 Linux 后端。原生 Windows 的 WFP/Job、NT handle-relative FS 与 direct launcher 安全契约已由 [ADR-0011](30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 接受；Phase 3-B 运行时代码当前只是 PR #3 的未合入候选实现，[IMP-31](40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 也尚未通过，因此原生 Windows 仍为 unsupported 并推荐 WSL2。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
 
 当前阶段的边界如下：
 
@@ -46,7 +46,7 @@ GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的
 | [ADR-0001](30-decisions/adrs/ADR-0001-skill-and-state-isolation.md) 至 [ADR-0008](30-decisions/adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md) | 已接受 | 难以逆转决策的理由、后果和替代方案 | 不作为功能需求清单 |
 | [ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md) | 已接受 | macOS/Linux/WSL2 沙箱后端选择、进程身份、fail-closed 边界和平台等价性 | 不定义 agent 无关化或原生 Windows 支持 |
 | [ADR-0010](30-decisions/adrs/ADR-0010-host-agent-neutral-session.md) | 已接受 | Host Agent 无关会话：解除 Codex 硬编码绑定，宿主兼容性探针准入矩阵 | 不定义平台沙箱后端选择或原生 Windows 支持 |
-| [ADR-0011](30-decisions/adrs/ADR-0011-native-windows-security-contract.md) | 待 Owner/Architect 接受 | 原生 Windows 的 WFP/Job、NT handle-relative FS、direct launcher/capability handle、所有权与 fail-closed 契约 | 不代表运行时代码已实现或 IMP-31 已通过；此前仍 unsupported |
+| [ADR-0011](30-decisions/adrs/ADR-0011-native-windows-security-contract.md) | 已接受（2026-08-14） | 原生 Windows 的 WFP/Job、NT handle-relative FS、direct launcher/capability handle、所有权与 fail-closed 契约 | Phase 3-B 当前仅为未合入候选实现；IMP-31 未通过前仍 unsupported |
 | [验收基线](40-delivery/acceptance-baseline.md) | 待 Owner 核对 | `G-*`、`FR-*`、`NFR-*` 的测试与交付门槛 | 不重新解释产品意图 |
 | [任务池](40-delivery/backlog.md) | 协作运行区 | 任务状态、归属与裁决引注 | 不定义任何产品或技术契约 |
 | [协作运行区](collab/) | 协作运行区 | 双 agent 协作协议、角色手册、反模式池、信道与任务卡 | 不定义任何产品或技术契约；与上表任一权威文档冲突时权威文档优先 |
@@ -87,7 +87,7 @@ GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的
 | 项目访谈、模拟面试与复习 | D-029、D-032、D-033 | ADR-0002、ADR-0007、产物与学习闭环、验收基线 |
 | 运行恢复与个人数据保留 | D-037、D-038 | 系统设计、证据模型、验收基线 |
 | 不可信输入与安全呈现 | D-036、D-041、D-043 | ADR-0008、系统设计、扫描与分析设计、证据模型、看板呈现契约 |
-| 跨平台与 host agent 会话 | D-045、D-046 已接受；D-047 待接受 | ADR-0009、ADR-0010、ADR-0011、系统设计、验收基线 |
+| 跨平台与 host agent 会话 | D-045、D-046、D-047 已接受；Phase 3-B 候选实现未合入，IMP-31 待通过 | ADR-0009、ADR-0010、ADR-0011、系统设计、验收基线 |
 | 明确延后能力 | F-001 至 F-009 | 决策账本“明确的非首版能力” |
 
 ## Owner 核对清单

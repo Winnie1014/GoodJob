@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+import importlib
+import os
 import sys
 from collections.abc import Callable
 from types import TracebackType
@@ -64,6 +66,20 @@ def write_all_handle(value: int, content: bytes, *, chunk_size: int = 64 * 1024)
         if written.value == 0:
             raise OSError("Win32 handle write made no progress")
         remaining = remaining[written.value :]
+
+
+def transfer_handle_to_crt_descriptor(handle: OwnedHandle, flags: int = os.O_RDONLY) -> int:
+    """Move a HANDLE to the CRT only after open_osfhandle confirms ownership transfer."""
+    msvcrt = importlib.import_module("msvcrt")
+    try:
+        descriptor = int(msvcrt.open_osfhandle(handle.value, flags))
+        if descriptor < 0:
+            raise OSError("open_osfhandle returned an invalid descriptor")
+    except BaseException:
+        handle.close()
+        raise
+    handle.detach()
+    return descriptor
 
 
 class OwnedHandle:

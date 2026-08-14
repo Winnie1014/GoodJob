@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import ctypes
-import importlib
 import os
 import stat
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -18,6 +17,7 @@ from goodjob.platform.handles_windows import (
     OwnedHandle,
     last_error,
     load_windows_dll,
+    transfer_handle_to_crt_descriptor,
     write_all_handle,
 )
 
@@ -451,6 +451,9 @@ class WindowsRoot:
 
     @classmethod
     def open(cls, path: Path) -> WindowsRoot:
+        from goodjob.platform.detect import require_released_runtime
+
+        require_released_runtime()
         if not path.is_absolute():
             raise OSError("Windows authorized root must be absolute")
         raw_path = str(path)
@@ -777,13 +780,8 @@ def directory_identity(path: Path) -> tuple[int, int]:
 def open_regular_file(root: Path, relative: str) -> tuple[int, os.stat_result]:
     with WindowsDirectory.open(root) as directory:
         handle = directory.open_regular(relative)
-        try:
-            msvcrt = importlib.import_module("msvcrt")
-            descriptor = int(msvcrt.open_osfhandle(handle.detach(), os.O_RDONLY))
-            return descriptor, os.fstat(descriptor)
-        except BaseException:
-            handle.close()
-            raise
+        descriptor = transfer_handle_to_crt_descriptor(handle, os.O_RDONLY)
+        return descriptor, os.fstat(descriptor)
 
 
 def open_absolute_regular_file(path: Path) -> tuple[int, os.stat_result]:
@@ -807,6 +805,48 @@ def read_regular(root: Path, relative: str, *, maximum_bytes: int = MAX_READ_BYT
             chunks.append(chunk)
     finally:
         os.close(descriptor)
+
+
+def _read_handle_bounded(handle: int, *, maximum_bytes: int) -> bytes:
+    if maximum_bytes < 0:
+        raise ValueError("Windows bounded read limit must not be negative")
+    chunks: list[bytes] = []
+    total = 0
+    api = _kernel32()
+    while True:
+        buffer = ctypes.create_string_buffer(min(64 * 1024, maximum_bytes + 1 - total))
+        count = ctypes.c_uint32()
+        if not api.ReadFile(
+            ctypes.c_void_p(handle), buffer, len(buffer), ctypes.byref(count), None
+        ):
+            raise OSError(last_error(), "ReadFile")
+        if count.value == 0:
+            return b"".join(chunks)
+        total += count.value
+        if total > maximum_bytes:
+            raise OSError("Windows file exceeded its bounded read limit")
+        chunks.append(bytes(buffer.raw[: count.value]))
+
+
+@dataclass(frozen=True)
+class WindowsPublicationDirectory:
+    """Borrow the exact temporary-directory HANDLE during publication verification."""
+
+    _handle: int
+    _expected_sizes: Mapping[str, int]
+
+    def list_directory(self) -> set[str]:
+        return {entry.name for entry in _list_handle(self._handle)}
+
+    def read_regular(self, name: str) -> bytes:
+        component = validate_component(name)
+        maximum_bytes = self._expected_sizes.get(component)
+        if maximum_bytes is None:
+            raise InvalidInputError("publication verification requested an unexpected file")
+        with _open_relative(
+            self._handle, component, access=FILE_READ_DATA, directory=False
+        ) as handle:
+            return _read_handle_bounded(handle.value, maximum_bytes=maximum_bytes)
 
 
 def _readlink_at(parent: int, name: str) -> str:
@@ -864,6 +904,9 @@ def _write_all(handle: int, content: bytes) -> None:
 
 
 def write_new_file_at(parent_handle: int, name: str, content: bytes) -> None:
+    from goodjob.platform.detect import require_released_runtime
+
+    require_released_runtime()
     with _open_relative(
         parent_handle,
         name,
@@ -937,28 +980,13 @@ class WindowsDataTree:
         with self._root.open_parent(parts) as (parent, name, _owner):
             yield parent, name
 
-    def read_regular(self, relative: str) -> bytes:
+    def read_regular(self, relative: str, *, maximum_bytes: int = MAX_READ_BYTES) -> bytes:
         parts = relative_components(relative)
         with (
             self._root.open_parent(parts) as (parent, name, _owner),
             _open_relative(parent, name, access=FILE_READ_DATA, directory=False) as handle,
         ):
-            chunks: list[bytes] = []
-            api = _kernel32()
-            while True:
-                buffer = ctypes.create_string_buffer(64 * 1024)
-                count = ctypes.c_uint32()
-                if not api.ReadFile(
-                    ctypes.c_void_p(handle.value),
-                    buffer,
-                    len(buffer),
-                    ctypes.byref(count),
-                    None,
-                ):
-                    raise OSError(last_error(), "ReadFile")
-                if count.value == 0:
-                    return b"".join(chunks)
-                chunks.append(bytes(buffer.raw[: count.value]))
+            return _read_handle_bounded(handle.value, maximum_bytes=maximum_bytes)
 
     def list_directory(self, relative: str) -> set[str]:
         parts = relative_components(relative)
@@ -1015,7 +1043,7 @@ class WindowsDataTree:
         final_relative: str,
         files: dict[str, bytes],
         *,
-        verify: Callable[[str], None],
+        verify: Callable[[WindowsPublicationDirectory], None],
         before_rename: Callable[[], None] | None,
     ) -> None:
         if not files:
@@ -1046,7 +1074,11 @@ class WindowsDataTree:
                 temp_identity = _identity(temp.value)
                 for name, content in files.items():
                     write_new_file_at(temp.value, name, content)
-                verify(temp_relative)
+                verify(
+                    WindowsPublicationDirectory(
+                        temp.value, {name: len(content) for name, content in files.items()}
+                    )
+                )
                 if before_rename is not None:
                     before_rename()
                 if _identity(temp.value).volume_serial != _identity(final_parent).volume_serial:

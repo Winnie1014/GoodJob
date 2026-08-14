@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import os
 import selectors
 import signal
@@ -21,6 +20,7 @@ from goodjob.errors import InvalidInputError
 from goodjob.platform import GitSandboxUnavailableError, select_git_sandbox
 from goodjob.platform.detect import Platform, detect_platform, sandbox_failure_reason
 from goodjob.platform.fs_windows import WindowsDirectory
+from goodjob.platform.handles_windows import transfer_handle_to_crt_descriptor
 from goodjob.source_io import MAX_SOURCE_FILE_BYTES, open_regular_file, read_open_file
 
 if TYPE_CHECKING:
@@ -141,13 +141,8 @@ def _open_regular_file_at(
     """Open a regular file below an already-bound directory descriptor."""
     if isinstance(directory_fd, WindowsDirectory):
         handle = directory_fd.open_regular(relative_path)
-        try:
-            msvcrt = importlib.import_module("msvcrt")
-            descriptor = int(msvcrt.open_osfhandle(handle.detach(), os.O_RDONLY))
-            return descriptor, os.fstat(descriptor)
-        except BaseException:
-            handle.close()
-            raise
+        descriptor = transfer_handle_to_crt_descriptor(handle, os.O_RDONLY)
+        return descriptor, os.fstat(descriptor)
     parts = PurePosixPath(relative_path).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise OSError("relative path is not safe to open")

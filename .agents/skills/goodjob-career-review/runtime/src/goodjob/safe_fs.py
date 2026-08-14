@@ -9,8 +9,49 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Protocol
 
 from goodjob.errors import InvalidInputError
+
+
+class PublicationDirectory(Protocol):
+    """Read-only view over the exact temporary directory being published."""
+
+    def list_directory(self) -> set[str]: ...
+
+    def read_regular(self, name: str) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class _PosixPublicationDirectory:
+    directory_fd: int
+    expected_sizes: dict[str, int]
+
+    def list_directory(self) -> set[str]:
+        return set(os.listdir(self.directory_fd))
+
+    def read_regular(self, name: str) -> bytes:
+        pure = PurePosixPath(name)
+        maximum_bytes = self.expected_sizes.get(name)
+        if pure.parts != (name,) or name in {"", ".", ".."} or maximum_bytes is None:
+            raise InvalidInputError("publication verification requested an unexpected file")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(name, flags, dir_fd=self.directory_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise InvalidInputError("publication verification target is not a regular file")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(descriptor, min(64 * 1024, maximum_bytes + 1 - total))
+                if not chunk:
+                    return b"".join(chunks)
+                total += len(chunk)
+                if total > maximum_bytes:
+                    raise InvalidInputError("publication file exceeded its expected size")
+                chunks.append(chunk)
+        finally:
+            os.close(descriptor)
 
 
 def write_new_file_at(
@@ -248,7 +289,7 @@ class SafeDataTree:
         final_relative: str,
         files: dict[str, bytes],
         *,
-        verify: Callable[[str], None],
+        verify: Callable[[PublicationDirectory], None],
         before_rename: Callable[[], None] | None = None,
     ) -> None:
         """Durably publish a verified temporary directory under the configured tree."""
@@ -297,9 +338,13 @@ class SafeDataTree:
                     for name, content in files.items():
                         write_new_file_at(temp_fd, name, content)
                     os.fsync(temp_fd)
+                    verify(
+                        _PosixPublicationDirectory(
+                            temp_fd, {name: len(content) for name, content in files.items()}
+                        )
+                    )
                 finally:
                     os.close(temp_fd)
-                verify(temp_relative)
                 if before_rename is not None:
                     before_rename()
                 os.rename(

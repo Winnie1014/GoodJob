@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-from goodjob.platform.detect import GitSandboxUnavailableError
+from goodjob.platform.detect import GitSandboxUnavailableError, require_released_runtime
 from goodjob.platform.handles_windows import load_windows_dll
 
 if TYPE_CHECKING:
@@ -295,6 +295,7 @@ class WfpSession:
 
     @classmethod
     def create(cls, executable: str) -> WfpSession:
+        require_released_runtime()
         _retry_retained_wfp_engines()
         api = _wfp_api()
         session = FWPM_SESSION0()
@@ -384,6 +385,8 @@ class WfpSession:
             self._app_blob = ctypes.POINTER(FWP_BYTE_BLOB)()
         status = int(self._api.FwpmEngineClose0(ctypes.c_void_p(engine)))
         if status != 0:
+            _retain_wfp_engine(self._api, engine)
+            self._engine = 0
             _raise_wfp("FwpmEngineClose0", status)
         self._engine = 0
 
@@ -438,6 +441,7 @@ def windows_git_candidates() -> tuple[Path, ...]:
 
 
 def resolve_windows_git_executable() -> str:
+    require_released_runtime()
     for candidate in windows_git_candidates():
         if not candidate.is_file():
             continue
@@ -455,6 +459,7 @@ class WfpGitSandbox:
     """Validate the exact Git entry point and create its per-launch WFP guard."""
 
     def __init__(self, git_executable: str) -> None:
+        require_released_runtime()
         self._git_executable = str(Path(git_executable).resolve(strict=True))
         tail = tuple(part.lower() for part in Path(self._git_executable).parts[-3:])
         if tail != ("mingw64", "bin", "git.exe"):
@@ -466,6 +471,7 @@ class WfpGitSandbox:
         binding: InternalGitBinding,
         git_command: list[str],
     ) -> list[str]:
+        require_released_runtime()
         del binding
         if os.path.normcase(str(Path(git_executable).resolve(strict=True))) != os.path.normcase(
             self._git_executable
@@ -474,4 +480,5 @@ class WfpGitSandbox:
         return git_command
 
     def open_network_guard(self) -> WfpSession:
+        require_released_runtime()
         return WfpSession.create(self._git_executable)

@@ -18,6 +18,7 @@ from goodjob.platform.capability_windows import (
     WindowsTransferPipe,
     write_handle,
 )
+from goodjob.platform.detect import require_released_runtime
 from goodjob.platform.handles_windows import OwnedHandle, last_error, load_windows_dll
 
 CREATE_SUSPENDED = 0x00000004
@@ -374,6 +375,169 @@ def _emit(observer: Callable[[str], None] | None, event: str) -> None:
             observer(event)
 
 
+@dataclass
+class _WindowsCleanupGroup:
+    """Retain a complete native dependency group until every resource is closed."""
+
+    api: Any | None
+    created: bool
+    process_stopped: bool
+    process: OwnedHandle | None
+    job: OwnedHandle | None
+    resource_handles: tuple[OwnedHandle | None, ...]
+    transfer_pipes: tuple[WindowsTransferPipe, ...]
+    attributes: _AttributeList | None
+    readers: tuple[threading.Thread, ...]
+    writers: tuple[threading.Thread, ...]
+    stopping: threading.Event
+    network_guard: NetworkGuard | None
+    network_guard_closed: bool
+
+    @property
+    def complete(self) -> bool:
+        handles_closed = all(handle is None or handle.closed for handle in self.resource_handles)
+        pipes_closed = all(
+            pipe.child_read.closed and pipe.parent_write.closed for pipe in self.transfer_pipes
+        )
+        attributes_closed = self.attributes is None or not self.attributes.pointer
+        process_closed = self.process is None or self.process.closed
+        job_closed = self.job is None or self.job.closed
+        threads_stopped = not any(thread.is_alive() for thread in (*self.readers, *self.writers))
+        return (
+            handles_closed
+            and pipes_closed
+            and attributes_closed
+            and process_closed
+            and job_closed
+            and threads_stopped
+            and self.network_guard_closed
+        )
+
+    def retry(self, *, observer: Callable[[str], None] | None = None) -> OSError | None:
+        first_error: OSError | None = None
+
+        def remember(exc: OSError) -> None:
+            nonlocal first_error
+            if first_error is None:
+                first_error = exc
+
+        self.stopping.set()
+        if (
+            self.api is not None
+            and self.created
+            and not self.process_stopped
+            and self.process is not None
+            and not self.process.closed
+        ):
+            if self.job is not None and not self.job.closed:
+                if not self.api.TerminateJobObject(ctypes.c_void_p(self.job.value), 1):
+                    remember(OSError(last_error(), "TerminateJobObject"))
+                else:
+                    _emit(observer, "job_terminated")
+                self.process_stopped = (
+                    int(self.api.WaitForSingleObject(ctypes.c_void_p(self.process.value), 5000))
+                    == WAIT_OBJECT_0
+                )
+            if not self.process_stopped:
+                if not self.api.TerminateProcess(ctypes.c_void_p(self.process.value), 1):
+                    remember(OSError(last_error(), "TerminateProcess"))
+                self.process_stopped = (
+                    int(self.api.WaitForSingleObject(ctypes.c_void_p(self.process.value), 5000))
+                    == WAIT_OBJECT_0
+                )
+
+        for handle in self.resource_handles:
+            if handle is None or handle.closed:
+                continue
+            try:
+                handle.close()
+            except OSError as exc:
+                remember(exc)
+        for pipe in self.transfer_pipes:
+            try:
+                pipe.close()
+            except OSError as exc:
+                remember(exc)
+        for thread in (*self.readers, *self.writers):
+            thread.join(timeout=1.0)
+            if thread.is_alive():
+                remember(OSError("Windows pipe worker did not stop during cleanup"))
+        if self.attributes is not None and self.attributes.pointer:
+            try:
+                self.attributes.close()
+            except OSError as exc:
+                remember(exc)
+
+        if self.process_stopped and self.process is not None and not self.process.closed:
+            try:
+                self.process.close()
+            except OSError as exc:
+                remember(exc)
+        if self.job is not None and not self.job.closed:
+            try:
+                self.job.close()
+            except OSError as exc:
+                remember(exc)
+            else:
+                _emit(observer, "job_closed")
+        if (
+            self.api is not None
+            and self.created
+            and not self.process_stopped
+            and self.process is not None
+            and not self.process.closed
+        ):
+            self.process_stopped = (
+                int(self.api.WaitForSingleObject(ctypes.c_void_p(self.process.value), 5000))
+                == WAIT_OBJECT_0
+            )
+            if self.process_stopped:
+                try:
+                    self.process.close()
+                except OSError as exc:
+                    remember(exc)
+
+        if (
+            self.network_guard is not None
+            and not self.network_guard_closed
+            and (not self.created or self.process_stopped)
+        ):
+            try:
+                self.network_guard.close()
+            except OSError as exc:
+                remember(exc)
+            else:
+                self.network_guard_closed = True
+                _emit(observer, "network_guard_closed")
+        if not self.complete and first_error is None:
+            first_error = OSError("Windows cleanup is incomplete; retaining the dependency group")
+        return first_error
+
+
+_RETAINED_CLEANUP_GROUPS: list[_WindowsCleanupGroup] = []
+_RETAINED_CLEANUP_LOCK = threading.Lock()
+
+
+def _retain_cleanup_group(group: _WindowsCleanupGroup) -> None:
+    with _RETAINED_CLEANUP_LOCK:
+        _RETAINED_CLEANUP_GROUPS.append(group)
+
+
+def _retry_retained_cleanup_groups() -> None:
+    with _RETAINED_CLEANUP_LOCK:
+        remaining: list[_WindowsCleanupGroup] = []
+        first_error: OSError | None = None
+        for group in _RETAINED_CLEANUP_GROUPS:
+            error = group.retry()
+            if not group.complete:
+                remaining.append(group)
+                if first_error is None:
+                    first_error = error
+        _RETAINED_CLEANUP_GROUPS[:] = remaining
+    if remaining:
+        raise OSError("previous Windows cleanup remains incomplete") from first_error
+
+
 def run_windows_process(
     request: WindowsLaunchRequest,
     *,
@@ -382,17 +546,56 @@ def run_windows_process(
     observer: Callable[[str], None] | None = None,
 ) -> WindowsLaunchResult:
     """Launch one child with no execution window before Job containment."""
+    require_released_runtime()
+    _retry_retained_cleanup_groups()
+    from goodjob.platform.sandbox_windows import _retry_retained_wfp_engines
+
+    _retry_retained_wfp_engines()
     if network_guard is not None and not network_guard.verified:
-        network_guard.close()
+        group = _WindowsCleanupGroup(
+            None,
+            False,
+            True,
+            None,
+            None,
+            (),
+            (),
+            None,
+            (),
+            (),
+            threading.Event(),
+            network_guard,
+            False,
+        )
+        cleanup_error = group.retry(observer=observer)
+        if not group.complete:
+            _retain_cleanup_group(group)
+        if cleanup_error is not None:
+            raise cleanup_error
         raise OSError("Windows network filters were not fully read back")
     _emit(observer, "boundary_verified")
     try:
         api = _kernel32()
     except BaseException:
         if network_guard is not None:
-            with suppress(OSError):
-                network_guard.close()
-            _emit(observer, "network_guard_closed")
+            group = _WindowsCleanupGroup(
+                None,
+                False,
+                True,
+                None,
+                None,
+                (),
+                (),
+                None,
+                (),
+                (),
+                threading.Event(),
+                network_guard,
+                False,
+            )
+            group.retry(observer=observer)
+            if not group.complete:
+                _retain_cleanup_group(group)
         raise
     job: OwnedHandle | None = None
     process: OwnedHandle | None = None
@@ -409,9 +612,7 @@ def run_windows_process(
     writer_errors_lock = threading.Lock()
     stopping = threading.Event()
     created = False
-    terminated = False
     process_stopped = False
-    first_cleanup_error: OSError | None = None
     try:
         job = _create_job(api, request.active_process_limit)
         stdout_read, stdout_write = _create_output_pipe(api)
@@ -571,7 +772,6 @@ def run_windows_process(
         stopping.set()
         if created and job is not None and not job.closed:
             api.TerminateJobObject(ctypes.c_void_p(job.value), 1)
-            terminated = True
             _emit(observer, "job_terminated")
             if process is not None and not process.closed:
                 process_stopped = (
@@ -592,85 +792,30 @@ def run_windows_process(
             writer.join(timeout=1.0)
         raise
     finally:
-        if created and not terminated and process is not None and not process.closed:
-            wait = int(api.WaitForSingleObject(ctypes.c_void_p(process.value), 0))
-            process_stopped = wait == WAIT_OBJECT_0
-            if not process_stopped and job is not None and not job.closed:
-                api.TerminateJobObject(ctypes.c_void_p(job.value), 1)
-                process_stopped = (
-                    int(api.WaitForSingleObject(ctypes.c_void_p(process.value), 5000))
-                    == WAIT_OBJECT_0
+        group = _WindowsCleanupGroup(
+            api,
+            created,
+            process_stopped,
+            process,
+            job,
+            (stdout_write, stderr_write, stdout_read, stderr_read, thread),
+            tuple(
+                pipe
+                for pipe in (
+                    stdin_pipe,
+                    *(transfer.pipe for transfer in inputs),
                 )
-        if created and not process_stopped and process is not None and not process.closed:
-            api.TerminateProcess(ctypes.c_void_p(process.value), 1)
-            process_stopped = (
-                int(api.WaitForSingleObject(ctypes.c_void_p(process.value), 5000)) == WAIT_OBJECT_0
-            )
-        for resource_handle in (
-            stdout_write,
-            stderr_write,
-            stdout_read,
-            stderr_read,
-            thread,
-        ):
-            if resource_handle is None:
-                continue
-            try:
-                resource_handle.close()
-            except OSError as exc:
-                if first_cleanup_error is None:
-                    first_cleanup_error = exc
-        for transfer in inputs:
-            if transfer.pipe is not None:
-                try:
-                    transfer.pipe.close()
-                except OSError as exc:
-                    if first_cleanup_error is None:
-                        first_cleanup_error = exc
-        if stdin_pipe is not None:
-            try:
-                stdin_pipe.close()
-            except OSError as exc:
-                if first_cleanup_error is None:
-                    first_cleanup_error = exc
-        if attributes is not None:
-            try:
-                attributes.close()
-            except OSError as exc:
-                if first_cleanup_error is None:
-                    first_cleanup_error = exc
-        if process_stopped and process is not None:
-            try:
-                process.close()
-            except OSError as exc:
-                if first_cleanup_error is None:
-                    first_cleanup_error = exc
-        if job is not None:
-            try:
-                job.close()
-            except OSError as exc:
-                if first_cleanup_error is None:
-                    first_cleanup_error = exc
-        _emit(observer, "job_closed")
-        if not process_stopped and process is not None and not process.closed:
-            process_stopped = (
-                int(api.WaitForSingleObject(ctypes.c_void_p(process.value), 5000)) == WAIT_OBJECT_0
-            )
-            try:
-                process.close()
-            except OSError as exc:
-                if first_cleanup_error is None:
-                    first_cleanup_error = exc
-        if created and not process_stopped and first_cleanup_error is None:
-            first_cleanup_error = OSError(
-                "Windows child exit could not be confirmed; retaining the network guard"
-            )
-        if network_guard is not None and (not created or process_stopped):
-            try:
-                network_guard.close()
-            except OSError as exc:
-                if first_cleanup_error is None:
-                    first_cleanup_error = exc
-            _emit(observer, "network_guard_closed")
-        if first_cleanup_error is not None and sys.exception() is None:
-            raise first_cleanup_error
+                if pipe is not None
+            ),
+            attributes,
+            tuple(readers),
+            tuple(writers),
+            stopping,
+            network_guard,
+            network_guard is None,
+        )
+        cleanup_error = group.retry(observer=observer)
+        if not group.complete:
+            _retain_cleanup_group(group)
+        if cleanup_error is not None and sys.exception() is None:
+            raise cleanup_error

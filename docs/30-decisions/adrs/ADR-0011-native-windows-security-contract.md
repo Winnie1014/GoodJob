@@ -5,7 +5,7 @@
 > 权威范围：原生 Windows 的 WFP/Job 网络与进程边界、NT handle-relative 文件系统边界、direct launcher、capability handle、句柄所有权、失败关闭时序和唯一允许的安全降级
 > 上游：[产品需求](../../10-product/product-requirements.md)（FR-18、NFR-11）、[跨平台多 Agent 适配计划](../../40-delivery/cross-platform-multi-agent-plan.md) §6、SWO-31 真机 spike 证据
 > 下游：[系统设计](../../20-architecture/system-design.md)、[扫描与分析设计](../../20-architecture/scanning-and-analysis.md)、[验收基线](../../40-delivery/acceptance-baseline.md)（IMP-31）
-> 关系：接受后扩展 [ADR-0009](ADR-0009-cross-platform-runtime-security.md) 的平台集合，并替代其“原生 Windows 留待 Phase 3、尚无权威后端”的范围声明；同时扩展 [ADR-0006](ADR-0006-authorized-codex-analysis-and-external-git-metadata.md) 决策 3 的传输条款，使 inherited FD 仅适用于 POSIX、原生 Windows 改用 allowlisted inherited HANDLE。ADR-0006 的授权语义、ADR-0009 对 macOS/Linux/WSL2 的决策与 [ADR-0010](ADR-0010-host-agent-neutral-session.md) 的 host agent 准入契约继续有效。
+> 关系：本 ADR 扩展 [ADR-0009](ADR-0009-cross-platform-runtime-security.md) 的平台集合，并替代其“原生 Windows 留待 Phase 3、尚无权威后端”的范围声明；同时扩展 [ADR-0006](ADR-0006-authorized-codex-analysis-and-external-git-metadata.md) 决策 3 的传输条款，使 inherited FD 仅适用于 POSIX、原生 Windows 改用 allowlisted inherited HANDLE。ADR-0006 的授权语义、ADR-0009 对 macOS/Linux/WSL2 的决策与 [ADR-0010](ADR-0010-host-agent-neutral-session.md) 的 host agent 准入契约继续有效。
 
 ## 背景
 
@@ -90,7 +90,7 @@ stdout/stderr 使用 reader threads、有界 `queue.Queue` 和一个对 pipe、q
 
 ## 与 ADR-0006、ADR-0009 的关系
 
-本 ADR 接受后，ADR-0006 的授权确认、SessionCapability digest、跨 task 失效和最小持久化语义继续有效；仅其决策 3 的传输机制按平台分化：POSIX 继续使用专用 stdin/inherited FD，原生 Windows 使用本 ADR 的 allowlisted inherited HANDLE。ADR-0009 继续权威定义 macOS Seatbelt、Linux/WSL2 bwrap 和进程身份；其“原生 Windows 留待 Phase 3”范围声明由本 ADR 的 Windows 合同替代。三平台追求相同安全结果，但机制不强求同构：
+根据本 ADR，ADR-0006 的授权确认、SessionCapability digest、跨 task 失效和最小持久化语义继续有效；仅其决策 3 的传输机制按平台分化：POSIX 继续使用专用 stdin/inherited FD，原生 Windows 使用本 ADR 的 allowlisted inherited HANDLE。ADR-0009 继续权威定义 macOS Seatbelt、Linux/WSL2 bwrap 和进程身份；其“原生 Windows 留待 Phase 3”范围声明由本 ADR 的 Windows 合同替代。三平台追求相同安全结果，但机制不强求同构：
 
 | 边界 | macOS/Linux/WSL2 | 原生 Windows |
 | --- | --- | --- |

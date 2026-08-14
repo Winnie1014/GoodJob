@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ctypes
-import importlib
 import os
 from dataclasses import dataclass
 
@@ -12,6 +11,7 @@ from goodjob.platform.handles_windows import (
     OwnedHandle,
     last_error,
     load_windows_dll,
+    transfer_handle_to_crt_descriptor,
     write_all_handle,
 )
 
@@ -88,9 +88,9 @@ def read_bytes_from_handle(handle: int, *, maximum_bytes: int) -> bytes:
     """Take ownership of a Win32 HANDLE by converting it to one CRT descriptor."""
     if handle <= 0:
         raise CapabilityError("protected input handle must be positive")
-    msvcrt = importlib.import_module("msvcrt")
+    owner = OwnedHandle(handle)
     try:
-        descriptor = int(msvcrt.open_osfhandle(handle, os.O_RDONLY))
+        descriptor = transfer_handle_to_crt_descriptor(owner, os.O_RDONLY)
     except OSError as exc:
         raise CapabilityError("unable to take ownership of protected input handle") from exc
     chunks: list[bytes] = []
