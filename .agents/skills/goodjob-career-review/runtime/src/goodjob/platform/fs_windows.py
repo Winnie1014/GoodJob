@@ -8,12 +8,18 @@ import os
 import stat
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
 from goodjob.errors import InvalidInputError
-from goodjob.platform.handles_windows import OwnedHandle, last_error, load_windows_dll
+from goodjob.platform.handles_windows import (
+    OwnedHandle,
+    last_error,
+    load_windows_dll,
+    write_all_handle,
+)
 
 FILE_READ_DATA = 0x0001
 FILE_LIST_DIRECTORY = 0x0001
@@ -273,14 +279,6 @@ def _kernel32() -> Any:
         ctypes.c_void_p,
     ]
     api.ReadFile.restype = ctypes.c_int
-    api.WriteFile.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.POINTER(ctypes.c_uint32),
-        ctypes.c_void_p,
-    ]
-    api.WriteFile.restype = ctypes.c_int
     api.FlushFileBuffers.argtypes = [ctypes.c_void_p]
     api.FlushFileBuffers.restype = ctypes.c_int
     api.DeviceIoControl.argtypes = [
@@ -449,6 +447,7 @@ class WindowsRoot:
         self.handle = handle
         self.display_path = display_path
         self.identity = identity
+        self.request_key = os.path.normcase(os.path.abspath(str(path)))
 
     @classmethod
     def open(cls, path: Path) -> WindowsRoot:
@@ -551,12 +550,59 @@ class WindowsRoot:
                 parent.close()
 
 
+_ACTIVE_AUTHORIZED_ROOT: ContextVar[WindowsRoot | None] = ContextVar(
+    "goodjob_windows_authorized_root", default=None
+)
+
+
+def _matching_active_root(path: Path) -> WindowsRoot | None:
+    active = _ACTIVE_AUTHORIZED_ROOT.get()
+    request_key = os.path.normcase(os.path.abspath(str(path)))
+    return active if active is not None and active.request_key == request_key else None
+
+
+def _active_root_prefix(path: Path) -> tuple[WindowsRoot, tuple[str, ...]] | None:
+    active = _ACTIVE_AUTHORIZED_ROOT.get()
+    if active is None:
+        return None
+    active_path = os.path.abspath(str(active.path))
+    candidate_path = os.path.abspath(str(path))
+    try:
+        common = os.path.commonpath((active_path, candidate_path))
+    except ValueError:
+        return None
+    if os.path.normcase(common) != os.path.normcase(active_path):
+        return None
+    relative = os.path.relpath(candidate_path, active_path)
+    parts = () if relative == "." else relative_components(relative.replace("\\", "/"))
+    return active, parts
+
+
+@contextmanager
+def bind_authorized_root(path: Path) -> Iterator[WindowsRoot]:
+    """Keep one absolute workspace root handle for an entire scan/refresh operation."""
+    active = _matching_active_root(path)
+    if active is not None:
+        yield active
+        return
+    root = WindowsRoot.open(path)
+    token = _ACTIVE_AUTHORIZED_ROOT.set(root)
+    try:
+        yield root
+    finally:
+        _ACTIVE_AUTHORIZED_ROOT.reset(token)
+        root.close()
+
+
 class WindowsDirectory:
     """A directory handle kept together with the root handle that authorized it."""
 
-    def __init__(self, root: WindowsRoot, directory: OwnedHandle | None) -> None:
+    def __init__(
+        self, root: WindowsRoot, directory: OwnedHandle | None, *, owns_root: bool
+    ) -> None:
         self._root = root
         self._directory = directory
+        self._owns_root = owns_root
 
     @property
     def value(self) -> int:
@@ -568,13 +614,20 @@ class WindowsDirectory:
 
     @classmethod
     def open(cls, root_path: Path, relative: str = ".") -> WindowsDirectory:
-        root = WindowsRoot.open(root_path)
+        active = _active_root_prefix(root_path)
+        owns_root = active is None
+        if active is None:
+            root = WindowsRoot.open(root_path)
+            prefix: tuple[str, ...] = ()
+        else:
+            root, prefix = active
         try:
-            parts = relative_components(relative, allow_root=True)
+            parts = (*prefix, *relative_components(relative, allow_root=True))
             directory = root.open_directory(parts) if parts else None
-            return cls(root, directory)
+            return cls(root, directory, owns_root=owns_root)
         except BaseException:
-            root.close()
+            if owns_root:
+                root.close()
             raise
 
     def close(self) -> None:
@@ -584,14 +637,25 @@ class WindowsDirectory:
                 self._directory.close()
             except OSError as exc:
                 first_error = exc
-            self._directory = None
-        try:
-            self._root.close()
-        except OSError as exc:
-            if first_error is None:
-                first_error = exc
+            else:
+                self._directory = None
+        if self._owns_root:
+            try:
+                self._root.close()
+            except OSError as exc:
+                if first_error is None:
+                    first_error = exc
+            else:
+                self._owns_root = False
         if first_error is not None:
             raise first_error
+
+    def __enter__(self) -> Self:
+        _ = self.value
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def open_regular(self, relative: str) -> OwnedHandle:
         parts = relative_components(relative)
@@ -693,36 +757,26 @@ def _list_handle(directory_handle: int) -> list[WindowsDirectoryEntry]:
 
 
 def list_directory(root: Path, relative: str = ".") -> list[WindowsDirectoryEntry]:
-    parts = relative_components(relative, allow_root=True)
-    with WindowsRoot.open(root) as boundary:
-        if not parts:
-            return _list_handle(boundary.handle.value)
-        with boundary.open_directory(parts) as directory:
-            return _list_handle(directory.value)
+    with WindowsDirectory.open(root, relative) as directory:
+        return directory.list_entries()
 
 
 def stat_relative(root: Path, relative: str) -> os.stat_result:
     parts = relative_components(relative)
-    with (
-        WindowsRoot.open(root) as boundary,
-        boundary.open_parent(parts) as (parent, name, _parent_owner),
-        _open_relative(parent, name, access=0, directory=None, reject_reparse=False) as handle,
-    ):
-        return _entry_from_handle(name, handle.value).stat_result()
+    parent_relative = "." if len(parts) == 1 else "/".join(parts[:-1])
+    with WindowsDirectory.open(root, parent_relative) as parent:
+        return parent.stat(parts[-1])
 
 
 def directory_identity(path: Path) -> tuple[int, int]:
-    with WindowsRoot.open(path) as root:
-        return root.identity.volume_serial, int.from_bytes(root.identity.file_id, "little")
+    with WindowsDirectory.open(path) as directory:
+        identity = directory.identity
+        return identity.volume_serial, int.from_bytes(identity.file_id, "little")
 
 
 def open_regular_file(root: Path, relative: str) -> tuple[int, os.stat_result]:
-    parts = relative_components(relative)
-    with (
-        WindowsRoot.open(root) as boundary,
-        boundary.open_parent(parts) as (parent, name, _parent_owner),
-    ):
-        handle = _open_relative(parent, name, access=FILE_READ_DATA, directory=False)
+    with WindowsDirectory.open(root) as directory:
+        handle = directory.open_regular(relative)
         try:
             msvcrt = importlib.import_module("msvcrt")
             descriptor = int(msvcrt.open_osfhandle(handle.detach(), os.O_RDONLY))
@@ -797,27 +851,14 @@ def _readlink_at(parent: int, name: str) -> str:
 
 def readlink(root: Path, relative: str) -> str:
     parts = relative_components(relative)
-    with (
-        WindowsRoot.open(root) as boundary,
-        boundary.open_parent(parts) as (parent, name, _parent_owner),
-    ):
-        return _readlink_at(parent, name)
+    parent_relative = "." if len(parts) == 1 else "/".join(parts[:-1])
+    with WindowsDirectory.open(root, parent_relative) as parent:
+        return parent.readlink(parts[-1])
 
 
 def _write_all(handle: int, content: bytes) -> None:
     api = _kernel32()
-    view = memoryview(content)
-    while view:
-        chunk = bytes(view[: 64 * 1024])
-        buffer = ctypes.create_string_buffer(chunk)
-        written = ctypes.c_uint32()
-        if not api.WriteFile(
-            ctypes.c_void_p(handle), buffer, len(chunk), ctypes.byref(written), None
-        ):
-            raise OSError(last_error(), "WriteFile")
-        if written.value == 0:
-            raise OSError("Windows file write made no progress")
-        view = view[written.value :]
+    write_all_handle(handle, content)
     if not api.FlushFileBuffers(ctypes.c_void_p(handle)):
         raise OSError(last_error(), "FlushFileBuffers")
 

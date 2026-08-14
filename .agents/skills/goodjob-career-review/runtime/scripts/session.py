@@ -21,6 +21,7 @@ sys.path.insert(0, str(TRUSTED_SOURCE_DIR))
 
 from goodjob.auth import ReceiptKind, generate_capability  # noqa: E402
 from goodjob.errors import GoodJobError, InvalidInputError  # noqa: E402
+from goodjob.platform.detect import require_released_runtime  # noqa: E402
 
 CORE_BOOTSTRAP = (
     "import sys;"
@@ -405,6 +406,7 @@ class SessionBroker:
         self._translation_projections: dict[str, TranslationProjectionBinding] = {}
 
     def dispatch(self, message: JsonObject) -> JsonObject:
+        require_released_runtime()
         operation = _required_text(message, "op")
         if operation == "authorize_source_analysis":
             return self._authorize_source_analysis(message).payload

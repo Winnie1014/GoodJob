@@ -9,11 +9,12 @@ from pathlib import Path
 from goodjob.errors import WriterBusyError
 
 
-class WindowsExclusiveFileLock:
-    """Own one locked byte until close; file contents and age carry no authority."""
+class WindowsFileLock:
+    """Own one shared or exclusive locked byte until deterministic release."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, shared: bool) -> None:
         self._path = path
+        self._shared = shared
         self._fd: int | None = None
 
     def acquire(self) -> None:
@@ -22,7 +23,8 @@ class WindowsExclusiveFileLock:
         msvcrt = importlib.import_module("msvcrt")
         try:
             os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            mode = msvcrt.LK_NBRLCK if self._shared else msvcrt.LK_NBLCK
+            msvcrt.locking(fd, mode, 1)
         except OSError as exc:
             os.close(fd)
             raise WriterBusyError("another GoodJob writer currently owns the lock") from exc
@@ -39,3 +41,13 @@ class WindowsExclusiveFileLock:
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         finally:
             os.close(fd)
+
+
+class WindowsExclusiveFileLock(WindowsFileLock):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path, shared=False)
+
+
+class WindowsSharedFileLock(WindowsFileLock):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path, shared=True)

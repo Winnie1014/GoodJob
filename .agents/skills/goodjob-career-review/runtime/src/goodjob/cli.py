@@ -26,6 +26,7 @@ from goodjob.errors import GoodJobError, InvalidInputError
 from goodjob.exporting import ExportService
 from goodjob.history import MAX_HISTORY_QUERY_CANDIDATES, HistoryQueryService
 from goodjob.paths import DataPaths
+from goodjob.platform.detect import require_released_runtime
 from goodjob.preparation import (
     MAX_PRIVATE_PAYLOAD_BYTES,
     PreparationService,
@@ -808,6 +809,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     paths = DataPaths.from_argument(args.data_dir)
     try:
+        require_released_runtime()
         if args.command == "bootstrap":
             payload = _handle_bootstrap(paths)
         elif args.command == "data-status":

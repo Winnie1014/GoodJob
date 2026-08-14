@@ -10,6 +10,7 @@ import re
 import sqlite3
 import stat
 import subprocess
+import sys
 import uuid
 from collections import Counter
 from contextlib import suppress
@@ -890,6 +891,40 @@ class WorkspaceScanner:
         return coverage
 
     def _run(
+        self,
+        *,
+        root: Path,
+        workspace_id: str | None,
+        mode: Literal["full", "refresh"],
+        change_detection_mode: Literal["fast", "verify_content"] | None,
+        config_revision: str,
+        authorization_receipt_id: str,
+        external_git_grants: tuple[ExternalGitGrant, ...],
+    ) -> ScanResult:
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import bind_authorized_root
+
+            with bind_authorized_root(root):
+                return self._run_authorized(
+                    root=root,
+                    workspace_id=workspace_id,
+                    mode=mode,
+                    change_detection_mode=change_detection_mode,
+                    config_revision=config_revision,
+                    authorization_receipt_id=authorization_receipt_id,
+                    external_git_grants=external_git_grants,
+                )
+        return self._run_authorized(
+            root=root,
+            workspace_id=workspace_id,
+            mode=mode,
+            change_detection_mode=change_detection_mode,
+            config_revision=config_revision,
+            authorization_receipt_id=authorization_receipt_id,
+            external_git_grants=external_git_grants,
+        )
+
+    def _run_authorized(
         self,
         *,
         root: Path,

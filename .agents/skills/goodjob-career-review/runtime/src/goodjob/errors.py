@@ -23,3 +23,7 @@ class WriterBusyError(GoodJobError):
 
 class UnsupportedSchemaError(GoodJobError):
     code = "unsupported_schema"
+
+
+class UnsupportedPlatformError(GoodJobError):
+    code = "unsupported_platform"

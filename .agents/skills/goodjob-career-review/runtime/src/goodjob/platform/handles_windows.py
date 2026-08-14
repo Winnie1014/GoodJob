@@ -39,6 +39,33 @@ def close_win32_handle(value: int) -> None:
         raise OSError(last_error(), "CloseHandle")
 
 
+def write_all_handle(value: int, content: bytes, *, chunk_size: int = 64 * 1024) -> None:
+    """Write all bytes to one borrowed Win32 handle without taking ownership."""
+    if value == 0 or chunk_size <= 0:
+        raise ValueError("Win32 write requires a valid handle and positive chunk size")
+    kernel32 = load_windows_dll("kernel32.dll")
+    kernel32.WriteFile.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_void_p,
+    ]
+    kernel32.WriteFile.restype = ctypes.c_int
+    remaining = memoryview(content)
+    while remaining:
+        chunk = bytes(remaining[:chunk_size])
+        buffer = ctypes.create_string_buffer(chunk)
+        written = ctypes.c_uint32()
+        if not kernel32.WriteFile(
+            ctypes.c_void_p(value), buffer, len(chunk), ctypes.byref(written), None
+        ):
+            raise OSError(last_error(), "WriteFile")
+        if written.value == 0:
+            raise OSError("Win32 handle write made no progress")
+        remaining = remaining[written.value :]
+
+
 class OwnedHandle:
     """A move-only-by-convention native handle with deterministic close semantics."""
 
@@ -69,8 +96,8 @@ class OwnedHandle:
         if self._value == 0:
             return
         value = self._value
-        self._value = 0
         self._closer(value)
+        self._value = 0
 
     def __enter__(self) -> Self:
         _ = self.value

@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from goodjob.errors import GoodJobError
+from goodjob.errors import GoodJobError, UnsupportedPlatformError
+
+NATIVE_WINDOWS_RELEASE_ENABLED = False
 
 if TYPE_CHECKING:
     from goodjob.git_metadata import InternalGitBinding
@@ -49,6 +51,14 @@ class Platform(enum.Enum):
 def detect_platform() -> Platform:
     """Return the current host platform."""
     return Platform.from_sys_platform(sys.platform)
+
+
+def require_released_runtime() -> None:
+    """Keep native Windows closed until the IMP-31 release decision is committed."""
+    if detect_platform() == Platform.WINDOWS and not NATIVE_WINDOWS_RELEASE_ENABLED:
+        raise UnsupportedPlatformError(
+            "native Windows remains unsupported until IMP-31A-G pass on real hardware; use WSL2"
+        )
 
 
 def _macos_sandbox() -> GitSandbox:

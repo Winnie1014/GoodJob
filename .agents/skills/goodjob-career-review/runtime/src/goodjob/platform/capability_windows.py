@@ -8,7 +8,12 @@ import os
 from dataclasses import dataclass
 
 from goodjob.errors import CapabilityError
-from goodjob.platform.handles_windows import OwnedHandle, last_error, load_windows_dll
+from goodjob.platform.handles_windows import (
+    OwnedHandle,
+    last_error,
+    load_windows_dll,
+    write_all_handle,
+)
 
 HANDLE_FLAG_INHERIT = 0x00000001
 MAX_TRANSFER_BYTES = 2 * 1024 * 1024
@@ -76,27 +81,7 @@ class WindowsTransferPipe:
 def write_handle(handle: int, content: bytes) -> None:
     if len(content) > MAX_TRANSFER_BYTES:
         raise OSError("protected input exceeded the Windows transfer limit")
-    kernel32 = load_windows_dll("kernel32.dll")
-    kernel32.WriteFile.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.POINTER(ctypes.c_uint32),
-        ctypes.c_void_p,
-    ]
-    kernel32.WriteFile.restype = ctypes.c_int
-    view = memoryview(content)
-    while view:
-        chunk = bytes(view[:4096])
-        buffer = ctypes.create_string_buffer(chunk)
-        written = ctypes.c_uint32()
-        if not kernel32.WriteFile(
-            ctypes.c_void_p(handle), buffer, len(chunk), ctypes.byref(written), None
-        ):
-            raise OSError(last_error(), "WriteFile")
-        if written.value == 0:
-            raise OSError("protected Windows pipe write made no progress")
-        view = view[written.value :]
+    write_all_handle(handle, content, chunk_size=4096)
 
 
 def read_bytes_from_handle(handle: int, *, maximum_bytes: int) -> bytes:

@@ -13,10 +13,11 @@ import pytest
 
 from goodjob.errors import InvalidInputError
 from goodjob.git_metadata import GitMetadataReader, InternalGitBinding
-from goodjob.platform import fs_windows, launcher_windows, sandbox_windows
+from goodjob.platform import fs_windows, handles_windows, launcher_windows, sandbox_windows
 from goodjob.platform.capability_windows import WindowsTransferPipe
 from goodjob.platform.fs_windows import relative_components, validate_component
 from goodjob.platform.handles_windows import OwnedHandle
+from goodjob.platform.lock_windows import WindowsSharedFileLock
 from goodjob.platform.process_windows import FILETIME
 
 
@@ -41,6 +42,77 @@ def test_owned_windows_handle_detach_moves_close_authority() -> None:
     handle.close()
 
     assert closed == []
+
+
+def test_owned_windows_handle_retains_ownership_when_close_fails() -> None:
+    attempts: list[int] = []
+
+    def close(value: int) -> None:
+        attempts.append(value)
+        if len(attempts) == 1:
+            raise OSError("injected close failure")
+
+    handle = OwnedHandle(91, closer=close)
+
+    with pytest.raises(OSError, match="injected close failure"):
+        handle.close()
+
+    assert not handle.closed
+    assert handle.value == 91
+    handle.close()
+    assert handle.closed
+    assert attempts == [91, 91]
+
+
+def test_windows_write_all_handle_retries_partial_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    written_chunks: list[bytes] = []
+
+    class WriteFileCall:
+        argtypes: object
+        restype: object
+
+        def __call__(
+            self, _handle: Any, buffer: Any, length: int, written: Any, _overlapped: Any
+        ) -> int:
+            count = min(int(length), 2)
+            written_chunks.append(ctypes.string_at(buffer, count))
+            ctypes.cast(written, ctypes.POINTER(ctypes.c_uint32))[0] = count
+            return 1
+
+    class FakeWriteApi:
+        def __init__(self) -> None:
+            self.WriteFile = WriteFileCall()
+
+    monkeypatch.setattr(handles_windows, "load_windows_dll", lambda _name: FakeWriteApi())
+
+    handles_windows.write_all_handle(42, b"abcdef", chunk_size=4)
+
+    assert b"".join(written_chunks) == b"abcdef"
+
+
+def test_windows_shared_file_lock_uses_nonblocking_read_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operations: list[int] = []
+
+    class FakeMsvcrt:
+        LK_NBRLCK = 11
+        LK_NBLCK = 12
+        LK_UNLCK = 13
+
+        @staticmethod
+        def locking(_fd: int, mode: int, _length: int) -> None:
+            operations.append(mode)
+
+    monkeypatch.setitem(sys.modules, "msvcrt", FakeMsvcrt)
+    lock = WindowsSharedFileLock(tmp_path / "shared.lock")
+
+    lock.acquire()
+    lock.release()
+
+    assert operations == [FakeMsvcrt.LK_NBRLCK, FakeMsvcrt.LK_UNLCK]
 
 
 @pytest.mark.parametrize(
@@ -149,6 +221,7 @@ class _FakeWfpApi:
         self.free_calls = 0
         self.close_calls = 0
         self.corrupt_readback = corrupt_readback
+        self.close_statuses: list[int] = []
 
     def FwpmEngineOpen0(self, *_args: Any) -> int:
         output = ctypes.cast(_args[-1], ctypes.POINTER(ctypes.c_void_p))
@@ -195,7 +268,16 @@ class _FakeWfpApi:
 
     def FwpmEngineClose0(self, _engine: Any) -> int:
         self.close_calls += 1
-        return 0
+        return self.close_statuses.pop(0) if self.close_statuses else 0
+
+
+def test_wfp_filter_structure_keeps_the_native_64_bit_union_offsets() -> None:
+    assert ctypes.sizeof(sandbox_windows.FWPM_FILTER_CONTEXT0) == 16
+    if ctypes.sizeof(ctypes.c_void_p) == 8:
+        assert sandbox_windows.FWPM_FILTER0.context.offset == 152
+        assert sandbox_windows.FWPM_FILTER0.reserved.offset == 168
+        assert sandbox_windows.FWPM_FILTER0.filterId.offset == 176
+        assert ctypes.sizeof(sandbox_windows.FWPM_FILTER0) == 200
 
 
 def test_wfp_session_requires_four_filter_additions_and_readbacks(
@@ -227,6 +309,123 @@ def test_wfp_session_fails_closed_when_filter_readback_differs(
 
     assert api.close_calls == 1
     assert api.free_calls == 5
+
+
+def test_wfp_session_retains_engine_ownership_when_close_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeWfpApi()
+    api.close_statuses = [5, 0]
+    monkeypatch.setattr(sandbox_windows, "_wfp_api", lambda: api)
+    session = sandbox_windows.WfpSession.create(r"C:\Program Files\Git\mingw64\bin\git.exe")
+
+    with pytest.raises(OSError, match="FwpmEngineClose0"):
+        session.close()
+
+    assert session._engine == 901
+    session.close()
+    assert session._engine == 0
+    assert api.close_calls == 2
+
+
+def test_wfp_construction_retains_engine_when_cleanup_close_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeWfpApi(corrupt_readback=True)
+    api.close_statuses = [5, 0]
+    monkeypatch.setattr(sandbox_windows, "_wfp_api", lambda: api)
+    sandbox_windows._RETAINED_WFP_ENGINES.clear()
+
+    with pytest.raises(OSError, match="construction cleanup") as failure:
+        sandbox_windows.WfpSession.create(r"C:\Program Files\Git\mingw64\bin\git.exe")
+
+    assert failure.value.__cause__ is not None
+    assert "readback did not match" in str(failure.value.__cause__)
+    assert [(api, 901)] == sandbox_windows._RETAINED_WFP_ENGINES
+
+    sandbox_windows._retry_retained_wfp_engines()
+    assert sandbox_windows._RETAINED_WFP_ENGINES == []
+    assert api.close_calls == 2
+
+
+def test_windows_directory_retains_each_handle_when_close_fails() -> None:
+    directory_attempts: list[int] = []
+    root_attempts: list[int] = []
+
+    def fail_directory_once(value: int) -> None:
+        directory_attempts.append(value)
+        if len(directory_attempts) == 1:
+            raise OSError("injected directory close failure")
+
+    def fail_root_once(value: int) -> None:
+        root_attempts.append(value)
+        if len(root_attempts) == 1:
+            raise OSError("injected root close failure")
+
+    root_handle = OwnedHandle(811, closer=fail_root_once)
+    root = fs_windows.WindowsRoot(
+        Path("/authorized-workspace"),
+        root_handle,
+        r"\\?\C:\authorized-workspace",
+        fs_windows.WindowsFileIdentity(17, b"root".ljust(16, b"\0")),
+    )
+    directory_handle = OwnedHandle(812, closer=fail_directory_once)
+    directory = fs_windows.WindowsDirectory(root, directory_handle, owns_root=True)
+
+    with pytest.raises(OSError, match="directory close failure"):
+        directory.close()
+
+    assert not directory_handle.closed
+    assert not root_handle.closed
+    assert directory._directory is directory_handle
+    assert directory._owns_root
+
+    directory.close()
+    assert directory_handle.closed
+    assert root_handle.closed
+    assert directory_attempts == [812, 812]
+    assert root_attempts == [811, 811]
+
+
+def test_windows_scan_scope_reuses_one_absolute_root_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_path = Path("/authorized-workspace")
+    opened: list[Path] = []
+    closed: list[int] = []
+    child_closed: list[int] = []
+    relative_opens: list[tuple[str, ...]] = []
+
+    def open_root(_cls: type[fs_windows.WindowsRoot], path: Path) -> fs_windows.WindowsRoot:
+        opened.append(path)
+        return fs_windows.WindowsRoot(
+            path,
+            OwnedHandle(801, closer=closed.append),
+            r"\\?\C:\authorized-workspace",
+            fs_windows.WindowsFileIdentity(17, b"root".ljust(16, b"\0")),
+        )
+
+    monkeypatch.setattr(fs_windows.WindowsRoot, "open", classmethod(open_root))
+
+    with fs_windows.bind_authorized_root(root_path) as boundary:
+
+        def open_directory(parts: tuple[str, ...]) -> OwnedHandle:
+            relative_opens.append(parts)
+            return OwnedHandle(802, closer=child_closed.append)
+
+        monkeypatch.setattr(boundary, "open_directory", open_directory)
+        first = fs_windows.open_directory(root_path)
+        second = fs_windows.open_directory(root_path)
+        nested = fs_windows.open_directory(root_path / "nested-project", "src")
+        first.close()
+        second.close()
+        nested.close()
+        assert not boundary.handle.closed
+
+    assert opened == [root_path]
+    assert closed == [801]
+    assert child_closed == [802]
+    assert relative_opens == [("nested-project", "src")]
 
 
 class _FakeKernel32:
@@ -636,3 +835,18 @@ def test_cli_uses_numeric_handle_arguments_on_windows(monkeypatch: pytest.Monkey
 
     assert args.capability_handle == 91
     assert not hasattr(args, "capability_fd")
+
+
+def test_cli_fails_closed_while_native_windows_release_gate_is_disabled(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import goodjob.cli as cli
+    import goodjob.platform.detect as platform_detect
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(platform_detect, "NATIVE_WINDOWS_RELEASE_ENABLED", False)
+
+    assert cli.run(["data-status"]) == 2
+    response = capsys.readouterr()
+    assert "unsupported_platform" in response.err
+    assert "use WSL2" in response.err

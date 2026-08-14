@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import importlib
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -28,6 +29,9 @@ LAYER_KEYS = {
     "recv_accept_v4": "e1cd9fe7-f4b5-4273-96c0-592e487b8650",
     "recv_accept_v6": "a3b42c97-9f04-4672-b87e-cee9c483257f",
 }
+
+_RETAINED_WFP_ENGINES: list[tuple[Any, int]] = []
+_RETAINED_WFP_ENGINES_LOCK = threading.Lock()
 
 
 class GUID(ctypes.Structure):
@@ -108,6 +112,10 @@ class FWPM_ACTION0(ctypes.Structure):
     _fields_ = [("type", ctypes.c_uint32), ("filterType", GUID)]
 
 
+class FWPM_FILTER_CONTEXT0(ctypes.Union):
+    _fields_ = [("rawContext", ctypes.c_uint64), ("providerContextKey", GUID)]
+
+
 class FWPM_FILTER0(ctypes.Structure):
     _fields_ = [
         ("filterKey", GUID),
@@ -121,7 +129,7 @@ class FWPM_FILTER0(ctypes.Structure):
         ("numFilterConditions", ctypes.c_uint32),
         ("filterCondition", ctypes.POINTER(FWPM_FILTER_CONDITION0)),
         ("action", FWPM_ACTION0),
-        ("rawContext", ctypes.c_uint64),
+        ("context", FWPM_FILTER_CONTEXT0),
         ("reserved", ctypes.POINTER(GUID)),
         ("filterId", ctypes.c_uint64),
         ("effectiveWeight", FWP_VALUE0),
@@ -177,6 +185,28 @@ def _raise_wfp(operation: str, status: int) -> None:
         f"Windows WFP could not establish the Git network boundary ({operation}: 0x{status:08X}); "
         "run elevated with BFE enabled or use WSL2"
     )
+
+
+def _retry_retained_wfp_engines() -> None:
+    """Retry construction cleanup without losing ownership of a live WFP engine."""
+    with _RETAINED_WFP_ENGINES_LOCK:
+        if not _RETAINED_WFP_ENGINES:
+            return
+        remaining: list[tuple[Any, int]] = []
+        failure_status = 0
+        for api, engine in _RETAINED_WFP_ENGINES:
+            status = int(api.FwpmEngineClose0(ctypes.c_void_p(engine)))
+            if status != 0:
+                remaining.append((api, engine))
+                failure_status = status
+        _RETAINED_WFP_ENGINES[:] = remaining
+    if remaining:
+        _raise_wfp("FwpmEngineClose0(retained construction cleanup)", failure_status)
+
+
+def _retain_wfp_engine(api: Any, engine: int) -> None:
+    with _RETAINED_WFP_ENGINES_LOCK:
+        _RETAINED_WFP_ENGINES.append((api, engine))
 
 
 def _make_filter(
@@ -265,6 +295,7 @@ class WfpSession:
 
     @classmethod
     def create(cls, executable: str) -> WfpSession:
+        _retry_retained_wfp_engines()
         api = _wfp_api()
         session = FWPM_SESSION0()
         session.displayData.name = "GoodJob Git network boundary"
@@ -330,18 +361,23 @@ class WfpSession:
                 filter_ids.append(int(filter_id.value))
                 del condition
             return cls(api, engine_value, app_blob, tuple(filter_ids))
-        except BaseException:
+        except BaseException as primary_error:
             if app_blob:
                 free_blob = ctypes.cast(app_blob, ctypes.c_void_p)
                 api.FwpmFreeMemory0(ctypes.byref(free_blob))
-            api.FwpmEngineClose0(engine)
+            close_status = int(api.FwpmEngineClose0(engine))
+            if close_status != 0:
+                _retain_wfp_engine(api, engine_value)
+                try:
+                    _raise_wfp("FwpmEngineClose0(construction cleanup)", close_status)
+                except GitSandboxUnavailableError as cleanup_error:
+                    raise cleanup_error from primary_error
             raise
 
     def close(self) -> None:
         if self._engine == 0:
             return
         engine = self._engine
-        self._engine = 0
         if self._app_blob:
             free_blob = ctypes.cast(self._app_blob, ctypes.c_void_p)
             self._api.FwpmFreeMemory0(ctypes.byref(free_blob))
@@ -349,6 +385,7 @@ class WfpSession:
         status = int(self._api.FwpmEngineClose0(ctypes.c_void_p(engine)))
         if status != 0:
             _raise_wfp("FwpmEngineClose0", status)
+        self._engine = 0
 
     def __enter__(self) -> Self:
         if not self.verified:
