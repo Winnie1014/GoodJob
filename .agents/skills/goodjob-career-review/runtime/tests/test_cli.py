@@ -440,7 +440,7 @@ def test_documented_launcher_entry_ignores_python_environment_injection(
 ) -> None:
     skill_text = (RUNTIME_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
     assert (
-        "Start `python3 -I -B <runtime_dir>/scripts/launch_broker.py "
+        "`python3 -I -B <runtime_dir>/scripts/launch_broker.py "
         "--agent-runtime <agent-runtime>`" in skill_text
     )
 
@@ -468,6 +468,25 @@ def test_documented_launcher_entry_ignores_python_environment_injection(
     assert result.returncode == 1
     assert not marker.exists()
     assert "Traceback" not in result.stderr
+
+
+def test_skill_windows_preflight_requires_explicit_consent_and_retry() -> None:
+    skill_text = (RUNTIME_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "-I -B <runtime_dir>/scripts/launch_broker.py --windows-preflight-only "
+        "--workspace <workspace>",
+        "`missing_dependency`",
+        "`permission_required`",
+        "`unsupported_capability`",
+        "https://www.python.org/downloads/windows/",
+        "https://git-scm.com/download/win",
+        "Never install a component or request elevation without explicit Owner consent",
+        "If the Owner refuses installation or elevation, stop fail-closed",
+        "`make` is a development and acceptance-gate dependency",
+        "An absent IPv6 default route is not an ordinary user-runtime blocker",
+    ):
+        assert expected in skill_text
 
 
 def test_job_input_preflight_blocks_bad_jd_before_scan_state(tmp_path: Path) -> None:
