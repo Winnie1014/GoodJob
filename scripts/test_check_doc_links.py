@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
+import io
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import ModuleType
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "scripts" / "check-doc-links.py"
@@ -41,6 +48,91 @@ class CheckerCliTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def run_checker_as_windows(
+        self, *, reparse_path: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        checker_path = self.repo / "scripts" / CHECKER.name
+        spec = importlib.util.spec_from_file_location("check_doc_links_windows", checker_path)
+        assert spec is not None and spec.loader is not None
+
+        missing = object()
+        saved_flags: dict[str, object] = {}
+        for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC"):
+            saved_flags[name] = getattr(os, name, missing)
+            if saved_flags[name] is not missing:
+                delattr(os, name)
+
+        original_open = os.open
+        original_stat = os.stat
+        original_lstat = os.lstat
+
+        def reject_dir_fd_open(*args: object, **kwargs: object) -> int:
+            if kwargs.get("dir_fd") is not None:
+                raise AssertionError("Windows branch used os.open(dir_fd=...)")
+            return original_open(*args, **kwargs)
+
+        def reject_dir_fd_stat(*args: object, **kwargs: object) -> os.stat_result:
+            if kwargs.get("dir_fd") is not None:
+                raise AssertionError("Windows branch used os.stat(dir_fd=...)")
+            return original_stat(*args, **kwargs)
+
+        def reject_lstat(*args: object, **kwargs: object) -> os.stat_result:
+            del args, kwargs
+            raise AssertionError("Windows branch used os.lstat()")
+
+        def windows_file_attributes(path: Path) -> int | None:
+            try:
+                info = original_lstat(path)
+            except OSError:
+                return None
+            attributes = 0x10 if stat.S_ISDIR(info.st_mode) else 0
+            if reparse_path is not None and path == reparse_path:
+                attributes |= 0x400
+            return attributes
+
+        try:
+            checker = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(checker)
+            assert isinstance(checker, ModuleType)
+            checker.ROOT = self.repo
+            checker.IS_WINDOWS = True
+            checker.windows_file_attributes = windows_file_attributes
+            stdout = io.StringIO()
+            with (
+                mock.patch.object(os, "open", reject_dir_fd_open),
+                mock.patch.object(os, "stat", reject_dir_fd_stat),
+                mock.patch.object(os, "lstat", reject_lstat),
+                redirect_stdout(stdout),
+            ):
+                returncode = checker.main()
+        finally:
+            for name, value in saved_flags.items():
+                if value is not missing:
+                    setattr(os, name, value)
+
+        return subprocess.CompletedProcess(
+            [sys.executable, str(checker_path)],
+            returncode,
+            stdout.getvalue(),
+            "",
+        )
+
+    def require_symlink_creation(self) -> None:
+        target = self.write(".symlink-capability-target", "probe\n")
+        link = self.repo / ".symlink-capability-link"
+        try:
+            link.symlink_to(target.name)
+        except OSError as error:
+            if sys.platform == "win32" and getattr(error, "winerror", None) in {
+                5,
+                1314,
+            }:
+                self.skipTest("Windows token cannot create symbolic links")
+            raise
+        finally:
+            link.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
 
     def assert_clean(self, result: subprocess.CompletedProcess[str], files: int) -> None:
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -266,7 +358,26 @@ class CheckerCliTests(unittest.TestCase):
 
         self.assert_clean(self.run_checker(), files=1)
 
+    def test_windows_branch_runs_without_posix_flags_or_dir_fd(self) -> None:
+        self.write("docs/target.txt", "target\n")
+        self.write("docs/source.md", "[target](target.txt)\n")
+
+        self.assert_clean(self.run_checker_as_windows(), files=1)
+
+    def test_windows_reparse_component_is_rejected_without_symlink_privilege(
+        self,
+    ) -> None:
+        reparse_directory = self.repo / "docs" / "reparse"
+        self.write("docs/reparse/target.txt", "target\n")
+        self.write("docs/source.md", "[target](reparse/target.txt)\n")
+
+        result = self.run_checker_as_windows(reparse_path=reparse_directory)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "docs/source.md:reparse/target.txt\n")
+
     def test_markdown_source_symlink_is_not_scanned(self) -> None:
+        self.require_symlink_creation()
         self.write("outside.txt", "[missing](missing.md)\n")
         (self.repo / "docs").mkdir()
         (self.repo / "docs" / "external.md").symlink_to("../outside.txt")
@@ -274,6 +385,7 @@ class CheckerCliTests(unittest.TestCase):
         self.assert_clean(self.run_checker(), files=0)
 
     def test_symlink_targets_are_rejected(self) -> None:
+        self.require_symlink_creation()
         self.write("docs/real-file.txt", "target\n")
         self.write("docs/real-dir/target.txt", "target\n")
         (self.repo / "docs" / "file-link.md").symlink_to("real-file.txt")

@@ -18,8 +18,55 @@ BACKTICK_RUN_RE = re.compile(r"`+")
 BLOCKQUOTE_PREFIX_RE = re.compile(r"^ {0,3}>[ \t]?")
 LIST_ITEM_RE = re.compile(r"^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+")
 SKIPPED_SCHEMES = {"http", "https", "mailto"}
-DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+IS_WINDOWS = sys.platform == "win32"
+WINDOWS_DIRECTORY_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+WINDOWS_DEVICE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_DEVICE", 0x40)
+WINDOWS_REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+WINDOWS_INVALID_ATTRIBUTES = 0xFFFFFFFF
+
+
+def directory_flags() -> int:
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def file_flags() -> int:
+    return os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def windows_file_attributes(path: Path) -> int | None:
+    import ctypes
+
+    query = ctypes.windll.kernel32.GetFileAttributesW
+    query.argtypes = [ctypes.c_wchar_p]
+    query.restype = ctypes.c_uint32
+    attributes = int(query(str(path)))
+    return None if attributes == WINDOWS_INVALID_ATTRIBUTES else attributes
+
+
+def windows_repository_path(
+    parts: tuple[str, ...], *, regular_file: bool = False
+) -> Path | None:
+    if any(
+        part in {"", ".", ".."} or "/" in part or "\\" in part or ":" in part
+        for part in parts
+    ):
+        return None
+
+    current = ROOT
+    for index, part in enumerate(parts):
+        current = current / part
+        attributes = windows_file_attributes(current)
+        if attributes is None or attributes & WINDOWS_REPARSE_ATTRIBUTE:
+            return None
+        if index < len(parts) - 1 and not attributes & WINDOWS_DIRECTORY_ATTRIBUTE:
+            return None
+
+    if regular_file and (
+        not parts
+        or attributes & (WINDOWS_DIRECTORY_ATTRIBUTE | WINDOWS_DEVICE_ATTRIBUTE)
+    ):
+        return None
+    return current
 
 
 def repository_markdown_files() -> list[Path]:
@@ -44,7 +91,11 @@ def repository_markdown_files() -> list[Path]:
     regular_files: list[Path] = []
     for path in paths:
         try:
-            if stat.S_ISREG(path.lstat().st_mode):
+            parts = path.relative_to(ROOT).parts
+            if IS_WINDOWS:
+                if windows_repository_path(parts, regular_file=True) is not None:
+                    regular_files.append(path)
+            elif stat.S_ISREG(path.lstat().st_mode):
                 regular_files.append(path)
         except FileNotFoundError:
             continue
@@ -52,10 +103,10 @@ def repository_markdown_files() -> list[Path]:
 
 
 def open_parent_directory(parts: tuple[str, ...]) -> int:
-    descriptor = os.open(ROOT, DIRECTORY_FLAGS)
+    descriptor = os.open(ROOT, directory_flags())
     try:
         for part in parts[:-1]:
-            next_descriptor = os.open(part, DIRECTORY_FLAGS, dir_fd=descriptor)
+            next_descriptor = os.open(part, directory_flags(), dir_fd=descriptor)
             os.close(descriptor)
             descriptor = next_descriptor
     except BaseException:
@@ -66,9 +117,15 @@ def open_parent_directory(parts: tuple[str, ...]) -> int:
 
 def read_repository_text(path: Path) -> str:
     parts = path.relative_to(ROOT).parts
+    if IS_WINDOWS:
+        checked_path = windows_repository_path(parts, regular_file=True)
+        if checked_path is None:
+            raise OSError(f"not a regular repository file: {path.relative_to(ROOT)}")
+        return checked_path.read_text(encoding="utf-8")
+
     parent_descriptor = open_parent_directory(parts)
     try:
-        descriptor = os.open(parts[-1], FILE_FLAGS, dir_fd=parent_descriptor)
+        descriptor = os.open(parts[-1], file_flags(), dir_fd=parent_descriptor)
     finally:
         os.close(parent_descriptor)
     with os.fdopen(descriptor, encoding="utf-8") as handle:
@@ -80,6 +137,8 @@ def read_repository_text(path: Path) -> str:
 def repository_path_exists(parts: tuple[str, ...]) -> bool:
     if not parts:
         return True
+    if IS_WINDOWS:
+        return windows_repository_path(parts) is not None
     try:
         parent_descriptor = open_parent_directory(parts)
         try:
