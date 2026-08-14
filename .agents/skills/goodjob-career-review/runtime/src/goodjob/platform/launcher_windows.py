@@ -466,7 +466,7 @@ class _WindowsCleanupGroup:
             if handle is None or handle.closed:
                 continue
             try:
-                handle.close()
+                handle.retry_close()
             except OSError as exc:
                 remember(exc)
         for pipe in self.transfer_pipes:
@@ -474,7 +474,7 @@ class _WindowsCleanupGroup:
                 if handle.closed:
                     continue
                 try:
-                    handle.close()
+                    handle.retry_close()
                 except OSError as exc:
                     remember(exc)
         for thread in (*self.readers, *self.writers):
@@ -489,12 +489,12 @@ class _WindowsCleanupGroup:
 
         if self.process_stopped and self.process is not None and not self.process.closed:
             try:
-                self.process.close()
+                self.process.retry_close()
             except OSError as exc:
                 remember(exc)
         if self.job is not None and not self.job.closed:
             try:
-                self.job.close()
+                self.job.retry_close()
             except OSError as exc:
                 remember(exc)
             else:
@@ -512,7 +512,7 @@ class _WindowsCleanupGroup:
             )
             if self.process_stopped:
                 try:
-                    self.process.close()
+                    self.process.retry_close()
                 except OSError as exc:
                     remember(exc)
 
@@ -565,6 +565,38 @@ def _retry_retained_cleanup_groups() -> None:
         raise OSError("previous Windows cleanup remains incomplete") from first_error
 
 
+def _close_unlaunched_network_guard(
+    network_guard: NetworkGuard | None,
+    *,
+    observer: Callable[[str], None] | None,
+) -> None:
+    """Close a guard before launch, retaining ownership if its close fails."""
+    if network_guard is None:
+        return
+    group = _WindowsCleanupGroup(
+        None,
+        False,
+        True,
+        None,
+        None,
+        (),
+        (),
+        None,
+        (),
+        (),
+        threading.Event(),
+        network_guard,
+        False,
+    )
+    try:
+        network_guard.close()
+    except OSError:
+        _retain_cleanup_group(group)
+        raise
+    group.network_guard_closed = True
+    _emit(observer, "network_guard_closed")
+
+
 def run_windows_process(
     request: WindowsLaunchRequest,
     *,
@@ -573,57 +605,22 @@ def run_windows_process(
     observer: Callable[[str], None] | None = None,
 ) -> WindowsLaunchResult:
     """Launch one child with no execution window before Job containment."""
-    require_released_runtime()
-    _retry_retained_cleanup_groups()
-    retry_retained_owners()
-    from goodjob.platform.sandbox_windows import _retry_retained_wfp_engines
-
-    _retry_retained_wfp_engines()
-    if network_guard is not None and not network_guard.verified:
-        group = _WindowsCleanupGroup(
-            None,
-            False,
-            True,
-            None,
-            None,
-            (),
-            (),
-            None,
-            (),
-            (),
-            threading.Event(),
-            network_guard,
-            False,
-        )
-        cleanup_error = group.retry(observer=observer)
-        if not group.complete:
-            _retain_cleanup_group(group)
-        if cleanup_error is not None:
-            raise cleanup_error
-        raise OSError("Windows network filters were not fully read back")
-    _emit(observer, "boundary_verified")
     try:
+        require_released_runtime()
+        _retry_retained_cleanup_groups()
+        retry_retained_owners()
+        from goodjob.platform.sandbox_windows import _retry_retained_wfp_engines
+
+        _retry_retained_wfp_engines()
+        if network_guard is not None and not network_guard.verified:
+            raise OSError("Windows network filters were not fully read back")
+        _emit(observer, "boundary_verified")
         api = _kernel32()
-    except BaseException:
-        if network_guard is not None:
-            group = _WindowsCleanupGroup(
-                None,
-                False,
-                True,
-                None,
-                None,
-                (),
-                (),
-                None,
-                (),
-                (),
-                threading.Event(),
-                network_guard,
-                False,
-            )
-            group.retry(observer=observer)
-            if not group.complete:
-                _retain_cleanup_group(group)
+    except BaseException as primary_error:
+        try:
+            _close_unlaunched_network_guard(network_guard, observer=observer)
+        except OSError as guard_cleanup_error:
+            raise guard_cleanup_error from primary_error
         raise
     job: OwnedHandle | None = None
     process: OwnedHandle | None = None

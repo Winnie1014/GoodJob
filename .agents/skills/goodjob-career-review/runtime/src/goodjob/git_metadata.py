@@ -24,7 +24,13 @@ from goodjob.platform.handles_windows import (
     close_owned_resources,
     transfer_handle_to_crt_descriptor,
 )
-from goodjob.source_io import MAX_SOURCE_FILE_BYTES, open_regular_file, read_open_file
+from goodjob.source_io import (
+    MAX_SOURCE_FILE_BYTES,
+    FileDescriptor,
+    close_file_descriptor,
+    open_regular_file,
+    read_open_file,
+)
 
 if TYPE_CHECKING:
     from goodjob.scanner import ScanIssueDraft
@@ -78,11 +84,11 @@ def _relative_path(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def _open_regular_file(root: Path, relative_path: str) -> tuple[int, os.stat_result]:
+def _open_regular_file(root: Path, relative_path: str) -> tuple[FileDescriptor, os.stat_result]:
     return open_regular_file(root, relative_path)
 
 
-def _read_open_file(file_fd: int, *, maximum_bytes: int = MAX_FILE_BYTES) -> bytes:
+def _read_open_file(file_fd: FileDescriptor, *, maximum_bytes: int = MAX_FILE_BYTES) -> bytes:
     return read_open_file(file_fd, maximum_bytes=maximum_bytes)
 
 
@@ -140,7 +146,7 @@ def _open_absolute_directory(path: Path) -> DirectoryDescriptor:
 
 def _open_regular_file_at(
     directory_fd: DirectoryDescriptor, relative_path: str
-) -> tuple[int, os.stat_result]:
+) -> tuple[FileDescriptor, os.stat_result]:
     """Open a regular file below an already-bound directory descriptor."""
     if isinstance(directory_fd, WindowsDirectory):
         handle = directory_fd.open_regular(relative_path)
@@ -150,7 +156,7 @@ def _open_regular_file_at(
         except BaseException as primary_error:
             close_owned_resources((descriptor,), cause=primary_error)
             raise
-        return descriptor.detach(), file_stat
+        return descriptor, file_stat
     parts = PurePosixPath(relative_path).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise OSError("relative path is not safe to open")
@@ -183,7 +189,7 @@ def _read_text_at(
     try:
         return _read_open_file(file_fd, maximum_bytes=maximum_bytes).decode("utf-8")
     finally:
-        os.close(file_fd)
+        close_file_descriptor(file_fd)
 
 
 def _directory_identity(directory_fd: DirectoryDescriptor) -> tuple[int, int]:
@@ -782,7 +788,7 @@ class GitMetadataReader:
             try:
                 payload = _read_open_file(file_fd, maximum_bytes=4096).decode("utf-8")
             finally:
-                os.close(file_fd)
+                close_file_descriptor(file_fd)
         except (OSError, UnicodeError):
             return None
         lines = payload.splitlines()
@@ -819,7 +825,7 @@ class GitMetadataReader:
             try:
                 raw_target = _read_open_file(file_fd, maximum_bytes=4096).decode("utf-8").strip()
             finally:
-                os.close(file_fd)
+                close_file_descriptor(file_fd)
         except (OSError, UnicodeError):
             return None
         if not raw_target or "\x00" in raw_target:

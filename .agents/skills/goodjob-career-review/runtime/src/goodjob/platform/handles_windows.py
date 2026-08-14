@@ -18,15 +18,17 @@ class RetryableOwner(Protocol):
 
     def close(self) -> None: ...
 
+    def retry_close(self) -> None: ...
+
 
 _RETAINED_OWNERS: list[RetryableOwner] = []
-_RETAINED_OWNERS_LOCK = threading.Lock()
+_RETAINED_OWNERS_LOCK = threading.RLock()
 
 
 def _retain_owner(owner: RetryableOwner) -> None:
-    if owner.closed:
-        return
     with _RETAINED_OWNERS_LOCK:
+        if owner.closed:
+            return
         if not any(retained is owner for retained in _RETAINED_OWNERS):
             _RETAINED_OWNERS.append(owner)
 
@@ -60,21 +62,19 @@ def retry_retained_owners() -> None:
     """Retry every failed close before another protected Windows operation."""
     with _RETAINED_OWNERS_LOCK:
         retained = tuple(_RETAINED_OWNERS)
-        _RETAINED_OWNERS.clear()
-    first_error: OSError | None = None
-    for owner in retained:
-        if owner.closed:
-            continue
-        try:
-            owner.close()
-        except OSError as exc:
-            _retain_owner(owner)
-            if first_error is None:
-                first_error = exc
-    with _RETAINED_OWNERS_LOCK:
+        first_error: OSError | None = None
+        for owner in retained:
+            if owner.closed:
+                _release_owner(owner)
+                continue
+            try:
+                owner.retry_close()
+            except OSError as exc:
+                if first_error is None:
+                    first_error = exc
         incomplete = bool(_RETAINED_OWNERS)
-    if incomplete:
-        raise OSError("previous Windows owner cleanup remains incomplete") from first_error
+        if incomplete:
+            raise OSError("previous Windows owner cleanup remains incomplete") from first_error
 
 
 def require_windows() -> None:
@@ -151,97 +151,155 @@ def transfer_handle_to_crt_descriptor(
     return owner
 
 
-class OwnedCrtDescriptor:
-    """A CRT descriptor owner that remains retryable when close itself fails."""
+_OWNER_OPEN = 0
+_OWNER_CLOSING = 1
+_OWNER_CLOSE_FAILED = 2
+_OWNER_CLOSED = 3
 
-    __slots__ = ("_closer", "_value")
+
+class _OwnedValueState:
+    """Serialize one resource value and distinguish close from explicit retry."""
+
+    __slots__ = (
+        "_close_error",
+        "_close_started_message",
+        "_closer",
+        "_invalid_value",
+        "_lock",
+        "_moved_message",
+        "_status",
+        "_value",
+    )
+
+    def __init__(
+        self,
+        value: int,
+        *,
+        invalid_value: int,
+        closer: Callable[[int], None],
+        moved_message: str,
+        close_started_message: str,
+    ) -> None:
+        self._value = value
+        self._invalid_value = invalid_value
+        self._closer = closer
+        self._moved_message = moved_message
+        self._close_started_message = close_started_message
+        self._lock = threading.Lock()
+        self._status = _OWNER_OPEN
+        self._close_error: BaseException | None = None
+
+    @property
+    def value(self) -> int:
+        with self._lock:
+            if self._status == _OWNER_CLOSED:
+                raise OSError(self._moved_message)
+            return self._value
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._status == _OWNER_CLOSED
+
+    def detach(self) -> int:
+        with self._lock:
+            if self._status == _OWNER_CLOSED:
+                raise OSError(self._moved_message)
+            if self._status != _OWNER_OPEN:
+                raise OSError(self._close_started_message)
+            value = self._value
+            self._value = self._invalid_value
+            self._status = _OWNER_CLOSED
+            return value
+
+    def close(self, *, retry: bool) -> None:
+        with self._lock:
+            if self._status == _OWNER_CLOSED:
+                return
+            if self._status == _OWNER_CLOSE_FAILED and not retry:
+                assert self._close_error is not None
+                raise self._close_error
+            self._status = _OWNER_CLOSING
+            try:
+                self._closer(self._value)
+            except BaseException as exc:
+                self._close_error = exc
+                self._status = _OWNER_CLOSE_FAILED
+                raise
+            self._value = self._invalid_value
+            self._close_error = None
+            self._status = _OWNER_CLOSED
+
+
+class _OwnedResource:
+    __slots__ = ("_state",)
+
+    def __init__(self, state: _OwnedValueState) -> None:
+        self._state = state
+
+    @property
+    def value(self) -> int:
+        return self._state.value
+
+    @property
+    def closed(self) -> bool:
+        return self._state.closed
+
+    def detach(self) -> int:
+        value = self._state.detach()
+        _release_owner(self)
+        return value
+
+    def close(self) -> None:
+        self._state.close(retry=False)
+        _release_owner(self)
+
+    def retry_close(self) -> None:
+        self._state.close(retry=True)
+        _release_owner(self)
+
+    def __enter__(self) -> Self:
+        _ = self.value
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        close_owned_resources((self,))
+
+
+class OwnedCrtDescriptor(_OwnedResource):
+    """A CRT descriptor owner that remains retryable when close itself fails."""
 
     def __init__(self, value: int, *, closer: Callable[[int], None] | None = None) -> None:
         if value < 0:
             raise ValueError("owned CRT descriptor must be non-negative")
-        self._value = value
-        self._closer = os.close if closer is None else closer
-
-    @property
-    def value(self) -> int:
-        if self._value < 0:
-            raise OSError("CRT descriptor ownership has already moved or closed")
-        return self._value
-
-    @property
-    def closed(self) -> bool:
-        return self._value < 0
-
-    def detach(self) -> int:
-        value = self.value
-        self._value = -1
-        _release_owner(self)
-        return value
-
-    def close(self) -> None:
-        if self._value < 0:
-            return
-        value = self._value
-        self._closer(value)
-        self._value = -1
-        _release_owner(self)
-
-    def __enter__(self) -> Self:
-        _ = self.value
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        close_owned_resources((self,))
+        super().__init__(
+            _OwnedValueState(
+                value,
+                invalid_value=-1,
+                closer=os.close if closer is None else closer,
+                moved_message="CRT descriptor ownership has already moved or closed",
+                close_started_message="CRT descriptor close has already started",
+            )
+        )
 
 
-class OwnedHandle:
+class OwnedHandle(_OwnedResource):
     """A move-only-by-convention native handle with deterministic close semantics."""
-
-    __slots__ = ("_closer", "_value")
 
     def __init__(self, value: int, *, closer: Callable[[int], None] = close_win32_handle) -> None:
         if value == 0:
             raise ValueError("owned handle must be non-zero")
-        self._value = value
-        self._closer = closer
-
-    @property
-    def value(self) -> int:
-        if self._value == 0:
-            raise OSError("native handle ownership has already moved or closed")
-        return self._value
-
-    @property
-    def closed(self) -> bool:
-        return self._value == 0
-
-    def detach(self) -> int:
-        value = self.value
-        self._value = 0
-        _release_owner(self)
-        return value
-
-    def close(self) -> None:
-        if self._value == 0:
-            return
-        value = self._value
-        self._closer(value)
-        self._value = 0
-        _release_owner(self)
-
-    def __enter__(self) -> Self:
-        _ = self.value
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        close_owned_resources((self,))
+        super().__init__(
+            _OwnedValueState(
+                value,
+                invalid_value=0,
+                closer=closer,
+                moved_message="native handle ownership has already moved or closed",
+                close_started_message="native handle close has already started",
+            )
+        )

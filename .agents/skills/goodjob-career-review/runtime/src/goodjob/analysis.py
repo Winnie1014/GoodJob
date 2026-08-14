@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -37,7 +36,7 @@ from goodjob.preparation import (
     score_project_assessments,
 )
 from goodjob.review import ReviewService
-from goodjob.source_io import open_regular_file, read_open_file
+from goodjob.source_io import close_file_descriptor, open_regular_file, read_open_file
 
 ANALYSIS_COMMIT_VERSION = "analysis-commit-v1"
 MAX_EVIDENCE_DRAFTS = 400
@@ -1925,7 +1924,7 @@ class AnalysisService:
             try:
                 content = read_open_file(file_fd)
             finally:
-                os.close(file_fd)
+                close_file_descriptor(file_fd)
         except OSError:
             return None
         if not hmac.compare_digest(hashlib.sha256(content).hexdigest(), expected_sha256):

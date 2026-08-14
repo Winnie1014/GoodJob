@@ -8,7 +8,26 @@ import stat
 import sys
 from pathlib import Path, PurePosixPath
 
+from goodjob.platform.handles_windows import OwnedCrtDescriptor, close_owned_resources
+
 MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
+
+type FileDescriptor = int | OwnedCrtDescriptor
+
+
+def file_descriptor_value(file_fd: FileDescriptor) -> int:
+    """Borrow the integer descriptor without moving its ownership."""
+    if isinstance(file_fd, OwnedCrtDescriptor):
+        return file_fd.value
+    return file_fd
+
+
+def close_file_descriptor(file_fd: FileDescriptor) -> None:
+    """Close a platform descriptor while retaining failed Windows owners."""
+    if isinstance(file_fd, OwnedCrtDescriptor):
+        close_owned_resources((file_fd,))
+        return
+    os.close(file_fd)
 
 
 def _regular_file_flags() -> int:
@@ -23,7 +42,7 @@ def _require_regular_file(file_fd: int) -> os.stat_result:
     return file_stat
 
 
-def open_regular_file(root: Path, relative_path: str) -> tuple[int, os.stat_result]:
+def open_regular_file(root: Path, relative_path: str) -> tuple[FileDescriptor, os.stat_result]:
     """Open a regular file below root without following any path component symlink."""
     if sys.platform == "win32":
         from goodjob.platform.fs_windows import open_regular_file as open_windows_regular_file
@@ -47,7 +66,7 @@ def open_regular_file(root: Path, relative_path: str) -> tuple[int, os.stat_resu
         os.close(directory_fd)
 
 
-def open_absolute_regular_file(path: Path) -> tuple[int, os.stat_result]:
+def open_absolute_regular_file(path: Path) -> tuple[FileDescriptor, os.stat_result]:
     """Open one canonical absolute file without following a replaced path component."""
     if sys.platform == "win32":
         from goodjob.platform.fs_windows import (
@@ -74,12 +93,12 @@ def open_absolute_regular_file(path: Path) -> tuple[int, os.stat_result]:
         os.close(directory_fd)
 
 
-def read_open_file(file_fd: int, *, maximum_bytes: int = MAX_SOURCE_FILE_BYTES) -> bytes:
+def read_open_file(file_fd: FileDescriptor, *, maximum_bytes: int = MAX_SOURCE_FILE_BYTES) -> bytes:
     """Read an already-open file with a hard byte ceiling."""
     chunks: list[bytes] = []
     total = 0
     while True:
-        chunk = os.read(file_fd, 1024 * 1024)
+        chunk = os.read(file_descriptor_value(file_fd), 1024 * 1024)
         if not chunk:
             return b"".join(chunks)
         total += len(chunk)
@@ -94,5 +113,5 @@ def hash_regular_file(root: Path, relative_path: str) -> tuple[str, int]:
     try:
         content = read_open_file(file_fd)
     finally:
-        os.close(file_fd)
+        close_file_descriptor(file_fd)
     return hashlib.sha256(content).hexdigest(), file_stat.st_size

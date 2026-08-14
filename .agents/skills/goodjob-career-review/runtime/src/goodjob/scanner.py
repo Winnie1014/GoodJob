@@ -48,6 +48,7 @@ from goodjob.git_metadata import (
 from goodjob.platform.detect import resolve_git_executable
 from goodjob.platform.fs_windows import WindowsDirectory
 from goodjob.process_identity import owner_process_stopped, process_identity
+from goodjob.source_io import close_file_descriptor
 
 HISTORY_WINDOW_DAYS = _git_metadata.HISTORY_WINDOW_DAYS
 MAX_HISTORY_METADATA_BYTES = _git_metadata.MAX_HISTORY_METADATA_BYTES
@@ -464,7 +465,7 @@ class IgnoreMatcher:
                 try:
                     text = _read_open_file(file_fd).decode("utf-8")
                 finally:
-                    os.close(file_fd)
+                    close_file_descriptor(file_fd)
             except (OSError, UnicodeError):
                 issues.append(
                     _issue(
@@ -1880,7 +1881,7 @@ class WorkspaceScanner:
                 )
                 continue
             finally:
-                os.close(file_fd)
+                close_file_descriptor(file_fd)
             content_sha256 = hashlib.sha256(content).hexdigest()
             cache_key = (
                 content_sha256,

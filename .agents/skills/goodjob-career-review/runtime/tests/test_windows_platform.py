@@ -79,7 +79,7 @@ def test_owned_windows_handle_retains_ownership_when_close_fails() -> None:
 
     assert not handle.closed
     assert handle.value == 91
-    handle.close()
+    handle.retry_close()
     assert handle.closed
     assert attempts == [91, 91]
 
@@ -809,6 +809,7 @@ def test_windows_directory_retains_each_handle_when_close_fails() -> None:
     assert directory._directory is directory_handle
     assert directory._owns_root
 
+    handles_windows.retry_retained_owners()
     directory.close()
     assert directory_handle.closed
     assert root_handle.closed

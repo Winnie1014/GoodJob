@@ -14,6 +14,7 @@ from typing import Any, Self
 
 from goodjob.errors import InvalidInputError
 from goodjob.platform.handles_windows import (
+    OwnedCrtDescriptor,
     OwnedHandle,
     close_owned_resources,
     last_error,
@@ -779,7 +780,7 @@ def directory_identity(path: Path) -> tuple[int, int]:
         return identity.volume_serial, int.from_bytes(identity.file_id, "little")
 
 
-def open_regular_file(root: Path, relative: str) -> tuple[int, os.stat_result]:
+def open_regular_file(root: Path, relative: str) -> tuple[OwnedCrtDescriptor, os.stat_result]:
     descriptor = None
     file_stat: os.stat_result
     try:
@@ -792,10 +793,10 @@ def open_regular_file(root: Path, relative: str) -> tuple[int, os.stat_result]:
             close_owned_resources((descriptor,), cause=primary_error)
         raise
     assert descriptor is not None
-    return descriptor.detach(), file_stat
+    return descriptor, file_stat
 
 
-def open_absolute_regular_file(path: Path) -> tuple[int, os.stat_result]:
+def open_absolute_regular_file(path: Path) -> tuple[OwnedCrtDescriptor, os.stat_result]:
     if not path.is_absolute() or not path.name:
         raise OSError("absolute Windows file path is required")
     return open_regular_file(path.parent, path.name)
@@ -807,15 +808,18 @@ def read_regular(root: Path, relative: str, *, maximum_bytes: int = MAX_READ_BYT
     total = 0
     try:
         while True:
-            chunk = os.read(descriptor, min(64 * 1024, maximum_bytes + 1 - total))
+            chunk = os.read(descriptor.value, min(64 * 1024, maximum_bytes + 1 - total))
             if not chunk:
-                return b"".join(chunks)
+                break
             total += len(chunk)
             if total > maximum_bytes:
                 raise OSError("Windows file exceeded its bounded read limit")
             chunks.append(chunk)
-    finally:
-        os.close(descriptor)
+    except BaseException as primary_error:
+        close_owned_resources((descriptor,), cause=primary_error)
+        raise
+    close_owned_resources((descriptor,))
+    return b"".join(chunks)
 
 
 def _read_handle_bounded(handle: int, *, maximum_bytes: int) -> bytes:
