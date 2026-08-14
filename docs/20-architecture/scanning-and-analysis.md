@@ -196,7 +196,7 @@ host agent 按以下顺序工作：
 | `SCAN-10` | 无权限目录、损坏仓库和超限/解析失败文件 | 其余可用项目的快照、结构化 ScanIssue 与覆盖影响 | 有可用快照时为 `partial`；没有可用快照时为 `failed` | `FR-15`、`NFR-05` |
 | `SCAN-11` | 文件名、manifest、文档或 Git 标题含 shell 元字符、提示注入或 HTML/脚本文本 | 内容仅作为证据数据与安全短摘要，项目代码和指令均不执行 | 解析失败形成 ScanIssue；不得改变授权、运行命令、访问网络或扩大写入范围 | `NFR-01`、`NFR-08` |
 | `SCAN-12` | 合法根外 linked worktree、分别拒绝 relation-probe/metadata 回执、伪造 `.git` 指针、回指不匹配和确认后路径替换 | 合法场景经两阶段精确回执后只读取绑定/HEAD/ref/index 元数据并记录字段；无效场景不越过对应阶段 | 未授权、路径逃逸、关系不匹配或外部历史请求均形成 ScanIssue/知识缺口；probe 阶段不得读取业务 Git 元数据，任何阶段不得持久化未授权目标派生数据 | `FR-03`、`FR-15`、`NFR-01`、`NFR-08` |
-| `SCAN-13` | Windows NTFS root；绝对/drive/UNC/device/空/`.`/`..`/分隔符/ADS 名称；junction/symlink/reparse；大小写别名；跨卷；在 open/rename/delete 每阶段并发替换 parent | 所有授权从 root/parent handle + volume/file identity 导出；合法对象由同一 handle 读写/rename/delete；根外哨兵始终未读/未写/未删 | 非 NTFS/未知原子语义、任何非法组件、reparse、身份/volume 变化和关闭竞态均 fail-closed；不得调用 pathname 降级；mock 只能补充，真机正负证据由 IMP-31 聚合 | `FR-18`、`NFR-01`、`NFR-11` |
+| `SCAN-13` | Windows NTFS root；绝对/drive/UNC/device/空/`.`/`..`/分隔符/ADS/超长组件名称；junction/symlink/reparse；大小写别名；跨卷；在 open/rename/delete 每阶段并发替换 parent | 所有授权从 root/parent handle + volume/file identity 导出；合法对象由同一 handle 读写/rename/delete；超长组件有边界值阳性对照，且每个拒绝/并发用例均证明根外哨兵未读/未写/未删 | 非 NTFS/未知原子语义、任何非法或超过后端明示长度上限的组件、reparse、身份/volume 变化和关闭竞态均 fail-closed；不得调用 pathname 降级；mock 只能补充，真机正负证据由 IMP-31 聚合 | `FR-18`、`NFR-01`、`NFR-11` |
 
 ## 9. 非首版边界
 

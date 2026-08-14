@@ -90,7 +90,7 @@ stdout/stderr 使用 reader threads、有界 `queue.Queue` 和一个对 pipe、q
 
 ## 与 ADR-0006、ADR-0009 的关系
 
-本 ADR 接受后，ADR-0006 的授权确认、SessionCapability digest、跨 task 失效和最小持久化语义继续有效；仅其决策 3 的传输机制按平台分化：POSIX 继续使用专用 stdin/inherited FD，原生 Windows 使用本 ADR 的 allowlisted inherited HANDLE。ADR-0009 继续权威定义 macOS Seatbelt、Linux/WSL2 bwrap、POSIX capability FD 和进程身份；其“原生 Windows 留待 Phase 3”范围声明届时由本 ADR 的 Windows 合同替代。三平台追求相同安全结果，但机制不强求同构：
+本 ADR 接受后，ADR-0006 的授权确认、SessionCapability digest、跨 task 失效和最小持久化语义继续有效；仅其决策 3 的传输机制按平台分化：POSIX 继续使用专用 stdin/inherited FD，原生 Windows 使用本 ADR 的 allowlisted inherited HANDLE。ADR-0009 继续权威定义 macOS Seatbelt、Linux/WSL2 bwrap 和进程身份；其“原生 Windows 留待 Phase 3”范围声明届时由本 ADR 的 Windows 合同替代。三平台追求相同安全结果，但机制不强求同构：
 
 | 边界 | macOS/Linux/WSL2 | 原生 Windows |
 | --- | --- | --- |
@@ -119,4 +119,4 @@ stdout/stderr 使用 reader threads、有界 `queue.Queue` 和一个对 pipe、q
 
 ## 验证
 
-原生 Windows 准入以 [IMP-31](../../40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 为唯一聚合验收项。它必须覆盖 WFP 权限/BFE 故障、IPv4/IPv6 TCP/UDP/DNS、真实 Git 阳性/负向、NTFS/reparse/别名/ADS/UNC/跨卷、open/rename/delete 并发换父目录、关闭竞态、bounded-output 总预算、capability 隔离、handle 泄漏和异常逆序清理；每个安全边界同时有真机阳性与负向证据。
+原生 Windows 准入以 [IMP-31](../../40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 为唯一聚合验收项。它必须覆盖 WFP 权限/BFE 故障、IPv4/IPv6 TCP/UDP/DNS、真实 Git 阳性/负向、NTFS/reparse/别名/ADS/UNC/跨卷/超长组件、open/rename/delete 并发换父目录、关闭竞态、bounded-output 总预算、capability 隔离、handle 泄漏和异常逆序清理；每个安全边界同时有真机阳性与负向证据，每个 FS 拒绝或并发对抗用例都必须断言根外哨兵未读、未写、未删。
