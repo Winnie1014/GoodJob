@@ -15,8 +15,10 @@ from typing import Any, Self
 from goodjob.errors import InvalidInputError
 from goodjob.platform.handles_windows import (
     OwnedHandle,
+    close_owned_resources,
     last_error,
     load_windows_dll,
+    retry_retained_owners,
     transfer_handle_to_crt_descriptor,
     write_all_handle,
 )
@@ -384,6 +386,7 @@ def _open_relative(
     directory: bool | None,
     reject_reparse: bool = True,
 ) -> OwnedHandle:
+    retry_retained_owners()
     name = validate_component(component)
     name_buffer = ctypes.create_unicode_buffer(name)
     encoded_length = len(name.encode("utf-16-le"))
@@ -432,8 +435,8 @@ def _open_relative(
         if disposition == FILE_OPEN and _exact_final_component(handle.value) != name:
             raise OSError("Windows path component differs by a case alias")
         return handle
-    except BaseException:
-        handle.close()
+    except BaseException as primary_error:
+        close_owned_resources((handle,), cause=primary_error)
         raise
 
 
@@ -454,6 +457,7 @@ class WindowsRoot:
         from goodjob.platform.detect import require_released_runtime
 
         require_released_runtime()
+        retry_retained_owners()
         if not path.is_absolute():
             raise OSError("Windows authorized root must be absolute")
         raw_path = str(path)
@@ -501,12 +505,12 @@ class WindowsRoot:
             if length == 0 or length >= capacity:
                 raise OSError(last_error(), "GetFinalPathNameByHandleW")
             return cls(path, handle, display.value, _identity(handle.value))
-        except BaseException:
-            handle.close()
+        except BaseException as primary_error:
+            close_owned_resources((handle,), cause=primary_error)
             raise
 
     def close(self) -> None:
-        self.handle.close()
+        close_owned_resources((self.handle,))
 
     def __enter__(self) -> Self:
         return self
@@ -525,16 +529,20 @@ class WindowsRoot:
                     current_value, part, access=FILE_LIST_DIRECTORY, directory=True
                 )
                 if owned is not None:
-                    owned.close()
+                    try:
+                        close_owned_resources((owned,))
+                    except BaseException as primary_error:
+                        close_owned_resources((next_handle,), cause=primary_error)
+                        raise
                 owned = next_handle
                 current_value = next_handle.value
             assert owned is not None
             if _identity(owned.value).volume_serial != self.identity.volume_serial:
                 raise OSError("Windows child directory crossed the authorized volume")
             return owned
-        except BaseException:
+        except BaseException as primary_error:
             if owned is not None:
-                owned.close()
+                close_owned_resources((owned,), cause=primary_error)
             raise
 
     @contextmanager
@@ -550,7 +558,7 @@ class WindowsRoot:
                 yield parent.value, parts[-1], parent
         finally:
             if parent is not None:
-                parent.close()
+                close_owned_resources((parent,))
 
 
 _ACTIVE_AUTHORIZED_ROOT: ContextVar[WindowsRoot | None] = ContextVar(
@@ -617,6 +625,7 @@ class WindowsDirectory:
 
     @classmethod
     def open(cls, root_path: Path, relative: str = ".") -> WindowsDirectory:
+        retry_retained_owners()
         active = _active_root_prefix(root_path)
         owns_root = active is None
         if active is None:
@@ -628,30 +637,17 @@ class WindowsDirectory:
             parts = (*prefix, *relative_components(relative, allow_root=True))
             directory = root.open_directory(parts) if parts else None
             return cls(root, directory, owns_root=owns_root)
-        except BaseException:
+        except BaseException as primary_error:
             if owns_root:
-                root.close()
+                close_owned_resources((root.handle,), cause=primary_error)
             raise
 
     def close(self) -> None:
-        first_error: OSError | None = None
-        if self._directory is not None:
-            try:
-                self._directory.close()
-            except OSError as exc:
-                first_error = exc
-            else:
-                self._directory = None
-        if self._owns_root:
-            try:
-                self._root.close()
-            except OSError as exc:
-                if first_error is None:
-                    first_error = exc
-            else:
-                self._owns_root = False
-        if first_error is not None:
-            raise first_error
+        close_owned_resources((self._directory, self._root.handle if self._owns_root else None))
+        if self._directory is not None and self._directory.closed:
+            self._directory = None
+        if self._owns_root and self._root.handle.closed:
+            self._owns_root = False
 
     def __enter__(self) -> Self:
         _ = self.value
@@ -671,10 +667,16 @@ class WindowsDirectory:
                 )
                 parents.append(parent)
                 current = parent.value
-            return _open_relative(current, parts[-1], access=FILE_READ_DATA, directory=False)
-        finally:
-            for parent in reversed(parents):
-                parent.close()
+            result = _open_relative(current, parts[-1], access=FILE_READ_DATA, directory=False)
+        except BaseException as primary_error:
+            close_owned_resources(reversed(parents), cause=primary_error)
+            raise
+        try:
+            close_owned_resources(reversed(parents))
+        except BaseException as cleanup_error:
+            close_owned_resources((result,), cause=cleanup_error)
+            raise
+        return result
 
     def stat(self, component: str) -> os.stat_result:
         with _open_relative(
@@ -778,10 +780,19 @@ def directory_identity(path: Path) -> tuple[int, int]:
 
 
 def open_regular_file(root: Path, relative: str) -> tuple[int, os.stat_result]:
-    with WindowsDirectory.open(root) as directory:
-        handle = directory.open_regular(relative)
-        descriptor = transfer_handle_to_crt_descriptor(handle, os.O_RDONLY)
-        return descriptor, os.fstat(descriptor)
+    descriptor = None
+    file_stat: os.stat_result
+    try:
+        with WindowsDirectory.open(root) as directory:
+            handle = directory.open_regular(relative)
+            descriptor = transfer_handle_to_crt_descriptor(handle, os.O_RDONLY)
+            file_stat = os.fstat(descriptor.value)
+    except BaseException as primary_error:
+        if descriptor is not None:
+            close_owned_resources((descriptor,), cause=primary_error)
+        raise
+    assert descriptor is not None
+    return descriptor.detach(), file_stat
 
 
 def open_absolute_regular_file(path: Path) -> tuple[int, os.stat_result]:
@@ -1061,7 +1072,7 @@ class WindowsDataTree:
             except FileNotFoundError:
                 existing = None
             if existing is not None:
-                existing.close()
+                close_owned_resources((existing,))
                 raise InvalidInputError(f"{self._label} publication path already exists")
             temp = _open_relative(
                 temp_parent,

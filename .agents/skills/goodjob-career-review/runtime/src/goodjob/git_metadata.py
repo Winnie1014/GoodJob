@@ -20,7 +20,10 @@ from goodjob.errors import InvalidInputError
 from goodjob.platform import GitSandboxUnavailableError, select_git_sandbox
 from goodjob.platform.detect import Platform, detect_platform, sandbox_failure_reason
 from goodjob.platform.fs_windows import WindowsDirectory
-from goodjob.platform.handles_windows import transfer_handle_to_crt_descriptor
+from goodjob.platform.handles_windows import (
+    close_owned_resources,
+    transfer_handle_to_crt_descriptor,
+)
 from goodjob.source_io import MAX_SOURCE_FILE_BYTES, open_regular_file, read_open_file
 
 if TYPE_CHECKING:
@@ -142,7 +145,12 @@ def _open_regular_file_at(
     if isinstance(directory_fd, WindowsDirectory):
         handle = directory_fd.open_regular(relative_path)
         descriptor = transfer_handle_to_crt_descriptor(handle, os.O_RDONLY)
-        return descriptor, os.fstat(descriptor)
+        try:
+            file_stat = os.fstat(descriptor.value)
+        except BaseException as primary_error:
+            close_owned_resources((descriptor,), cause=primary_error)
+            raise
+        return descriptor.detach(), file_stat
     parts = PurePosixPath(relative_path).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise OSError("relative path is not safe to open")

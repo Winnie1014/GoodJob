@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import inspect
+import os
 import subprocess
 import sys
 import threading
@@ -31,9 +32,11 @@ from goodjob.platform.process_windows import FILETIME
 
 @pytest.fixture(autouse=True)
 def _isolate_windows_cleanup_registries() -> Any:
+    handles_windows._RETAINED_OWNERS.clear()
     launcher_windows._RETAINED_CLEANUP_GROUPS.clear()
     sandbox_windows._RETAINED_WFP_ENGINES.clear()
     yield
+    handles_windows._RETAINED_OWNERS.clear()
     launcher_windows._RETAINED_CLEANUP_GROUPS.clear()
     sandbox_windows._RETAINED_WFP_ENGINES.clear()
 
@@ -81,10 +84,63 @@ def test_owned_windows_handle_retains_ownership_when_close_fails() -> None:
     assert attempts == [91, 91]
 
 
+def test_windows_owner_cleanup_continues_and_retries_the_failed_owner() -> None:
+    attempts: list[int] = []
+    closed: list[int] = []
+
+    def fail_once(value: int) -> None:
+        attempts.append(value)
+        if len(attempts) == 1:
+            raise OSError("injected first owner close failure")
+        closed.append(value)
+
+    first = OwnedHandle(92, closer=fail_once)
+    second = OwnedHandle(93, closer=closed.append)
+
+    with pytest.raises(OSError, match="first owner close failure"):
+        handles_windows.close_owned_resources((first, second))
+
+    assert not first.closed
+    assert second.closed
+    assert closed == [93]
+    assert [first] == handles_windows._RETAINED_OWNERS
+
+    handles_windows.retry_retained_owners()
+    assert first.closed
+    assert handles_windows._RETAINED_OWNERS == []
+    assert closed == [93, 92]
+
+
 class _FailingMsvcrt:
     @staticmethod
     def open_osfhandle(_handle: int, _flags: int) -> int:
         raise OSError("injected CRT transfer failure")
+
+
+def test_crt_transfer_retains_handle_when_primary_and_close_both_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def fail_close_once(_value: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("injected original handle close failure")
+
+    owner = OwnedHandle(600, closer=fail_close_once)
+    monkeypatch.setitem(sys.modules, "msvcrt", _FailingMsvcrt)
+
+    with pytest.raises(OSError, match="original handle close failure") as failure:
+        handles_windows.transfer_handle_to_crt_descriptor(owner)
+
+    assert failure.value.__cause__ is not None
+    assert "CRT transfer failure" in str(failure.value.__cause__)
+    assert [owner] == handles_windows._RETAINED_OWNERS
+
+    handles_windows.retry_retained_owners()
+    assert owner.closed
+    assert attempts == 2
 
 
 def test_fs_crt_transfer_failure_closes_the_original_handle(
@@ -145,6 +201,188 @@ def test_capability_crt_transfer_failure_closes_the_original_handle(
         capability_windows.read_bytes_from_handle(603, maximum_bytes=10)
 
     assert closed == [603]
+
+
+def test_capability_retains_descriptor_when_final_close_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    reads = iter((b"secret", b""))
+
+    def fail_close_once(_value: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("injected capability descriptor close failure")
+
+    def transfer(owner: OwnedHandle, _flags: int) -> handles_windows.OwnedCrtDescriptor:
+        owner.detach()
+        return descriptor
+
+    descriptor = handles_windows.OwnedCrtDescriptor(706, closer=fail_close_once)
+    monkeypatch.setattr(
+        capability_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=lambda _value: None),
+    )
+    monkeypatch.setattr(capability_windows, "transfer_handle_to_crt_descriptor", transfer)
+    monkeypatch.setattr(os, "read", lambda _descriptor, _count: next(reads))
+
+    with pytest.raises(CapabilityError, match="close protected input"):
+        capability_windows.read_bytes_from_handle(606, maximum_bytes=10)
+
+    assert [descriptor] == handles_windows._RETAINED_OWNERS
+    handles_windows.retry_retained_owners()
+    assert descriptor.closed
+    assert attempts == 2
+
+
+def test_fs_fstat_failure_retains_descriptor_when_close_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = 0
+
+    class FakeDirectory:
+        def __enter__(self) -> FakeDirectory:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        @staticmethod
+        def open_regular(_relative: str) -> OwnedHandle:
+            return OwnedHandle(604, closer=lambda _value: None)
+
+    def fail_descriptor_close(_value: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("injected descriptor close failure")
+
+    descriptor = handles_windows.OwnedCrtDescriptor(704, closer=fail_descriptor_close)
+    monkeypatch.setattr(fs_windows.WindowsDirectory, "open", lambda *_args: FakeDirectory())
+    monkeypatch.setattr(fs_windows, "transfer_handle_to_crt_descriptor", lambda *_args: descriptor)
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("injected fstat failure")),
+    )
+
+    with pytest.raises(OSError, match="descriptor close failure") as failure:
+        fs_windows.open_regular_file(tmp_path, "source.py")
+
+    assert failure.value.__cause__ is not None
+    assert "fstat failure" in str(failure.value.__cause__)
+    assert [descriptor] == handles_windows._RETAINED_OWNERS
+
+    handles_windows.retry_retained_owners()
+    assert descriptor.closed
+    assert attempts == 2
+
+
+def test_open_regular_retains_parent_and_result_when_delivery_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: dict[int, int] = {}
+
+    def fail_once(value: int) -> None:
+        attempts[value] = attempts.get(value, 0) + 1
+        if attempts[value] == 1:
+            raise OSError(f"injected close failure for {value}")
+
+    root = fs_windows.WindowsRoot(
+        Path("/authorized-workspace"),
+        OwnedHandle(710, closer=lambda _value: None),
+        r"\\?\C:\authorized-workspace",
+        fs_windows.WindowsFileIdentity(17, b"root".ljust(16, b"\0")),
+    )
+    directory = fs_windows.WindowsDirectory(
+        root, OwnedHandle(711, closer=lambda _value: None), owns_root=False
+    )
+    parent = OwnedHandle(712, closer=fail_once)
+    result = OwnedHandle(713, closer=fail_once)
+    opened = iter((parent, result))
+    monkeypatch.setattr(fs_windows, "_open_relative", lambda *_args, **_kwargs: next(opened))
+
+    with pytest.raises(OSError, match="close failure for 713") as failure:
+        directory.open_regular("nested/source.py")
+
+    assert failure.value.__cause__ is not None
+    assert "close failure for 712" in str(failure.value.__cause__)
+    assert [parent, result] == handles_windows._RETAINED_OWNERS
+
+    handles_windows.retry_retained_owners()
+    assert parent.closed
+    assert result.closed
+    assert attempts == {712: 2, 713: 2}
+
+
+def test_open_regular_file_retains_descriptor_when_directory_exit_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts: dict[int, int] = {}
+
+    def fail_once(value: int) -> None:
+        attempts[value] = attempts.get(value, 0) + 1
+        if attempts[value] == 1:
+            raise OSError(f"injected close failure for {value}")
+
+    directory_owner = OwnedHandle(714, closer=fail_once)
+    descriptor = handles_windows.OwnedCrtDescriptor(715, closer=fail_once)
+
+    class FakeDirectory:
+        def __enter__(self) -> FakeDirectory:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            handles_windows.close_owned_resources((directory_owner,))
+
+        @staticmethod
+        def open_regular(_relative: str) -> OwnedHandle:
+            return OwnedHandle(716, closer=lambda _value: None)
+
+    monkeypatch.setattr(fs_windows.WindowsDirectory, "open", lambda *_args: FakeDirectory())
+    monkeypatch.setattr(fs_windows, "transfer_handle_to_crt_descriptor", lambda *_args: descriptor)
+    monkeypatch.setattr(os, "fstat", lambda _descriptor: os.stat_result((0,) * 10))
+
+    with pytest.raises(OSError, match="close failure for 715") as failure:
+        fs_windows.open_regular_file(tmp_path, "source.py")
+
+    assert failure.value.__cause__ is not None
+    assert "close failure for 714" in str(failure.value.__cause__)
+    assert [directory_owner, descriptor] == handles_windows._RETAINED_OWNERS
+
+    handles_windows.retry_retained_owners()
+    assert directory_owner.closed
+    assert descriptor.closed
+    assert attempts == {714: 2, 715: 2}
+
+
+def test_git_fstat_failure_closes_descriptor_before_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[int] = []
+    directory = object.__new__(fs_windows.WindowsDirectory)
+    descriptor = handles_windows.OwnedCrtDescriptor(705, closer=closed.append)
+    monkeypatch.setattr(
+        directory,
+        "open_regular",
+        lambda _relative: OwnedHandle(605, closer=lambda _value: None),
+    )
+    monkeypatch.setattr(
+        git_metadata, "transfer_handle_to_crt_descriptor", lambda *_args: descriptor
+    )
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("injected git fstat failure")),
+    )
+
+    with pytest.raises(OSError, match="git fstat failure"):
+        git_metadata._open_regular_file_at(directory, "source.py")
+
+    assert descriptor.closed
+    assert closed == [705]
 
 
 def test_windows_write_all_handle_retries_partial_writes(
@@ -619,6 +857,184 @@ def test_windows_scan_scope_reuses_one_absolute_root_handle(
     assert relative_opens == [("nested-project", "src")]
 
 
+class _CreatePipeCall:
+    argtypes: object
+    restype: object
+
+    def __init__(self, read_value: int, write_value: int) -> None:
+        self.read_value = read_value
+        self.write_value = write_value
+
+    def __call__(self, read: Any, write: Any, _attributes: Any, _size: int) -> int:
+        ctypes.cast(read, ctypes.POINTER(ctypes.c_void_p))[0] = self.read_value
+        ctypes.cast(write, ctypes.POINTER(ctypes.c_void_p))[0] = self.write_value
+        return 1
+
+
+class _FailSetHandleInformationCall:
+    argtypes: object
+    restype: object
+
+    def __call__(self, _handle: Any, _mask: int, _flags: int) -> int:
+        return 0
+
+
+class _PartialPipeApi:
+    def __init__(self, read_value: int, write_value: int) -> None:
+        self.CreatePipe = _CreatePipeCall(read_value, write_value)
+        self.SetHandleInformation = _FailSetHandleInformationCall()
+
+
+def test_output_pipe_partial_construction_closes_remaining_owner_after_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: dict[int, int] = {}
+    closed: list[int] = []
+
+    def close(value: int) -> None:
+        attempts[value] = attempts.get(value, 0) + 1
+        if value == 902 and attempts[value] == 1:
+            raise OSError("injected output write close failure")
+        closed.append(value)
+
+    monkeypatch.setattr(
+        launcher_windows, "OwnedHandle", lambda value: OwnedHandle(value, closer=close)
+    )
+
+    with pytest.raises(OSError, match="output write close failure") as failure:
+        launcher_windows._create_output_pipe(_PartialPipeApi(901, 902))
+
+    assert failure.value.__cause__ is not None
+    assert "SetHandleInformation" in str(failure.value.__cause__)
+    assert closed == [901]
+    assert len(handles_windows._RETAINED_OWNERS) == 1
+
+    handles_windows.retry_retained_owners()
+    assert closed == [901, 902]
+
+
+def test_output_pipe_invalid_pair_closes_the_valid_raw_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[int] = []
+    monkeypatch.setattr(
+        launcher_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=closed.append),
+    )
+
+    with pytest.raises(OSError, match="invalid handle pair"):
+        launcher_windows._create_output_pipe(_PartialPipeApi(0, 906))
+
+    assert closed == [906]
+
+
+def test_job_partial_construction_retains_owner_when_configuration_and_close_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    class FakeJobApi:
+        @staticmethod
+        def CreateJobObjectW(_attributes: Any, _name: Any) -> int:
+            return 907
+
+        @staticmethod
+        def SetInformationJobObject(*_args: Any) -> int:
+            return 0
+
+    def fail_close_once(_value: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("injected Job close failure")
+
+    monkeypatch.setattr(
+        launcher_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=fail_close_once),
+    )
+
+    with pytest.raises(OSError, match="Job close failure") as failure:
+        launcher_windows._create_job(FakeJobApi(), 1)
+
+    assert failure.value.__cause__ is not None
+    assert "SetInformationJobObject" in str(failure.value.__cause__)
+    assert len(handles_windows._RETAINED_OWNERS) == 1
+
+    handles_windows.retry_retained_owners()
+    assert attempts == 2
+
+
+def test_transfer_pipe_partial_construction_closes_remaining_owner_after_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: dict[int, int] = {}
+    closed: list[int] = []
+
+    def close(value: int) -> None:
+        attempts[value] = attempts.get(value, 0) + 1
+        if value == 904 and attempts[value] == 1:
+            raise OSError("injected transfer write close failure")
+        closed.append(value)
+
+    monkeypatch.setattr(
+        capability_windows, "load_windows_dll", lambda _name: _PartialPipeApi(903, 904)
+    )
+    monkeypatch.setattr(
+        capability_windows, "OwnedHandle", lambda value: OwnedHandle(value, closer=close)
+    )
+
+    with pytest.raises(OSError, match="transfer write close failure") as failure:
+        WindowsTransferPipe.create()
+
+    assert failure.value.__cause__ is not None
+    assert "SetHandleInformation" in str(failure.value.__cause__)
+    assert closed == [903]
+    assert len(handles_windows._RETAINED_OWNERS) == 1
+
+    handles_windows.retry_retained_owners()
+    assert closed == [903, 904]
+
+
+def test_nt_relative_open_retains_handle_when_validation_and_close_both_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    class FakeNtApi:
+        @staticmethod
+        def NtCreateFile(raw: Any, *_args: Any) -> int:
+            ctypes.cast(raw, ctypes.POINTER(ctypes.c_void_p))[0] = 905
+            return 0
+
+    def fail_close_once(_value: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("injected NT handle close failure")
+
+    monkeypatch.setattr(fs_windows, "_ntdll", lambda: FakeNtApi())
+    monkeypatch.setattr(
+        fs_windows,
+        "_attributes",
+        lambda _handle: (_ for _ in ()).throw(OSError("injected NT validation failure")),
+    )
+    monkeypatch.setattr(
+        fs_windows, "OwnedHandle", lambda value: OwnedHandle(value, closer=fail_close_once)
+    )
+
+    with pytest.raises(OSError, match="NT handle close failure") as failure:
+        fs_windows._open_relative(17, "source.py", access=1, directory=False)
+
+    assert failure.value.__cause__ is not None
+    assert "NT validation failure" in str(failure.value.__cause__)
+    assert len(handles_windows._RETAINED_OWNERS) == 1
+
+    handles_windows.retry_retained_owners()
+    assert attempts == 2
+
+
 class _FakeKernel32:
     def __init__(self, *, assign_ok: bool = True) -> None:
         self.assign_ok = assign_ok
@@ -992,11 +1408,65 @@ def test_direct_launcher_reports_job_closed_only_after_retry_succeeds(
         )
 
     assert "job_closed" not in events
-    assert guard.closed
+    assert not guard.closed
     assert len(launcher_windows._RETAINED_CLEANUP_GROUPS) == 1
+    assert handles_windows._RETAINED_OWNERS == []
     launcher_windows._retry_retained_cleanup_groups()
     assert launcher_windows._RETAINED_CLEANUP_GROUPS == []
     assert closed.count(200) == 1
+    assert guard.closed
+
+
+def test_direct_launcher_retries_helper_owner_before_closing_network_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeKernel32()
+    closed: list[int] = []
+    _configure_fake_launcher(monkeypatch, api, closed)
+    events: list[str] = []
+    guard = _FakeGuard(events)
+    attempts = 0
+
+    def close_helper(_value: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        events.append(f"helper_close_{attempts}")
+        if attempts < 3:
+            raise OSError("injected helper owner close failure")
+
+    helper_owner = OwnedHandle(908, closer=close_helper)
+
+    def fail_job(_api: Any, _limit: int | None) -> OwnedHandle:
+        configuration_error = OSError("injected helper configuration failure")
+        handles_windows.close_owned_resources((helper_owner,), cause=configuration_error)
+        raise AssertionError("helper cleanup unexpectedly succeeded")
+
+    monkeypatch.setattr(launcher_windows, "_create_job", fail_job)
+
+    with pytest.raises(OSError, match="helper owner close failure"):
+        launcher_windows.run_windows_process(
+            launcher_windows.WindowsLaunchRequest(
+                application=r"C:\Python312\python.exe",
+                arguments=("-c", "pass"),
+                cwd=r"C:\runtime",
+                environment={},
+                maximum_output_bytes=1024,
+                timeout_seconds=1.0,
+            ),
+            network_guard=guard,
+            observer=events.append,
+        )
+
+    assert attempts == 2
+    assert not guard.closed
+    assert [helper_owner] == handles_windows._RETAINED_OWNERS
+    assert len(launcher_windows._RETAINED_CLEANUP_GROUPS) == 1
+
+    launcher_windows._retry_retained_cleanup_groups()
+    assert handles_windows._RETAINED_OWNERS == []
+    assert launcher_windows._RETAINED_CLEANUP_GROUPS == []
+    assert guard.closed
+    assert events[-2:] == ["helper_close_3", "guard_close_called"]
 
 
 def test_direct_launcher_retains_pipe_owner_until_close_retry_succeeds(
@@ -1034,6 +1504,7 @@ def test_direct_launcher_retains_pipe_owner_until_close_retry_succeeds(
         )
 
     assert len(launcher_windows._RETAINED_CLEANUP_GROUPS) == 1
+    assert handles_windows._RETAINED_OWNERS == []
     launcher_windows._retry_retained_cleanup_groups()
     assert launcher_windows._RETAINED_CLEANUP_GROUPS == []
     assert closed.count(101) == 1

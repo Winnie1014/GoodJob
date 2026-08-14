@@ -8,9 +8,12 @@ from dataclasses import dataclass
 
 from goodjob.errors import CapabilityError
 from goodjob.platform.handles_windows import (
+    OwnedCrtDescriptor,
     OwnedHandle,
+    close_owned_resources,
     last_error,
     load_windows_dll,
+    retry_retained_owners,
     transfer_handle_to_crt_descriptor,
     write_all_handle,
 )
@@ -36,6 +39,7 @@ class WindowsTransferPipe:
 
     @classmethod
     def create(cls) -> WindowsTransferPipe:
+        retry_retained_owners()
         kernel32 = load_windows_dll("kernel32.dll")
         kernel32.CreatePipe.argtypes = [
             ctypes.POINTER(ctypes.c_void_p),
@@ -53,29 +57,27 @@ class WindowsTransferPipe:
             ctypes.byref(read_handle), ctypes.byref(write_handle), ctypes.byref(attributes), 0
         ):
             raise OSError(last_error(), "CreatePipe")
-        read = OwnedHandle(int(read_handle.value or 0))
-        write = OwnedHandle(int(write_handle.value or 0))
+        read_value = int(read_handle.value or 0)
+        write_value = int(write_handle.value or 0)
+        if read_value == 0 or write_value == 0:
+            owners = tuple(OwnedHandle(value) for value in (write_value, read_value) if value)
+            primary_error = OSError("CreatePipe returned an invalid handle pair")
+            close_owned_resources(owners, cause=primary_error)
+            raise primary_error
+        read = OwnedHandle(read_value)
+        write = OwnedHandle(write_value)
         try:
             if not kernel32.SetHandleInformation(
                 ctypes.c_void_p(write.value), HANDLE_FLAG_INHERIT, 0
             ):
                 raise OSError(last_error(), "SetHandleInformation")
             return cls(read, write)
-        except BaseException:
-            write.close()
-            read.close()
+        except BaseException as primary_error:
+            close_owned_resources((write, read), cause=primary_error)
             raise
 
     def close(self) -> None:
-        first_error: OSError | None = None
-        for handle in (self.parent_write, self.child_read):
-            try:
-                handle.close()
-            except OSError as exc:
-                if first_error is None:
-                    first_error = exc
-        if first_error is not None:
-            raise first_error
+        close_owned_resources((self.parent_write, self.child_read))
 
 
 def write_handle(handle: int, content: bytes) -> None:
@@ -84,8 +86,18 @@ def write_handle(handle: int, content: bytes) -> None:
     write_all_handle(handle, content, chunk_size=4096)
 
 
+def _close_descriptor(
+    descriptor: OwnedCrtDescriptor, *, cause: BaseException | None = None
+) -> None:
+    try:
+        close_owned_resources((descriptor,), cause=cause)
+    except OSError as cleanup_error:
+        raise CapabilityError("unable to close protected input handle") from cleanup_error
+
+
 def read_bytes_from_handle(handle: int, *, maximum_bytes: int) -> bytes:
     """Take ownership of a Win32 HANDLE by converting it to one CRT descriptor."""
+    retry_retained_owners()
     if handle <= 0:
         raise CapabilityError("protected input handle must be positive")
     owner = OwnedHandle(handle)
@@ -97,15 +109,22 @@ def read_bytes_from_handle(handle: int, *, maximum_bytes: int) -> bytes:
     total = 0
     try:
         while True:
-            chunk = os.read(descriptor, min(4096, maximum_bytes + 1 - total))
+            chunk = os.read(descriptor.value, min(4096, maximum_bytes + 1 - total))
             if not chunk:
                 break
             total += len(chunk)
             if total > maximum_bytes:
                 raise CapabilityError("protected input exceeded its bounded size")
             chunks.append(chunk)
-    except OSError as exc:
-        raise CapabilityError("unable to read protected input handle") from exc
-    finally:
-        os.close(descriptor)
+    except CapabilityError as primary_error:
+        _close_descriptor(descriptor, cause=primary_error)
+        raise
+    except OSError as primary_error:
+        public_error = CapabilityError("unable to read protected input handle")
+        _close_descriptor(descriptor, cause=primary_error)
+        raise public_error from primary_error
+    except BaseException as primary_error:
+        close_owned_resources((descriptor,), cause=primary_error)
+        raise
+    _close_descriptor(descriptor)
     return b"".join(chunks)

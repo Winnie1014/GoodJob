@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import ctypes
 
-from goodjob.platform.handles_windows import OwnedHandle, last_error, load_windows_dll
+from goodjob.platform.handles_windows import (
+    OwnedHandle,
+    close_owned_resources,
+    last_error,
+    load_windows_dll,
+    retry_retained_owners,
+)
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SYNCHRONIZE = 0x00100000
@@ -20,6 +26,7 @@ class FILETIME(ctypes.Structure):
 
 
 def _open_process(pid: int, access: int) -> OwnedHandle | None:
+    retry_retained_owners()
     if pid <= 0:
         return None
     kernel32 = load_windows_dll("kernel32.dll")
@@ -80,5 +87,5 @@ def process_exists(pid: int) -> bool:
         return True
     if process is None:
         return False
-    process.close()
+    close_owned_resources((process,))
     return True

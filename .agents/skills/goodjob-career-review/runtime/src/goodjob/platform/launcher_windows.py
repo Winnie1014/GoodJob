@@ -19,7 +19,13 @@ from goodjob.platform.capability_windows import (
     write_handle,
 )
 from goodjob.platform.detect import require_released_runtime
-from goodjob.platform.handles_windows import OwnedHandle, last_error, load_windows_dll
+from goodjob.platform.handles_windows import (
+    OwnedHandle,
+    close_owned_resources,
+    last_error,
+    load_windows_dll,
+    retry_retained_owners,
+)
 
 CREATE_SUSPENDED = 0x00000004
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
@@ -279,15 +285,21 @@ def _create_output_pipe(api: Any) -> tuple[OwnedHandle, OwnedHandle]:
         ctypes.byref(read_raw), ctypes.byref(write_raw), ctypes.byref(attributes), 0
     ):
         raise OSError(last_error(), "CreatePipe")
-    read_handle = OwnedHandle(int(read_raw.value or 0))
-    write_handle = OwnedHandle(int(write_raw.value or 0))
+    read_value = int(read_raw.value or 0)
+    write_value = int(write_raw.value or 0)
+    if read_value == 0 or write_value == 0:
+        owners = tuple(OwnedHandle(value) for value in (write_value, read_value) if value)
+        primary_error = OSError("CreatePipe returned an invalid handle pair")
+        close_owned_resources(owners, cause=primary_error)
+        raise primary_error
+    read_handle = OwnedHandle(read_value)
+    write_handle = OwnedHandle(write_value)
     try:
         if not api.SetHandleInformation(ctypes.c_void_p(read_handle.value), HANDLE_FLAG_INHERIT, 0):
             raise OSError(last_error(), "SetHandleInformation")
         return read_handle, write_handle
-    except BaseException:
-        write_handle.close()
-        read_handle.close()
+    except BaseException as primary_error:
+        close_owned_resources((write_handle, read_handle), cause=primary_error)
         raise
 
 
@@ -300,8 +312,9 @@ def _create_job(api: Any, active_process_limit: int | None) -> OwnedHandle:
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     if active_process_limit is not None:
         if active_process_limit <= 0:
-            job.close()
-            raise ValueError("active process limit must be positive")
+            limit_error = ValueError("active process limit must be positive")
+            close_owned_resources((job,), cause=limit_error)
+            raise limit_error
         limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS
         limits.BasicLimitInformation.ActiveProcessLimit = active_process_limit
     if not api.SetInformationJobObject(
@@ -310,9 +323,9 @@ def _create_job(api: Any, active_process_limit: int | None) -> OwnedHandle:
         ctypes.byref(limits),
         ctypes.sizeof(limits),
     ):
-        error = last_error()
-        job.close()
-        raise OSError(error, "SetInformationJobObject")
+        configuration_error = OSError(last_error(), "SetInformationJobObject")
+        close_owned_resources((job,), cause=configuration_error)
+        raise configuration_error
     return job
 
 
@@ -394,7 +407,7 @@ class _WindowsCleanupGroup:
     network_guard_closed: bool
 
     @property
-    def complete(self) -> bool:
+    def cleanup_dependencies_complete(self) -> bool:
         handles_closed = all(handle is None or handle.closed for handle in self.resource_handles)
         pipes_closed = all(
             pipe.child_read.closed and pipe.parent_write.closed for pipe in self.transfer_pipes
@@ -410,8 +423,11 @@ class _WindowsCleanupGroup:
             and process_closed
             and job_closed
             and threads_stopped
-            and self.network_guard_closed
         )
+
+    @property
+    def complete(self) -> bool:
+        return self.cleanup_dependencies_complete and self.network_guard_closed
 
     def retry(self, *, observer: Callable[[str], None] | None = None) -> OSError | None:
         first_error: OSError | None = None
@@ -454,10 +470,13 @@ class _WindowsCleanupGroup:
             except OSError as exc:
                 remember(exc)
         for pipe in self.transfer_pipes:
-            try:
-                pipe.close()
-            except OSError as exc:
-                remember(exc)
+            for handle in (pipe.parent_write, pipe.child_read):
+                if handle.closed:
+                    continue
+                try:
+                    handle.close()
+                except OSError as exc:
+                    remember(exc)
         for thread in (*self.readers, *self.writers):
             thread.join(timeout=1.0)
             if thread.is_alive():
@@ -497,10 +516,18 @@ class _WindowsCleanupGroup:
                 except OSError as exc:
                     remember(exc)
 
+        generic_cleanup_complete = True
+        try:
+            retry_retained_owners()
+        except OSError as exc:
+            generic_cleanup_complete = False
+            remember(exc)
+
         if (
             self.network_guard is not None
             and not self.network_guard_closed
-            and (not self.created or self.process_stopped)
+            and self.cleanup_dependencies_complete
+            and generic_cleanup_complete
         ):
             try:
                 self.network_guard.close()
@@ -548,6 +575,7 @@ def run_windows_process(
     """Launch one child with no execution window before Job containment."""
     require_released_runtime()
     _retry_retained_cleanup_groups()
+    retry_retained_owners()
     from goodjob.platform.sandbox_windows import _retry_retained_wfp_engines
 
     _retry_retained_wfp_engines()
