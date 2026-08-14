@@ -2,7 +2,7 @@
 
 > 状态：待 Owner 核对  
 > 权威范围：定义授权工作区的发现、索引、增量刷新、Git 历史读取、语言适配和 host agent 按证据深读的行为；不定义 SQLite 实体字段或最终报告章节
-> 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0005](../30-decisions/adrs/ADR-0005-local-first-discovery-and-degradation.md)、[ADR-0006](../30-decisions/adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md)、[ADR-0007](../30-decisions/adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md)、[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)  
+> 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0005](../30-decisions/adrs/ADR-0005-local-first-discovery-and-degradation.md)、[ADR-0006](../30-decisions/adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md)、[ADR-0007](../30-decisions/adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md)、[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)、[ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md)
 > 下游：[产物与学习闭环](artifacts-and-learning.md)、[验收基线](../40-delivery/acceptance-baseline.md)
 
 ## 1. 目标与边界
@@ -13,7 +13,7 @@
 - 首版只扫描 Owner 明确提供、在本机可读的工作区根；不递归扫描未授权位置，不触发网络抓取或 Git fetch。工作区内 `.git` 指针只是 3.2 的不可信候选，不能自行授权任何根外读取（`FR-02`、`NFR-01`）。
 - 扫描产物写入证据模型中的 `ScanRun`、`ProjectSnapshot`、`SourceRevision`、`Evidence` 与 `ScanIssue`；字段、身份和状态以[证据模型](evidence-model.md)为唯一事实源。
 - 扫描器不保存源码正文、完整函数、完整 diff 或大段文档。原文件仍是实现事实源，数据库只保存指针、哈希、短摘要和结构化状态（`NFR-02`）。
-- 文件内容、manifest、Git 文本和路径名一律是不可信数据。适配器只能解析字节/文本并调用参数化的只读 Git 子进程，不得 import 或执行项目模块，不得运行构建脚本、包管理器或 shell 拼接，也不得把仓库中的指令当作 Skill 指令（`NFR-08`）。Git 子进程在平台原生沙箱中运行（macOS `sandbox-exec` / Linux `bwrap`，见已接受的 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)），任一沙箱后端不可用时 fail-closed；真实 Ubuntu 24.04 验收已通过，WSL2 复用同一 Linux 后端。
+- 文件内容、manifest、Git 文本和路径名一律是不可信数据。适配器只能解析字节/文本并调用参数化的只读 Git 子进程，不得 import 或执行项目模块，不得运行构建脚本、包管理器或 shell 拼接，也不得把仓库中的指令当作 Skill 指令（`NFR-08`）。Git 子进程在平台原生安全后端中运行：macOS `sandbox-exec` / Linux 与 WSL2 `bwrap` 由已接受的 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md) 定义；原生 Windows 的 WFP + Job 候选契约由待接受的 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 提出，在终审接受、实现且 `IMP-31` 全部通过前保持 unsupported。任一已支持后端不可用时 fail-closed。
 - 本文中的“项目”指证据模型的 `Project`，“工作树”指 `Worktree`，“快照”指不可变 `ProjectSnapshot`；不得以目录名或远端 URL 替代其稳定身份。
 
 ## 2. 运行契约
@@ -65,6 +65,27 @@ Git 元数据损坏时，该候选项目产生 `broken_repository` 类 `ScanIssu
 首版的非 Git 项目发现以以下根级标记为准：`package.json`、`pyproject.toml`、`Cargo.toml`、`pubspec.yaml`、`go.mod`、`pom.xml`、`build.gradle`/`build.gradle.kts`、`*.sln`、`*.csproj`、`Package.swift`、`CMakeLists.txt`。必须至少存在一个标记文件，普通目录、文档目录和空目录不能成为项目。
 
 模块边界优先由 Git 项目的 workspace manifest、语言 workspace 配置、服务/应用 manifest、数据库迁移根和明确的 build/test 配置给出。无法由这些证据确认的目录只作为文件集合，不创建虚假的 `Module`。模块记录本次 `ProjectSnapshot` 的边界，随快照版本化（`FR-03`、`NFR-07`）。
+
+### 3.4 原生 Windows 文件系统与 Git 边界
+
+原生 Windows 入口只允许把一个绝对路径解析为授权 root handle 一次；入口立即记录 `GetFinalPathNameByHandleW` 的显示路径及 `FileIdInfo` 的 volume serial/file ID。后续 discovery、index、source read、rename、publish、remove、scanner readlink 与目录枚举只经 `ARCH-I12` 传递 borrowed root/parent handle 和单个名称组件，不能把缓存 pathname 当作授权。
+
+名称组件必须在调用 NT API 前拒绝绝对路径、drive/UNC/device prefix、空组件、`.`、`..`、`/`、`\` 和 ADS `:`。每层用 `NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory=<verified parent>)` 与 `FILE_OPEN_REPARSE_POINT` 打开，随后以 `FileAttributeTagInfo`/`FileIdInfo` 验证类型、reparse tag、volume 与身份；reparse point 不跟随。任何时候都禁止 `GetFileAttributesW -> CreateFileW`、`DeleteFileW`、`RemoveDirectoryW` 或其他重新按路径解析的授权/操作。
+
+`safe_fs.py` 的八项操作采用以下稳定语义：
+
+| 操作 | Windows handle 契约 |
+| --- | --- |
+| `read_regular` | 相对打开同一 owned file handle，验证非目录/非 reparse 后有界 `ReadFile`；不重新打开 |
+| `list_directory` | 从 directory handle 枚举名称；每个待访问 entry 仍从该 parent handle 相对打开并验证 |
+| `write_new_file_at` / `write_new` | 从已验证 parent 用 `FILE_CREATE | FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT` 创建；同名、大小写别名或 reparse 已存在即失败 |
+| `open_parent` | 每个组件相对打开并验证，新 owned directory handle 成为下一层 borrowed parent |
+| `replace_file` / `publish_directory` | 固定 source 与 target parent handles，使用 `SetFileInformationByHandle(FileRenameInfoEx)` 的 `RootDirectory`；只允许同 volume 且原子语义可证明 |
+| `remove` | 相对打开目标并取得 `DELETE` 权限，在同一 object handle 上设置 disposition information |
+
+scanner `readlink` 从 reparse handle 调 `FSCTL_GET_REPARSE_POINT`，只返回 reparse 数据而不跟随；枚举不使用 pathname `FindFirstFileExW`。非 NTFS、UNC root、跨卷或当前文件系统不能证明上述语义时先 fail-closed，只有新增对应真机证据和契约后才能扩大支持范围。
+
+Git 是唯一允许缺少文件系统读隔离的子进程，但它仍只能直接启动 `mingw64\bin\git.exe`：为同一二进制 application ID 安装/回读 WFP V4/V6 filters，并在 `ACTIVE_PROCESS=1` Job 中 suspended assign 后 resume。`cmd\git.exe` shim、helper 派生、WFP/BFE 失败或过滤器未回读都使 Git 操作失败。该降级不改变扫描器本身的 root-handle 授权边界。
 
 ## 4. 文件选择、安全排除与事实优先级
 
@@ -175,6 +196,7 @@ host agent 按以下顺序工作：
 | `SCAN-10` | 无权限目录、损坏仓库和超限/解析失败文件 | 其余可用项目的快照、结构化 ScanIssue 与覆盖影响 | 有可用快照时为 `partial`；没有可用快照时为 `failed` | `FR-15`、`NFR-05` |
 | `SCAN-11` | 文件名、manifest、文档或 Git 标题含 shell 元字符、提示注入或 HTML/脚本文本 | 内容仅作为证据数据与安全短摘要，项目代码和指令均不执行 | 解析失败形成 ScanIssue；不得改变授权、运行命令、访问网络或扩大写入范围 | `NFR-01`、`NFR-08` |
 | `SCAN-12` | 合法根外 linked worktree、分别拒绝 relation-probe/metadata 回执、伪造 `.git` 指针、回指不匹配和确认后路径替换 | 合法场景经两阶段精确回执后只读取绑定/HEAD/ref/index 元数据并记录字段；无效场景不越过对应阶段 | 未授权、路径逃逸、关系不匹配或外部历史请求均形成 ScanIssue/知识缺口；probe 阶段不得读取业务 Git 元数据，任何阶段不得持久化未授权目标派生数据 | `FR-03`、`FR-15`、`NFR-01`、`NFR-08` |
+| `SCAN-13` | Windows NTFS root；绝对/drive/UNC/device/空/`.`/`..`/分隔符/ADS/超长组件名称；junction/symlink/reparse；大小写别名；跨卷；在 open/rename/delete 每阶段并发替换 parent | 所有授权从 root/parent handle + volume/file identity 导出；合法对象由同一 handle 读写/rename/delete；超长组件有边界值阳性对照，且每个拒绝/并发用例均证明根外哨兵未读/未写/未删 | 非 NTFS/未知原子语义、任何非法或超过后端明示长度上限的组件、reparse、身份/volume 变化和关闭竞态均 fail-closed；不得调用 pathname 降级；mock 只能补充，真机正负证据由 IMP-31 聚合 | `FR-18`、`NFR-01`、`NFR-11` |
 
 ## 9. 非首版边界
 

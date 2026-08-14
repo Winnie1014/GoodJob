@@ -46,6 +46,7 @@
 | FR-14 | IMP-19、IMP-25、IMP-28 |
 | FR-15 | IMP-20、IMP-28 |
 | FR-16、NFR-09 | IMP-29 |
+| FR-18 | IMP-31 |
 | NFR-01、NFR-02 | IMP-05、IMP-07、IMP-12、IMP-21、IMP-23 |
 | NFR-03 | IMP-18、IMP-28 |
 | NFR-04 | IMP-08、IMP-12、IMP-17、IMP-25 |
@@ -53,6 +54,7 @@
 | NFR-06 | IMP-21、IMP-26 |
 | NFR-07 | IMP-10、IMP-11 |
 | NFR-08 | IMP-07、IMP-14、IMP-22、IMP-23、IMP-28 |
+| NFR-11 | IMP-31 |
 
 ### 3.2 场景矩阵
 
@@ -88,10 +90,23 @@
 | IMP-28 | 看板呈现与安全边界 | 对同一冻结 `ReportBundle` 执行 `DASH-01` 至 `DASH-12`：断网双击、Chromium/WebKit 双引擎全视图交互、注入语料（含 `style="…"` 片段）、375px 视口、`partial` 首屏、混合时效证据、打印、纯键盘、`forced-colors`/灰度、双快照与跨版本深链、复习三态、Markdown/HTML 逐条比对 | 两个引擎网络面板零请求、控制台零 CSP 违规与零脚本错误，且“注入 `style` 属性触发违规”的阳性对照成立；注入语料全部为文本、无可点击外部链接，且不导致渲染被拒；无横向滚动；`partial` 首屏降级带非空不可折叠；两次交互内到完整证据指针；打印展开全部折叠与 locator；键盘全流程可达；状态在无色通道下仍可辨；跨版本深链明确报错；无写状态控件；Markdown 与 HTML 对同一 Claim 呈现一致 |
 | IMP-29 | 跨平台 Git 沙箱 | macOS 与 Linux（含 WSL2）分别运行完整 scan/prepare 流程；macOS 检查 sandbox-exec 命令结构、Linux 检查 bwrap 命令结构（`--unshare-net`、`--unshare-pid`、`--proc` 顺序、`--ro-bind` 授权根、`--die-with-parent`）；模拟 bwrap/sandbox-exec 不存在时 fail-closed；进程身份在 macOS 用 BSD ps、Linux 用 `/proc` stat | 两平台分别全绿；bwrap `--proc` 在 `--unshare-pid` 之后；沙箱缺失时零 Git 执行且报错明确；同一进程 marker 稳定、PID 重用时 marker 变化；macOS 现有行为零回归 |
 | IMP-30 | Host Agent 无关会话 | DB v11 迁移在含存量数据的数据库上可正确执行且可回滚；issuer_kind CHECK 约束已移除；--agent-runtime 参数从 session.py 传递到 cli.py 到 auth.py；launch_broker.py 检测 uv 并回退 python3.12；SKILL.md 使用 host agent 措辞和 launch_broker.py 启动指令；每个进入支持矩阵的宿主有真机 E2E 证据，未通过者标注待支持 |
+| IMP-31 | 原生 Windows 安全运行时 | 在受支持的 GA Windows + NTFS 真机上覆盖 WFP/Job/真实 Git、NT handle-relative 全操作、direct launcher/capability、bounded-output、句柄所有权与异常清理；每个安全边界均有阳性对照和负向攻击证据 | 逐项满足 3.3 矩阵且证据绑定同一候选 commit；mock/monkeypatch 只能补充，不能替代 WFP、NTFS/reparse、Job、pipe/queue 和关闭竞态证据；全部通过前原生 Windows 保持 unsupported 并推荐 WSL2 |
 
 ### 3.3 后续原生 Windows 准入门
 
-原生 Windows 不属于当前实现验收范围。后续阶段只有在 WFP 网络隔离、NT handle-relative 扫描器文件系统边界、direct `CreateProcessW`/Job Object 进程树回收、capability 传递与真机负向 E2E 全部通过后，才能标记为 supported；任一前置门不能建立时必须保持 unsupported 并 fail-closed，提示改用 WSL2。唯一允许的安全降级是 Git 子进程缺少文件系统读隔离，且必须在权威契约和运行前提示中显式可见；Git 网络隔离、扫描器授权根边界、进程树回收和 capability 隔离均不得降级。
+`IMP-31` 是原生 Windows 的独立聚合准入项，不由现有 macOS/Linux 门禁或原语 spike 自动满足。只有下表全部在同一实现候选上通过，才能把原生 Windows 标记为 supported；任一项缺失或失败都必须保持 unsupported / fail-closed，并提示改用 WSL2。唯一允许的安全降级是 Git 子进程缺少文件系统读隔离，且必须在运行前提示和证据报告中可见；Git 网络隔离、扫描器授权根、进程树回收和 capability 隔离不得降级。
+
+| 子项 | 真机阳性证据 | 真机负向/对抗证据 | 通过条件 |
+| --- | --- | --- | --- |
+| `IMP-31A` WFP 生命周期与失败关闭 | 在有 IPv4/IPv6 出口的 GA Windows 上，以真实 `mingw64\bin\git.exe`/egress probe application ID 安装并逐条回读 V4/V6 `AUTH_CONNECT`、`AUTH_RECV_ACCEPT` filters；会话关闭后 filter 自动消失且阳性连通恢复 | 非管理员/权限不足、BFE 不可用、filter 安装或回读不完整；IPv4/IPv6 的 TCP、UDP、DNS 在 filters 生效时均失败 | filters 全部回读后才可 resume；任何准备失败零子进程入口执行；关闭前后证明无清理网络窗口。IPv6 必须是真实出口，不以本来无路由或仅 loopback 代替 |
+| `IMP-31B` 真实 Git + Job | 直接启动 `mingw64\bin\git.exe`，本地 `rev-parse`、`log` 在 `KILL_ON_JOB_CLOSE + ACTIVE_PROCESS=1` Job 中成功；`CREATE_NO_WINDOW` 下 headless `conhost.exe` 的 accounting 可观察 | `cmd\git.exe` shim 被拒作入口；远程 HTTP/SSH Git 和恶意 config/helper 派生均失败，Job completion port 记录 active-process limit，未出现可执行 helper；关闭 Job 回收整棵进程树 | WFP scope 与实际入口二进制一致；conhost 不成为提高 active-process 限额的理由；WFP 不是 helper 拦截的唯一证据，Job 不是网络隔离的替代 |
+| `IMP-31C` NT handle-relative FS | NTFS root 上逐组件打开并以 volume serial/file ID 校验；`read_regular/list_directory/write_new_file_at/write_new/open_parent/replace_file/publish_directory/remove`、scanner readlink/枚举均用同一已验证 handle 完成；组件长度边界值阳性对照正常 | 拒绝绝对、drive/UNC/device prefix、空、`.`、`..`、分隔符、ADS `:` 与超过后端明示上限的超长组件；覆盖 junction/symlink/reparse tag、大小写别名、UNC root、跨卷、目标替换；在 open/rename/delete 各阶段并发换父目录；上述每个拒绝/对抗用例均断言根外哨兵未读/未写/未删；非 NTFS fail-closed | 授权仅来自 root/parent handle + identity；无 `GetFileAttributesW -> CreateFileW`、`DeleteFileW`、`RemoveDirectoryW` 等 pathname 降级；UNC/跨卷未证明安全时只能拒绝；组件长度按实际文件系统/后端上限验证，不以 `MAX_PATH` 猜测替代真机边界证据 |
+| `IMP-31D` direct launcher 与 capability | `CreateProcessW(CREATE_SUSPENDED, bInheritHandles=TRUE) -> AssignProcessToJobObject -> ResumeThread`，resume 前 `IsProcessInJob=true`；最小 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 只含显式 inheritable 的 capability/payload/stdio handles，子进程接管并关闭；业务子进程入口立即派生的获准后代仍在同一 Job，关闭 Job 可整树回收 | assign/resume/attribute-list/pipe 构造任一步注入失败，入口零执行；列表外 sentinel handle 不可见；错误 handle/capability、重复关闭、父子同时关闭均 fail-closed；禁止派生的 policy 拒绝后代，允许派生的 policy 下后代也不能逃逸 Job | 不调用 `subprocess.Popen`；原始 capability 不进 argv/env/日志/DB/输出，argv 只有数值 handle；每次启动使用独立 Job，只有 Git 固定 `ACTIVE_PROCESS=1`，业务子进程按自身 policy 配置；失败终止 process/Job 且不泄漏继承能力 |
+| `IMP-31E` bounded-output 与关闭竞态 | stdout/stderr 并发输出在小于预算时完整、有序映射到协议结果；正常完成后全部 reader/pipe/process/thread/Job/WFP/attribute-list resources 归零 | 单流和双流同时越界、queue 满、超时、协议错误、child/parent 提前关闭、取消与 WFP/Job/pipe 关闭竞态；输出持续写入时触发终止 | pipe + 有界 queue + accumulator 共用一个原子累计预算，超预算尾部丢弃，禁止 `communicate()`；有限 join 不挂死，不死锁、不超预算 |
+| `IMP-31F` 句柄所有权与逆序清理 | 正常成功、子进程非零退出和 Owner 取消后，以进程 handle 计数/系统观察证明回到基线 | 在每个资源获取点注入异常并重复执行；验证先停止/回收进程、再关闭 pipe/join readers、释放 process/thread/transfer/attribute-list、关闭 Job、最后关闭 WFP session；每步 close 失败仍继续清理 | borrowed handle 从不误关，owned handle 恰好关闭一次；无持续 handle/filter/process 泄漏；任何路径都不会在活进程前先撤 WFP |
+| `IMP-31G` 支持状态与提示 | 实现候选上完整 scan/prepare 真机 E2E 通过，运行前明确显示 Git FS 读隔离是唯一降级 | 在 `IMP-31A-F` 任一证据缺失/失败、非支持文件系统或后端不可用环境运行 | supported 状态只由完整矩阵得出；失败时零受保护 Git/扫描执行并推荐 WSL2，不把 mock、计划或 spike 冒充准入证据 |
+
+每份 `IMP-31` 证据必须记录 Windows edition/version/build、文件系统、Python/Git 版本、权限/BFE/IPv4/IPv6 环境、候选 commit、运行命令和原始结果摘要。早期 ctypes ABI 错误造成的 `FwpmEngineOpen0 ERROR_NOT_SUPPORTED (50)` 已撤回，不得作为 WFP 失败模式或替代正确 ABI 的负测。
 
 ## 4. 真实工作区只读验收
 
@@ -138,7 +153,7 @@ GoodJob 对真实工作区只读是产品级承诺，验收必须逐条证明而
 
 ## 5. 质量与安全门禁
 
-- Python：单元测试、类型检查、lint、格式检查和 SQLite migration 测试全部通过；当前命令以根目录 README 与 runtime manifest 为准，变更时同步更新。macOS 与 Linux（含 WSL2）均须在真实环境中通过 `make gate`（不是 mock/monkeypatch 替代）；Linux 须安装 bwrap（`dependencies = []` 不破坏--bwrap 是系统二进制，与 sandbox-exec 同性质）。
+- Python：单元测试、类型检查、lint、格式检查和 SQLite migration 测试全部通过；当前命令以根目录 README 与 runtime manifest 为准，变更时同步更新。macOS 与 Linux（含 WSL2）均须在真实环境中通过 `make gate`（不是 mock/monkeypatch 替代）；Linux 须安装 bwrap（`dependencies = []` 不破坏--bwrap 是系统二进制，与 sandbox-exec 同性质）。原生 Windows 进入支持矩阵前还必须在真实 GA Windows 上通过 `make gate` 与 `IMP-31`，两者缺一不可。
 - TypeScript 前端：类型检查、lint、单元测试和可复现构建通过；构建产物不得引用远端 CDN、远端字体或同目录静态资源。构建门禁还必须静态检出 `ADR-0008` 决策 6 列出的禁用 API（含 `element.style` 的任何属性赋值），校验 CSP meta 中的哈希与实际内联内容一致，并验证同一 `ReportBundle` 重复渲染产出逐字节相同的入口文件。静态门禁不得以“源码中必须出现某段字符串或某句 UI 文案”代替行为断言（`ADR-0008` 决策 8、`DASH-INV-11`）。
 - 看板行为：在真实渲染产物上跨 Chromium 与 WebKit 各执行一次可机检核对，断言干净加载零控制台错误、零外部请求、多宽度 × 全视图零横向溢出、打印分支生效，并以“注入 `style` 属性必须触发 CSP 违规”为阳性对照。核对脚本随运行时前端一起维护，不以设计原型中的同类脚本充当证据。
 - 门禁的反向用例：至少覆盖一条含 `style=` 的 `code` token 能正常渲染，一条引用命令行片段（如 `rg -i`）的非个人化 Claim 能通过归因校验。二者任一失败即为门禁缺陷。
@@ -153,7 +168,7 @@ GoodJob 对真实工作区只读是产品级承诺，验收必须逐条证明而
 只有同时满足以下条件才允许创建或更新可安装私有版本和用户级安装；仓库中已有代码或文档本身不构成发布：
 
 1. DOC-01 至 DOC-07 已由 Owner 核对；
-2. IMP-01 至 IMP-30 有可复现的本地证据；
+2. 当前支持矩阵要求 IMP-01 至 IMP-30 有可复现的本地证据；原生 Windows 只有在 IMP-31 全部通过后才能加入该矩阵；
 3. CodeRoute 与 SliverShield 只读验收通过，未通过项均有明确 ScanIssue；
 4. 离线 HTML 已完成视觉验收，且 DASH-01 至 DASH-12 全部通过；
 5. 仓库不存在个人数据、扫描缓存、密钥或真实项目源码副本；
