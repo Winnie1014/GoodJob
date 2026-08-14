@@ -63,6 +63,12 @@ def _linux_sandbox() -> GitSandbox:
     return BwrapSandbox()
 
 
+def _windows_sandbox(git_executable: str) -> GitSandbox:
+    from goodjob.platform.sandbox_windows import WfpGitSandbox
+
+    return WfpGitSandbox(git_executable)
+
+
 def select_git_sandbox(git_executable: str) -> GitSandbox:
     """Return the Git sandbox backend for the current platform.
 
@@ -74,6 +80,8 @@ def select_git_sandbox(git_executable: str) -> GitSandbox:
         return _macos_sandbox()
     if platform == Platform.LINUX:
         return _linux_sandbox()
+    if platform == Platform.WINDOWS:
+        return _windows_sandbox(git_executable)
     raise OSError("a supported local Git filesystem sandbox is unavailable on this platform")
 
 
@@ -89,11 +97,17 @@ def git_executable_candidates() -> tuple[Path, ...]:
         )
     if platform == Platform.LINUX:
         return (Path("/usr/bin/git"),)
-    return (Path("git"),)
+    from goodjob.platform.sandbox_windows import windows_git_candidates
+
+    return windows_git_candidates()
 
 
 def resolve_git_executable() -> str:
     """Resolve Git only from the platform's trusted absolute candidates."""
+    if detect_platform() == Platform.WINDOWS:
+        from goodjob.platform.sandbox_windows import resolve_windows_git_executable
+
+        return resolve_windows_git_executable()
     for candidate in git_executable_candidates():
         if candidate.is_file():
             return str(candidate)

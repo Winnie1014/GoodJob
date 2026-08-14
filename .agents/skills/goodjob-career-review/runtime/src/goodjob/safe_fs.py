@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -20,6 +21,11 @@ def write_new_file_at(
     mode: int = 0o600,
 ) -> None:
     """Create and fsync one new regular file relative to a trusted directory fd."""
+    if sys.platform == "win32":
+        from goodjob.platform.fs_windows import write_new_file_at as write_windows_file_at
+
+        write_windows_file_at(directory_fd, name, content)
+        return
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(name, flags, mode, dir_fd=directory_fd)
@@ -61,6 +67,13 @@ class SafeDataTree:
         object.__setattr__(self, "protected_ancestors", frozenset(protected))
 
     def relative_parts(self, relative: str) -> tuple[str, ...]:
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import relative_components
+
+            parts = relative_components(relative)
+            if parts[0] != self.prefix:
+                raise InvalidInputError(f"{self.label} path is outside the personal data directory")
+            return parts
         pure = PurePosixPath(relative)
         if (
             pure.is_absolute()
@@ -76,6 +89,18 @@ class SafeDataTree:
 
     @contextmanager
     def open_parent(self, relative: str) -> Iterator[tuple[int, str]]:
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import WindowsDataTree
+
+            with WindowsDataTree(self.root, self.label) as tree:
+                try:
+                    with tree.open_parent(relative) as opened:
+                        yield opened
+                except OSError as exc:
+                    raise InvalidInputError(
+                        f"{self.label} path contains an unavailable or linked directory"
+                    ) from exc
+            return
         parts = self.relative_parts(relative)
         flags = (
             os.O_RDONLY
@@ -100,6 +125,14 @@ class SafeDataTree:
                 os.close(descriptor)
 
     def read_regular(self, relative: str) -> bytes:
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import WindowsDataTree
+
+            try:
+                with WindowsDataTree(self.root, self.label) as tree:
+                    return tree.read_regular(relative)
+            except OSError as exc:
+                raise InvalidInputError(f"{self.label} file is unavailable or linked") from exc
         with self.open_parent(relative) as (directory_fd, name):
             flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
             try:
@@ -117,6 +150,14 @@ class SafeDataTree:
                 os.close(descriptor)
 
     def list_directory(self, relative: str) -> set[str]:
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import WindowsDataTree
+
+            try:
+                with WindowsDataTree(self.root, self.label) as tree:
+                    return tree.list_directory(relative)
+            except OSError as exc:
+                raise InvalidInputError(f"{self.label} directory is unavailable or linked") from exc
         with self.open_parent(relative) as (directory_fd, name):
             flags = (
                 os.O_RDONLY
@@ -134,6 +175,17 @@ class SafeDataTree:
                 os.close(descriptor)
 
     def write_new(self, relative: str, content: bytes) -> None:
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import WindowsDataTree
+
+            try:
+                with WindowsDataTree(self.root, self.label) as tree:
+                    tree.write_new(relative, content)
+            except OSError as exc:
+                raise InvalidInputError(
+                    f"{self.label} temporary file could not be created"
+                ) from exc
+            return
         with self.open_parent(relative) as (directory_fd, name):
             try:
                 write_new_file_at(directory_fd, name, content)
@@ -144,6 +196,16 @@ class SafeDataTree:
                 ) from exc
 
     def replace_file(self, source: str, destination: str, *, mode: int) -> None:
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import WindowsDataTree
+
+            del mode
+            try:
+                with WindowsDataTree(self.root, self.label) as tree:
+                    tree.replace_file(source, destination)
+            except OSError as exc:
+                raise InvalidInputError(f"{self.label} file replacement failed") from exc
+            return
         with (
             self.open_parent(source) as (source_fd, source_name),
             self.open_parent(destination) as (destination_fd, destination_name),
@@ -194,6 +256,21 @@ class SafeDataTree:
             PurePosixPath(name).parts != (name,) or name in {"", ".", ".."} for name in files
         ):
             raise InvalidInputError(f"{self.label} publication file set is invalid")
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import WindowsDataTree
+
+            try:
+                with WindowsDataTree(self.root, self.label) as tree:
+                    tree.publish_directory(
+                        temp_relative,
+                        final_relative,
+                        files,
+                        verify=verify,
+                        before_rename=before_rename,
+                    )
+            except OSError as exc:
+                raise InvalidInputError(f"{self.label} directory publication failed") from exc
+            return
         with (
             self.open_parent(temp_relative) as (temp_parent_fd, temp_name),
             self.open_parent(final_relative) as (final_parent_fd, final_name),
@@ -260,6 +337,15 @@ class SafeDataTree:
         parts = self.relative_parts(relative)
         if parts in self.protected_ancestors:
             raise InvalidInputError(f"refusing to remove a protected {self.label} ancestor")
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import WindowsDataTree
+
+            try:
+                with WindowsDataTree(self.root, self.label) as tree:
+                    tree.remove(relative)
+            except OSError as exc:
+                raise InvalidInputError(f"{self.label} removal failed") from exc
+            return
         with self.open_parent(relative) as (directory_fd, name):
             self._remove_entry_at(directory_fd, name)
             os.fsync(directory_fd)

@@ -16,7 +16,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 import goodjob.git_metadata as _git_metadata
 from goodjob.adapters import (
@@ -36,6 +36,7 @@ from goodjob.git_metadata import (
     GitMetadataReader,
     GitState,
     _child_relative,
+    _close_directory,
     _is_within,
     _open_directory,
     _read_open_file,
@@ -44,6 +45,7 @@ from goodjob.git_metadata import (
     _safe_lstat,
 )
 from goodjob.platform.detect import resolve_git_executable
+from goodjob.platform.fs_windows import WindowsDirectory
 from goodjob.process_identity import owner_process_stopped, process_identity
 
 HISTORY_WINDOW_DAYS = _git_metadata.HISTORY_WINDOW_DAYS
@@ -53,6 +55,26 @@ InternalGitBinding = _git_metadata.InternalGitBinding
 _open_regular_file = _git_metadata._open_regular_file
 inspect_external_git_candidate = _git_metadata.inspect_external_git_candidate
 probe_external_git_relation = _git_metadata.probe_external_git_relation
+
+
+class _BoundDirectoryEntry(Protocol):
+    name: str
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result: ...
+
+
+def _bound_directory_entries(directory: int | WindowsDirectory) -> list[_BoundDirectoryEntry]:
+    if isinstance(directory, WindowsDirectory):
+        return cast(list[_BoundDirectoryEntry], directory.list_entries())
+    with os.scandir(os.dup(directory)) as scanned:
+        return cast(list[_BoundDirectoryEntry], list(scanned))
+
+
+def _bound_readlink(directory: int | WindowsDirectory, name: str) -> str:
+    if isinstance(directory, WindowsDirectory):
+        return directory.readlink(name)
+    return os.readlink(name, dir_fd=directory)
+
 
 ANALYZER_VERSION = "scan-v2"
 ROLE_LENS_CONTEXT_CONTRACT_VERSION = "role-lens-context-v1"
@@ -1062,9 +1084,11 @@ class WorkspaceScanner:
         try:
             root_fd = _open_directory(root)
             try:
+                if isinstance(root_fd, WindowsDirectory):
+                    return None
                 root_stat = os.fstat(root_fd)
             finally:
-                os.close(root_fd)
+                _close_directory(root_fd)
         except OSError:
             return _issue(
                 "workspace_unavailable",
@@ -1386,8 +1410,9 @@ class WorkspaceScanner:
                 continue
             try:
                 try:
-                    with os.scandir(os.dup(directory_fd)) as scanned:
-                        entries = sorted(scanned, key=lambda entry: entry.name)
+                    entries = sorted(
+                        _bound_directory_entries(directory_fd), key=lambda entry: entry.name
+                    )
                 except OSError:
                     issues.append(
                         _issue(
@@ -1407,7 +1432,7 @@ class WorkspaceScanner:
                     child_relative = _child_relative(relative_directory, entry.name)
                     if stat.S_ISLNK(entry_stat.st_mode):
                         try:
-                            target = os.readlink(entry.name, dir_fd=directory_fd)
+                            target = _bound_readlink(directory_fd, entry.name)
                         except OSError:
                             target = ".."
                         kind = (
@@ -1432,7 +1457,7 @@ class WorkspaceScanner:
                     ):
                         stack.append(child_relative)
             finally:
-                os.close(directory_fd)
+                _close_directory(directory_fd)
         return directories, issues
 
     def _external_git_state(
@@ -1541,23 +1566,22 @@ class WorkspaceScanner:
             return False
         try:
             try:
-                with os.scandir(os.dup(directory_fd)) as entries:
-                    for entry in entries:
-                        try:
-                            entry_stat = entry.stat(follow_symlinks=False)
-                        except OSError:
-                            continue
-                        if stat.S_ISREG(entry_stat.st_mode) and (
-                            entry.name in MANIFEST_NAMES
-                            or entry.name.endswith(".sln")
-                            or entry.name.endswith(".csproj")
-                        ):
-                            return True
+                for entry in _bound_directory_entries(directory_fd):
+                    try:
+                        entry_stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if stat.S_ISREG(entry_stat.st_mode) and (
+                        entry.name in MANIFEST_NAMES
+                        or entry.name.endswith(".sln")
+                        or entry.name.endswith(".csproj")
+                    ):
+                        return True
             except OSError:
                 return False
             return False
         finally:
-            os.close(directory_fd)
+            _close_directory(directory_fd)
 
     def _upsert_project(
         self, workspace_id: str, scan_run_id: str, workspace_root: Path, plan: ProjectPlan
@@ -1899,8 +1923,9 @@ class WorkspaceScanner:
                 continue
             try:
                 try:
-                    with os.scandir(os.dup(directory_fd)) as entries:
-                        children = sorted(entries, key=lambda entry: entry.name)
+                    children = sorted(
+                        _bound_directory_entries(directory_fd), key=lambda entry: entry.name
+                    )
                 except OSError:
                     issues.append(
                         _issue(
@@ -1944,7 +1969,7 @@ class WorkspaceScanner:
                     elif stat.S_ISREG(entry_stat.st_mode):
                         files.append(path)
             finally:
-                os.close(directory_fd)
+                _close_directory(directory_fd)
         files.sort(key=lambda path: str(path))
         return files
 

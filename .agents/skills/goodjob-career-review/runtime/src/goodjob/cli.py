@@ -17,6 +17,7 @@ from goodjob.auth import (
     ReceiptKind,
     decode_scope,
     read_capability_from_fd,
+    read_capability_from_handle,
     receipt_kind_values,
 )
 from goodjob.context import ContextInterviewService
@@ -62,7 +63,10 @@ def _add_authorization_arguments(
     parser.add_argument("--receipt-kind", choices=receipt_kind_values(), required=True)
     parser.add_argument("--scope-json", required=True)
     parser.add_argument("--notice-version", required=True)
-    parser.add_argument("--capability-fd", type=int, required=True)
+    if sys.platform == "win32":
+        parser.add_argument("--capability-handle", type=int, required=True)
+    else:
+        parser.add_argument("--capability-fd", type=int, required=True)
     if needs_confirmation:
         parser.add_argument(
             "--confirmed",
@@ -72,12 +76,20 @@ def _add_authorization_arguments(
 
 
 def _add_payload_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--payload-fd",
-        type=int,
-        required=True,
-        help="inherited descriptor carrying bounded private structured input",
-    )
+    if sys.platform == "win32":
+        parser.add_argument(
+            "--payload-handle",
+            type=int,
+            required=True,
+            help="allowlisted inherited HANDLE carrying bounded private structured input",
+        )
+    else:
+        parser.add_argument(
+            "--payload-fd",
+            type=int,
+            required=True,
+            help="inherited descriptor carrying bounded private structured input",
+        )
 
 
 def _authorization_request(args: argparse.Namespace) -> AuthorizationRequest:
@@ -303,12 +315,18 @@ def _handle_data_status(paths: DataPaths) -> dict[str, Any]:
     }
 
 
+def _read_capability(args: argparse.Namespace) -> bytes:
+    if sys.platform == "win32":
+        return read_capability_from_handle(int(args.capability_handle))
+    return read_capability_from_fd(int(args.capability_fd))
+
+
 def _handle_authorize(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     if not args.confirmed:
         raise InvalidInputError(
             "owner confirmation is required before recording an authorization receipt"
         )
-    capability = read_capability_from_fd(args.capability_fd)
+    capability = _read_capability(args)
     receipt = AuthorizationRepository(Database(paths)).issue(
         capability=capability,
         request=_authorization_request(args),
@@ -318,7 +336,7 @@ def _handle_authorize(args: argparse.Namespace, paths: DataPaths) -> dict[str, A
 
 
 def _handle_verify(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
-    capability = read_capability_from_fd(args.capability_fd)
+    capability = _read_capability(args)
     receipt = AuthorizationRepository(Database(paths)).require_valid(
         authorization_receipt_id=args.authorization_receipt_id,
         capability=capability,
@@ -348,7 +366,7 @@ def _scope_workspace(request: AuthorizationRequest) -> Path:
 def _verify_scan_authorization(
     args: argparse.Namespace, paths: DataPaths, expected_workspace: Path
 ) -> bytes:
-    capability = read_capability_from_fd(args.capability_fd)
+    capability = _read_capability(args)
     request = _authorization_request(args)
     if request.receipt_kind.value != "source_analysis":
         raise InvalidInputError("scan and refresh require a source_analysis authorization receipt")
@@ -560,6 +578,10 @@ def _read_payload_from_fd(fd: int, *, capability_fd: int) -> dict[str, object]:
     raw = b"".join(chunks)
     if len(raw) > MAX_PROTECTED_PAYLOAD_BYTES:
         raise InvalidInputError("protected structured payload exceeds the byte limit")
+    return _decode_payload(raw)
+
+
+def _decode_payload(raw: bytes) -> dict[str, object]:
     try:
         payload: object = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
@@ -569,10 +591,24 @@ def _read_payload_from_fd(fd: int, *, capability_fd: int) -> dict[str, object]:
     return payload
 
 
+def _read_payload(args: argparse.Namespace) -> dict[str, object]:
+    if sys.platform == "win32":
+        capability_handle = int(args.capability_handle)
+        payload_handle = int(args.payload_handle)
+        if payload_handle <= 0 or payload_handle == capability_handle:
+            raise InvalidInputError("payload handle must be distinct and positive")
+        from goodjob.platform.capability_windows import read_bytes_from_handle
+
+        return _decode_payload(
+            read_bytes_from_handle(payload_handle, maximum_bytes=MAX_PROTECTED_PAYLOAD_BYTES + 1)
+        )
+    return _read_payload_from_fd(int(args.payload_fd), capability_fd=int(args.capability_fd))
+
+
 def _handle_prepare_start(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
-    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    payload = _read_payload(args)
     return PreparationService(Database(paths)).start(
         workspace_path=workspace,
         authorization_receipt_id=args.authorization_receipt_id,
@@ -583,14 +619,14 @@ def _handle_prepare_start(args: argparse.Namespace, paths: DataPaths) -> dict[st
 def _handle_validate_job_input(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
-    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    payload = _read_payload(args)
     return validate_job_input(payload)
 
 
 def _handle_source_check(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
-    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    payload = _read_payload(args)
     raw_ids = payload.get("source_revision_ids")
     if not isinstance(raw_ids, list) or any(not isinstance(value, str) for value in raw_ids):
         raise InvalidInputError("source_revision_ids must be a JSON string list")
@@ -608,7 +644,7 @@ def _handle_source_check(args: argparse.Namespace, paths: DataPaths) -> dict[str
 def _handle_context_request(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
-    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    payload = _read_payload(args)
     return ContextInterviewService(Database(paths)).request_context(
         authorization_receipt_id=args.authorization_receipt_id,
         request_value=payload,
@@ -618,7 +654,7 @@ def _handle_context_request(args: argparse.Namespace, paths: DataPaths) -> dict[
 def _handle_interview(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
-    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    payload = _read_payload(args)
     if payload.get("mode") == "mock_review":
         return ReviewService(Database(paths)).interview(
             workspace_path=workspace,
@@ -634,7 +670,7 @@ def _handle_interview(args: argparse.Namespace, paths: DataPaths) -> dict[str, A
 def _handle_context_evidence(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
-    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    payload = _read_payload(args)
     return ContextInterviewService(Database(paths)).list_context_evidence(
         authorization_receipt_id=args.authorization_receipt_id,
         request_value=payload,
@@ -644,7 +680,7 @@ def _handle_context_evidence(args: argparse.Namespace, paths: DataPaths) -> dict
 def _handle_record_analysis(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
-    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    payload = _read_payload(args)
     return AnalysisService(Database(paths)).record_analysis(
         workspace_path=workspace,
         authorization_receipt_id=args.authorization_receipt_id,
@@ -659,7 +695,7 @@ def _handle_render(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]
 def _handle_translate_export(args: argparse.Namespace, paths: DataPaths) -> dict[str, Any]:
     workspace = Path(args.workspace).expanduser().resolve(strict=False)
     _verify_scan_authorization(args, paths, workspace)
-    payload = _read_payload_from_fd(args.payload_fd, capability_fd=args.capability_fd)
+    payload = _read_payload(args)
     return ExportService(Database(paths)).translate_export(
         workspace_path=workspace,
         authorization_receipt_id=args.authorization_receipt_id,

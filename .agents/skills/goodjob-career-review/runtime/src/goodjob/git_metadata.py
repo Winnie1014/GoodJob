@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import selectors
 import signal
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, cast
 from goodjob.errors import InvalidInputError
 from goodjob.platform import GitSandboxUnavailableError, select_git_sandbox
 from goodjob.platform.detect import Platform, detect_platform, sandbox_failure_reason
+from goodjob.platform.fs_windows import WindowsDirectory
 from goodjob.source_io import MAX_SOURCE_FILE_BYTES, open_regular_file, read_open_file
 
 if TYPE_CHECKING:
@@ -81,8 +83,15 @@ def _read_open_file(file_fd: int, *, maximum_bytes: int = MAX_FILE_BYTES) -> byt
     return read_open_file(file_fd, maximum_bytes=maximum_bytes)
 
 
-def _open_directory(root: Path, relative_path: str = ".") -> int:
+type DirectoryDescriptor = int | WindowsDirectory
+
+
+def _open_directory(root: Path, relative_path: str = ".") -> DirectoryDescriptor:
     """Open a directory below the authorized root without following links."""
+    if detect_platform() == Platform.WINDOWS:
+        from goodjob.platform.fs_windows import open_directory
+
+        return open_directory(root, relative_path)
     parts = PurePosixPath(relative_path).parts
     if relative_path == ".":
         parts = ()
@@ -94,16 +103,20 @@ def _open_directory(root: Path, relative_path: str = ".") -> int:
     try:
         for part in parts:
             next_fd = os.open(part, flags, dir_fd=directory_fd)
-            os.close(directory_fd)
+            _close_directory(directory_fd)
             directory_fd = next_fd
         return directory_fd
     except Exception:
-        os.close(directory_fd)
+        _close_directory(directory_fd)
         raise
 
 
-def _open_absolute_directory(path: Path) -> int:
+def _open_absolute_directory(path: Path) -> DirectoryDescriptor:
     """Open one exact absolute directory without following any component symlink."""
+    if detect_platform() == Platform.WINDOWS:
+        from goodjob.platform.fs_windows import open_absolute_directory
+
+        return open_absolute_directory(path)
     if not path.is_absolute():
         raise OSError("directory path must be absolute")
     parts = path.parts
@@ -114,16 +127,27 @@ def _open_absolute_directory(path: Path) -> int:
     try:
         for part in parts[1:]:
             next_fd = os.open(part, flags, dir_fd=directory_fd)
-            os.close(directory_fd)
+            _close_directory(directory_fd)
             directory_fd = next_fd
         return directory_fd
     except Exception:
-        os.close(directory_fd)
+        _close_directory(directory_fd)
         raise
 
 
-def _open_regular_file_at(directory_fd: int, relative_path: str) -> tuple[int, os.stat_result]:
+def _open_regular_file_at(
+    directory_fd: DirectoryDescriptor, relative_path: str
+) -> tuple[int, os.stat_result]:
     """Open a regular file below an already-bound directory descriptor."""
+    if isinstance(directory_fd, WindowsDirectory):
+        handle = directory_fd.open_regular(relative_path)
+        try:
+            msvcrt = importlib.import_module("msvcrt")
+            descriptor = int(msvcrt.open_osfhandle(handle.detach(), os.O_RDONLY))
+            return descriptor, os.fstat(descriptor)
+        except BaseException:
+            handle.close()
+            raise
     parts = PurePosixPath(relative_path).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise OSError("relative path is not safe to open")
@@ -145,7 +169,13 @@ def _open_regular_file_at(directory_fd: int, relative_path: str) -> tuple[int, o
         os.close(parent_fd)
 
 
-def _read_text_at(directory_fd: int, relative_path: str, *, maximum_bytes: int = 4096) -> str:
+def _read_text_at(
+    directory_fd: DirectoryDescriptor, relative_path: str, *, maximum_bytes: int = 4096
+) -> str:
+    if isinstance(directory_fd, WindowsDirectory):
+        from goodjob.platform.fs_windows import read_text_at
+
+        return read_text_at(directory_fd, relative_path, maximum_bytes=maximum_bytes)
     file_fd, _ = _open_regular_file_at(directory_fd, relative_path)
     try:
         return _read_open_file(file_fd, maximum_bytes=maximum_bytes).decode("utf-8")
@@ -153,7 +183,10 @@ def _read_text_at(directory_fd: int, relative_path: str, *, maximum_bytes: int =
         os.close(file_fd)
 
 
-def _directory_identity(directory_fd: int) -> tuple[int, int]:
+def _directory_identity(directory_fd: DirectoryDescriptor) -> tuple[int, int]:
+    if isinstance(directory_fd, WindowsDirectory):
+        identity = directory_fd.identity
+        return identity.volume_serial, int.from_bytes(identity.file_id, "little")
     directory_stat = os.fstat(directory_fd)
     if not stat.S_ISDIR(directory_stat.st_mode):
         raise OSError("bound path is not a directory")
@@ -162,6 +195,10 @@ def _directory_identity(directory_fd: int) -> tuple[int, int]:
 
 def _safe_lstat(root: Path, relative_path: str) -> os.stat_result:
     """Stat a child through an already-authorized directory descriptor."""
+    if detect_platform() == Platform.WINDOWS:
+        from goodjob.platform.fs_windows import stat_relative
+
+        return stat_relative(root, relative_path)
     relative = PurePosixPath(relative_path)
     if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise OSError("relative path is not safe to stat")
@@ -169,9 +206,22 @@ def _safe_lstat(root: Path, relative_path: str) -> os.stat_result:
     parent_relative = "." if str(parent) == "." else parent.as_posix()
     directory_fd = _open_directory(root, parent_relative)
     try:
-        return os.stat(relative.name, dir_fd=directory_fd, follow_symlinks=False)
+        return _stat_at(directory_fd, relative.name)
     finally:
-        os.close(directory_fd)
+        _close_directory(directory_fd)
+
+
+def _close_directory(directory: DirectoryDescriptor) -> None:
+    if isinstance(directory, WindowsDirectory):
+        directory.close()
+    else:
+        os.close(directory)
+
+
+def _stat_at(directory: DirectoryDescriptor, component: str) -> os.stat_result:
+    if isinstance(directory, WindowsDirectory):
+        return directory.stat(component)
+    return os.stat(component, dir_fd=directory, follow_symlinks=False)
 
 
 def _child_relative(directory_relative: str, child_name: str) -> str:
@@ -360,9 +410,9 @@ def probe_external_git_relation(
             git_identity = _directory_identity(git_dir_fd)
             common_identity = _directory_identity(common_dir_fd)
         finally:
-            os.close(common_dir_fd)
+            _close_directory(common_dir_fd)
     finally:
-        os.close(git_dir_fd)
+        _close_directory(git_dir_fd)
     return {
         "git_pointer_path": str(pointer),
         "marker_kind": marker_kind,
@@ -415,7 +465,7 @@ class GitMetadataReader:
         except OSError:
             return "invalid"
         else:
-            os.close(git_dir_fd)
+            _close_directory(git_dir_fd)
         common_dir = GitMetadataReader._relation_target_at(
             workspace_root, git_dir_relative, "commondir"
         )
@@ -433,7 +483,7 @@ class GitMetadataReader:
         except OSError:
             return "invalid"
         else:
-            os.close(common_dir_fd)
+            _close_directory(common_dir_fd)
         return "trusted"
 
     @staticmethod
@@ -463,7 +513,7 @@ class GitMetadataReader:
         except OSError:
             return "invalid"
         else:
-            os.close(common_fd)
+            _close_directory(common_fd)
         return "trusted"
 
     @staticmethod
@@ -494,7 +544,7 @@ class GitMetadataReader:
         try:
             git_dir_fd = _open_directory(workspace_root, _relative_to_root(git_dir, workspace_root))
         except OSError:
-            os.close(worktree_fd)
+            _close_directory(worktree_fd)
             return None
         try:
             if stat.S_ISREG(marker_stat.st_mode):
@@ -508,7 +558,7 @@ class GitMetadataReader:
                     return None
             else:
                 try:
-                    common_stat = os.stat("commondir", dir_fd=git_dir_fd, follow_symlinks=False)
+                    common_stat = _stat_at(git_dir_fd, "commondir")
                 except FileNotFoundError:
                     common_dir = git_dir
                 except OSError:
@@ -540,10 +590,10 @@ class GitMetadataReader:
                     common_dir_identity=_directory_identity(common_dir_fd),
                 )
             finally:
-                os.close(common_dir_fd)
+                _close_directory(common_dir_fd)
         finally:
-            os.close(git_dir_fd)
-            os.close(worktree_fd)
+            _close_directory(git_dir_fd)
+            _close_directory(worktree_fd)
 
     def _external_git_state(
         self,
@@ -597,9 +647,9 @@ class GitMetadataReader:
                     ):
                         raise ValueError("an authorized external Git directory path changed")
                 finally:
-                    os.close(common_dir_fd)
+                    _close_directory(common_dir_fd)
             finally:
-                os.close(git_dir_fd)
+                _close_directory(git_dir_fd)
             inspected_after = inspect_external_git_candidate(workspace_root, marker)
             if inspected_after != inspected:
                 raise ValueError("the root-internal Git marker changed during metadata reading")
@@ -646,7 +696,7 @@ class GitMetadataReader:
 
     @staticmethod
     def _external_head_state(
-        git_dir_fd: int, common_dir_fd: int
+        git_dir_fd: DirectoryDescriptor, common_dir_fd: DirectoryDescriptor
     ) -> tuple[str | None, str | None, tuple[str, ...]]:
         raw_head = _read_text_at(git_dir_fd, "HEAD", maximum_bytes=4096)
         lines = raw_head.splitlines()
@@ -680,7 +730,7 @@ class GitMetadataReader:
         ) and all(part not in {"", ".", ".."} for part in reference.split("/"))
 
     @staticmethod
-    def _external_ref_commit(common_dir_fd: int, reference: str) -> str | None:
+    def _external_ref_commit(common_dir_fd: DirectoryDescriptor, reference: str) -> str | None:
         try:
             raw_reference = _read_text_at(common_dir_fd, reference, maximum_bytes=4096)
         except FileNotFoundError:
@@ -716,7 +766,7 @@ class GitMetadataReader:
         try:
             return _directory_identity(directory_fd) == expected
         finally:
-            os.close(directory_fd)
+            _close_directory(directory_fd)
 
     @staticmethod
     def _git_pointer_target(root: Path) -> Path | None:
@@ -744,7 +794,9 @@ class GitMetadataReader:
         return Path(os.path.normpath(str(target)))
 
     @staticmethod
-    def _relation_target_from_fd(git_dir_fd: int, git_dir: Path, filename: str) -> Path | None:
+    def _relation_target_from_fd(
+        git_dir_fd: DirectoryDescriptor, git_dir: Path, filename: str
+    ) -> Path | None:
         try:
             raw_target = _read_text_at(git_dir_fd, filename, maximum_bytes=4096).strip()
         except (OSError, UnicodeError):
@@ -1220,9 +1272,10 @@ class GitMetadataReader:
         binding: InternalGitBinding,
         arguments: tuple[str, ...],
     ) -> list[str]:
+        platform = detect_platform()
         sandbox = select_git_sandbox(self._git_executable)
         git_command = [self._git_executable]
-        if detect_platform() != Platform.LINUX:
+        if platform != Platform.LINUX:
             git_command.append("--no-lazy-fetch")
         git_command.extend(
             [
@@ -1232,9 +1285,25 @@ class GitMetadataReader:
                 "-c",
                 "core.fsmonitor=false",
                 "-c",
-                "core.hooksPath=/dev/null",
+                f"core.hooksPath={'NUL' if platform == Platform.WINDOWS else '/dev/null'}",
                 "-c",
                 "core.pager=cat",
+                *(
+                    [
+                        "-c",
+                        "credential.helper=",
+                        "-c",
+                        "core.askPass=",
+                        "-c",
+                        "diff.external=",
+                        "-c",
+                        "protocol.allow=never",
+                        "-c",
+                        "protocol.file.allow=always",
+                    ]
+                    if platform == Platform.WINDOWS
+                    else []
+                ),
                 "--no-pager",
                 *arguments,
             ]
@@ -1252,37 +1321,44 @@ class GitMetadataReader:
     @staticmethod
     def _open_bound_git_directory(
         binding: InternalGitBinding, path: Path, expected_identity: tuple[int, int]
-    ) -> int:
+    ) -> DirectoryDescriptor:
         if not _is_within(path, binding.workspace_root):
             raise OSError("bound Git directory escaped the authorized workspace")
         directory_fd = _open_directory(
             binding.workspace_root, _relative_to_root(path, binding.workspace_root)
         )
         if _directory_identity(directory_fd) != expected_identity:
-            os.close(directory_fd)
+            _close_directory(directory_fd)
             raise OSError("bound Git directory identity changed")
         return directory_fd
 
     def _git_bounded_bytes(
         self, binding: InternalGitBinding, *arguments: str, maximum_output_bytes: int
     ) -> tuple[int, bytes, bytes]:
+        if detect_platform() == Platform.WINDOWS:
+            return self._git_bounded_bytes_windows(
+                binding, *arguments, maximum_output_bytes=maximum_output_bytes
+            )
         worktree_fd = self._open_bound_git_directory(
             binding, binding.worktree_root, binding.worktree_identity
         )
+        assert isinstance(worktree_fd, int)
         try:
             git_dir_fd = self._open_bound_git_directory(
                 binding, binding.git_dir, binding.git_dir_identity
             )
+            assert isinstance(git_dir_fd, int)
         except Exception:
-            os.close(worktree_fd)
+            _close_directory(worktree_fd)
             raise
         try:
             common_dir_fd = self._open_bound_git_directory(
                 binding, binding.common_dir, binding.common_dir_identity
             )
+            assert isinstance(common_dir_fd, int)
         except Exception:
-            os.close(git_dir_fd)
-            os.close(worktree_fd)
+            _close_directory(git_dir_fd)
+            _close_directory(worktree_fd)
             raise
         process: subprocess.Popen[bytes] | None = None
         selector = selectors.DefaultSelector()
@@ -1316,9 +1392,9 @@ class GitMetadataReader:
                     "the selected platform Git sandbox could not be launched"
                 ) from exc
         finally:
-            os.close(common_dir_fd)
-            os.close(git_dir_fd)
-            os.close(worktree_fd)
+            _close_directory(common_dir_fd)
+            _close_directory(git_dir_fd)
+            _close_directory(worktree_fd)
         assert process is not None
         assert process.stdout is not None
         assert process.stderr is not None
@@ -1366,6 +1442,60 @@ class GitMetadataReader:
                 if not stream.closed:
                     stream.close()
 
+    def _git_bounded_bytes_windows(
+        self, binding: InternalGitBinding, *arguments: str, maximum_output_bytes: int
+    ) -> tuple[int, bytes, bytes]:
+        from goodjob.platform.launcher_windows import (
+            WindowsLaunchRequest,
+            run_windows_process,
+        )
+        from goodjob.platform.sandbox_windows import WfpGitSandbox
+
+        self._verify_git_binding(binding)
+        command = self._workspace_git_command(binding, arguments)
+        if not command or os.path.normcase(command[0]) != os.path.normcase(self._git_executable):
+            raise GitSandboxUnavailableError(
+                "Windows Git command does not start with the WFP-scoped real executable"
+            )
+        sandbox = select_git_sandbox(self._git_executable)
+        if not isinstance(sandbox, WfpGitSandbox):
+            raise GitSandboxUnavailableError("the Windows WFP Git backend was not selected")
+        environment = {
+            **GIT_ENV,
+            "PATH": "",
+            "GIT_ALLOW_PROTOCOL": "file",
+            "GIT_ASKPASS": "",
+            "GIT_CONFIG_GLOBAL": "NUL",
+            "GIT_CONFIG_SYSTEM": "NUL",
+            "GIT_COMMON_DIR": str(binding.common_dir),
+            "GIT_EXTERNAL_DIFF": "",
+            "SSH_ASKPASS": "",
+        }
+        guard = sandbox.open_network_guard()
+        try:
+            result = run_windows_process(
+                WindowsLaunchRequest(
+                    application=self._git_executable,
+                    arguments=tuple(command[1:]),
+                    cwd=str(binding.worktree_root),
+                    environment=environment,
+                    maximum_output_bytes=maximum_output_bytes,
+                    timeout_seconds=self._timeout(),
+                    active_process_limit=1,
+                ),
+                network_guard=guard,
+            )
+        except subprocess.TimeoutExpired:
+            raise
+        except OSError as exc:
+            if "bounded-output" in str(exc) or "exceeded" in str(exc):
+                raise
+            raise GitSandboxUnavailableError(
+                "the Windows WFP/Job Git boundary could not launch safely"
+            ) from exc
+        self._verify_git_binding(binding)
+        return result.returncode, result.stdout, result.stderr
+
     def _verify_git_binding(self, binding: InternalGitBinding) -> None:
         for path, identity in (
             (binding.worktree_root, binding.worktree_identity),
@@ -1373,7 +1503,7 @@ class GitMetadataReader:
             (binding.common_dir, binding.common_dir_identity),
         ):
             directory_fd = self._open_bound_git_directory(binding, path, identity)
-            os.close(directory_fd)
+            _close_directory(directory_fd)
 
     def _git(
         self,

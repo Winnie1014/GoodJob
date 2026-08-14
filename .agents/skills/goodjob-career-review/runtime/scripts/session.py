@@ -34,6 +34,8 @@ MAX_HISTORY_QUERY_PATHS = 32
 MAX_HISTORY_QUERY_CANDIDATES = 20
 MAX_HISTORY_CANDIDATE_PATHS = 200
 MAX_SOURCE_REVISION_BATCH = 200
+MAX_CORE_OUTPUT_BYTES = 16 * 1024 * 1024
+CORE_CHILD_TIMEOUT_SECONDS = 300.0
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 
@@ -375,7 +377,7 @@ def _write_all(file_descriptor: int, payload: bytes) -> None:
     view = memoryview(payload)
     try:
         chunk_size = max(1, os.fpathconf(file_descriptor, "PC_PIPE_BUF"))
-    except OSError:
+    except (AttributeError, OSError):
         chunk_size = 512
     while view:
         written = os.write(file_descriptor, view[:chunk_size])
@@ -1437,6 +1439,10 @@ class SessionBroker:
                 ).encode("utf-8")
             except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as exc:
                 raise InvalidInputError("protected payload must contain canonical JSON") from exc
+        if sys.platform == "win32":
+            return self._run_windows_child(
+                arguments, payload_bytes=payload_bytes, include_capability=True
+            )
         try:
             capability_read_fd, capability_write_fd = os.pipe()
         except OSError as exc:
@@ -1517,7 +1523,54 @@ class SessionBroker:
             subprocess.CompletedProcess(full_command, process.returncode, stdout, stderr)
         )
 
+    def _run_windows_child(
+        self,
+        arguments: list[str],
+        *,
+        payload_bytes: bytes | None,
+        include_capability: bool,
+    ) -> CoreResponse:
+        from goodjob.platform.launcher_windows import (
+            ProtectedInput,
+            WindowsLaunchRequest,
+            run_windows_process,
+        )
+
+        command_arguments = ["-I", "-B", "-c", CORE_BOOTSTRAP]
+        if self._data_dir:
+            command_arguments.extend(["--data-dir", self._data_dir])
+        command_arguments.extend(["--agent-runtime", self._agent_runtime, *arguments])
+        inputs: list[ProtectedInput] = []
+        if include_capability:
+            inputs.append(ProtectedInput("--capability-handle", self._capability))
+        if payload_bytes is not None:
+            inputs.append(ProtectedInput("--payload-handle", payload_bytes))
+        child_environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("PYTHON")
+        }
+        result = run_windows_process(
+            WindowsLaunchRequest(
+                application=sys.executable,
+                arguments=tuple(command_arguments),
+                cwd=str(RUNTIME_DIR),
+                environment=child_environment,
+                maximum_output_bytes=MAX_CORE_OUTPUT_BYTES,
+                timeout_seconds=CORE_CHILD_TIMEOUT_SECONDS,
+            ),
+            inputs=inputs,
+        )
+        return CoreResponse.from_process(
+            subprocess.CompletedProcess(
+                result.args,
+                result.returncode,
+                result.stdout.decode("utf-8", errors="replace"),
+                result.stderr.decode("utf-8", errors="replace"),
+            )
+        )
+
     def _run_unprotected_child(self, arguments: list[str]) -> CoreResponse:
+        if sys.platform == "win32":
+            return self._run_windows_child(arguments, payload_bytes=None, include_capability=False)
         command = [sys.executable, "-I", "-B", "-c", CORE_BOOTSTRAP]
         if self._data_dir:
             command.extend(["--data-dir", self._data_dir])

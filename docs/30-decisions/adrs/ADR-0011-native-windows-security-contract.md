@@ -1,6 +1,6 @@
 # ADR-0011：原生 Windows 安全运行时契约
 
-> 状态：待 Owner/Architect 接受
+> 状态：已接受（2026-08-14，Phase 3-A 终审；合入 `main@9244f3f`）
 > 日期：2026-08-14
 > 权威范围：原生 Windows 的 WFP/Job 网络与进程边界、NT handle-relative 文件系统边界、direct launcher、capability handle、句柄所有权、失败关闭时序和唯一允许的安全降级
 > 上游：[产品需求](../../10-product/product-requirements.md)（FR-18、NFR-11）、[跨平台多 Agent 适配计划](../../40-delivery/cross-platform-multi-agent-plan.md) §6、SWO-31 真机 spike 证据
@@ -23,7 +23,7 @@
 
 ### 1. 支持状态与唯一降级
 
-本 ADR 形成待终审的候选实现契约，但不把原生 Windows 标记为 supported。只有本 ADR 被接受、运行时代码完成并通过 [IMP-31](../../40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 的全部真机阳性/负向验收后，支持矩阵、README 和运行前提示才能改为 supported；此前必须 fail-closed，并推荐 WSL2。
+本 ADR 形成已接受的实现契约，但不把原生 Windows 标记为 supported。只有运行时代码完成并通过 [IMP-31](../../40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 的全部真机阳性/负向验收后，支持矩阵、README 和运行前提示才能改为 supported；此前必须 fail-closed，并推荐 WSL2。
 
 唯一允许的安全降级是：Windows Git 子进程没有文件系统读隔离，可能读取授权根外的本机文件。该降级必须在每次原生 Windows 运行前可见。以下边界不得降级：
 
@@ -90,7 +90,7 @@ stdout/stderr 使用 reader threads、有界 `queue.Queue` 和一个对 pipe、q
 
 ## 与 ADR-0006、ADR-0009 的关系
 
-本 ADR 接受后，ADR-0006 的授权确认、SessionCapability digest、跨 task 失效和最小持久化语义继续有效；仅其决策 3 的传输机制按平台分化：POSIX 继续使用专用 stdin/inherited FD，原生 Windows 使用本 ADR 的 allowlisted inherited HANDLE。ADR-0009 继续权威定义 macOS Seatbelt、Linux/WSL2 bwrap 和进程身份；其“原生 Windows 留待 Phase 3”范围声明届时由本 ADR 的 Windows 合同替代。三平台追求相同安全结果，但机制不强求同构：
+本 ADR 接受后，ADR-0006 的授权确认、SessionCapability digest、跨 task 失效和最小持久化语义继续有效；仅其决策 3 的传输机制按平台分化：POSIX 继续使用专用 stdin/inherited FD，原生 Windows 使用本 ADR 的 allowlisted inherited HANDLE。ADR-0009 继续权威定义 macOS Seatbelt、Linux/WSL2 bwrap 和进程身份；其“原生 Windows 留待 Phase 3”范围声明由本 ADR 的 Windows 合同替代。三平台追求相同安全结果，但机制不强求同构：
 
 | 边界 | macOS/Linux/WSL2 | 原生 Windows |
 | --- | --- | --- |

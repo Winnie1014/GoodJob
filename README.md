@@ -29,7 +29,7 @@ GoodJob 不会仅凭 Git 作者信息把整个项目归为你的个人贡献。�
 ## 环境要求
 
 - macOS 或 Linux（含 WSL2）。运行时把 Git 子进程限制在平台原生沙箱中运行（macOS 使用 `sandbox-exec` Seatbelt，Linux 使用 `bwrap` bubblewrap），拒绝网络、只读授权根、禁用 hooks，并用进程启动时间作为进程身份。任一沙箱后端不可用时 fail-closed（不回退到无沙箱）。WSL1 不支持用户命名空间，仅 WSL2 提供完整沙箱；
-- **原生 Windows 当前不受支持。** WFP/Job、NT handle-relative FS 与 direct launcher 的候选安全契约仍待终审，运行时实现和真机 `IMP-31` 也尚未全部通过；在此之前必须 fail-closed，请使用 WSL2。未来准入后唯一允许的降级也只是 Git 子进程缺少文件系统读隔离；Git 网络、扫描器授权根、进程树和 capability 隔离不得降级；
+- **原生 Windows 当前不受支持。** WFP/Job、NT handle-relative FS 与 direct launcher 的安全契约已经终审接受，但运行时实现与真实 Windows `IMP-31` 尚未完成全部准入；在此之前必须 fail-closed，请使用 WSL2。未来准入后唯一允许的降级也只是 Git 子进程缺少文件系统读隔离；Git 网络、扫描器授权根、进程树和 capability 隔离不得降级；
 - 宿主支持状态：Codex 是既有支持基线，但尚待统一的五项探针回归；ZCode、ClaudeCode、OpenCode、MimoCode 均为待支持，在探针和真机 E2E 全部通过前不进入支持矩阵；
 - Python 3.12 或更高版本，已安装在本机；uv 路径固定选择 `--python 3.12`，无 uv 时优先使用 `python3.12`，或回退到版本不低于 3.12 的 `python3`；
 - [`uv`](https://docs.astral.sh/uv/)（可选，未安装时自动回退到 python3.12）；

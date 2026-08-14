@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 from pathlib import Path, PurePosixPath
 
 MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
@@ -24,6 +25,10 @@ def _require_regular_file(file_fd: int) -> os.stat_result:
 
 def open_regular_file(root: Path, relative_path: str) -> tuple[int, os.stat_result]:
     """Open a regular file below root without following any path component symlink."""
+    if sys.platform == "win32":
+        from goodjob.platform.fs_windows import open_regular_file as open_windows_regular_file
+
+        return open_windows_regular_file(root, relative_path)
     path = PurePosixPath(relative_path)
     parts = path.parts
     if path.is_absolute() or not parts or any(part in {"", ".", ".."} for part in parts):
@@ -44,6 +49,12 @@ def open_regular_file(root: Path, relative_path: str) -> tuple[int, os.stat_resu
 
 def open_absolute_regular_file(path: Path) -> tuple[int, os.stat_result]:
     """Open one canonical absolute file without following a replaced path component."""
+    if sys.platform == "win32":
+        from goodjob.platform.fs_windows import (
+            open_absolute_regular_file as open_windows_absolute_regular_file,
+        )
+
+        return open_windows_absolute_regular_file(path)
     if not path.is_absolute():
         raise OSError("absolute file path is required")
     parts = path.parts
