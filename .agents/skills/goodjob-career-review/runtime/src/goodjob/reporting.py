@@ -24,7 +24,7 @@ from goodjob.errors import InvalidInputError
 from goodjob.preparation import _now, _stored_json
 from goodjob.process_identity import owner_process_stopped, process_identity
 from goodjob.review import ReviewService
-from goodjob.safe_fs import SafeDataTree
+from goodjob.safe_fs import PublicationDirectory, SafeDataTree
 
 REPORT_BUNDLE_CONTRACT_VERSION = "report-bundle-v1"
 REPORT_CONTRACT_VERSION = "goodjob-report-v1"
@@ -2146,8 +2146,8 @@ class ArtifactSnapshotService:
             before_rename=before_rename,
         )
 
-    def _verify_rendered_files(self, directory_relative: str, manifest: JSONObject) -> None:
-        if self._list_directory_relative(directory_relative) != {
+    def _verify_rendered_files(self, directory: PublicationDirectory, manifest: JSONObject) -> None:
+        if directory.list_directory() != {
             REPORT_FILENAME,
             RESUME_FILENAME,
             HTML_FILENAME,
@@ -2161,10 +2161,10 @@ class ArtifactSnapshotService:
         if set(expected_files) != {REPORT_FILENAME, RESUME_FILENAME, HTML_FILENAME}:
             raise InvalidInputError("artifact manifest file set is incomplete")
         for name, expected_hash in expected_files.items():
-            content = self._read_regular_relative(f"{directory_relative}/{name}")
+            content = directory.read_regular(name)
             if _sha256_bytes(content) != expected_hash:
                 raise InvalidInputError("rendered artifact hash does not match manifest")
-        manifest_bytes = self._read_regular_relative(f"{directory_relative}/{MANIFEST_FILENAME}")
+        manifest_bytes = directory.read_regular(MANIFEST_FILENAME)
         try:
             parsed = json.loads(manifest_bytes)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:

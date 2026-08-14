@@ -72,6 +72,16 @@ def read_capability_from_fd(fd: int) -> bytes:
     return raw
 
 
+def read_capability_from_handle(handle: int) -> bytes:
+    """Take and close one allowlisted Windows capability HANDLE."""
+    from goodjob.platform.capability_windows import read_bytes_from_handle
+
+    raw = read_bytes_from_handle(handle, maximum_bytes=CAPABILITY_BYTES + 1)
+    if len(raw) != CAPABILITY_BYTES:
+        raise CapabilityError("session capability is missing or malformed")
+    return raw
+
+
 def session_binding_digest(capability: bytes) -> bytes:
     if len(capability) != CAPABILITY_BYTES:
         raise CapabilityError("session capability is missing or malformed")

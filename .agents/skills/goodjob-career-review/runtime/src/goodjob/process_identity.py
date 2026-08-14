@@ -32,6 +32,10 @@ def process_start_marker(pid: int) -> str | None:
         return _macos_start_marker(pid)
     if sys.platform.startswith("linux"):
         return _linux_start_marker(pid)
+    if sys.platform == "win32":
+        from goodjob.platform.process_windows import process_start_marker as windows_start_marker
+
+        return windows_start_marker(pid)
     raise OSError(f"process identity is not supported on platform: {sys.platform}")
 
 
@@ -97,11 +101,17 @@ def owner_process_stopped(identity: str) -> bool:
         return False
     if pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
+    if sys.platform == "win32":
+        from goodjob.platform.process_windows import process_exists
+
+        if not process_exists(pid):
+            return True
+    else:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
     current_start = process_start_marker(pid)
     return current_start is not None and current_start != started

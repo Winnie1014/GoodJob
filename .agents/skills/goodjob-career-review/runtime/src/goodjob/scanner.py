@@ -10,13 +10,14 @@ import re
 import sqlite3
 import stat
 import subprocess
+import sys
 import uuid
 from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 import goodjob.git_metadata as _git_metadata
 from goodjob.adapters import (
@@ -36,6 +37,7 @@ from goodjob.git_metadata import (
     GitMetadataReader,
     GitState,
     _child_relative,
+    _close_directory,
     _is_within,
     _open_directory,
     _read_open_file,
@@ -44,7 +46,9 @@ from goodjob.git_metadata import (
     _safe_lstat,
 )
 from goodjob.platform.detect import resolve_git_executable
+from goodjob.platform.fs_windows import WindowsDirectory
 from goodjob.process_identity import owner_process_stopped, process_identity
+from goodjob.source_io import close_file_descriptor
 
 HISTORY_WINDOW_DAYS = _git_metadata.HISTORY_WINDOW_DAYS
 MAX_HISTORY_METADATA_BYTES = _git_metadata.MAX_HISTORY_METADATA_BYTES
@@ -53,6 +57,26 @@ InternalGitBinding = _git_metadata.InternalGitBinding
 _open_regular_file = _git_metadata._open_regular_file
 inspect_external_git_candidate = _git_metadata.inspect_external_git_candidate
 probe_external_git_relation = _git_metadata.probe_external_git_relation
+
+
+class _BoundDirectoryEntry(Protocol):
+    name: str
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result: ...
+
+
+def _bound_directory_entries(directory: int | WindowsDirectory) -> list[_BoundDirectoryEntry]:
+    if isinstance(directory, WindowsDirectory):
+        return cast(list[_BoundDirectoryEntry], directory.list_entries())
+    with os.scandir(os.dup(directory)) as scanned:
+        return cast(list[_BoundDirectoryEntry], list(scanned))
+
+
+def _bound_readlink(directory: int | WindowsDirectory, name: str) -> str:
+    if isinstance(directory, WindowsDirectory):
+        return directory.readlink(name)
+    return os.readlink(name, dir_fd=directory)
+
 
 ANALYZER_VERSION = "scan-v2"
 ROLE_LENS_CONTEXT_CONTRACT_VERSION = "role-lens-context-v1"
@@ -441,7 +465,7 @@ class IgnoreMatcher:
                 try:
                     text = _read_open_file(file_fd).decode("utf-8")
                 finally:
-                    os.close(file_fd)
+                    close_file_descriptor(file_fd)
             except (OSError, UnicodeError):
                 issues.append(
                     _issue(
@@ -878,6 +902,40 @@ class WorkspaceScanner:
         authorization_receipt_id: str,
         external_git_grants: tuple[ExternalGitGrant, ...],
     ) -> ScanResult:
+        if sys.platform == "win32":
+            from goodjob.platform.fs_windows import bind_authorized_root
+
+            with bind_authorized_root(root):
+                return self._run_authorized(
+                    root=root,
+                    workspace_id=workspace_id,
+                    mode=mode,
+                    change_detection_mode=change_detection_mode,
+                    config_revision=config_revision,
+                    authorization_receipt_id=authorization_receipt_id,
+                    external_git_grants=external_git_grants,
+                )
+        return self._run_authorized(
+            root=root,
+            workspace_id=workspace_id,
+            mode=mode,
+            change_detection_mode=change_detection_mode,
+            config_revision=config_revision,
+            authorization_receipt_id=authorization_receipt_id,
+            external_git_grants=external_git_grants,
+        )
+
+    def _run_authorized(
+        self,
+        *,
+        root: Path,
+        workspace_id: str | None,
+        mode: Literal["full", "refresh"],
+        change_detection_mode: Literal["fast", "verify_content"] | None,
+        config_revision: str,
+        authorization_receipt_id: str,
+        external_git_grants: tuple[ExternalGitGrant, ...],
+    ) -> ScanResult:
         if not config_revision.strip():
             raise InvalidInputError("config_revision must not be empty")
         root_issue = self._workspace_root_issue(root)
@@ -1062,9 +1120,11 @@ class WorkspaceScanner:
         try:
             root_fd = _open_directory(root)
             try:
+                if isinstance(root_fd, WindowsDirectory):
+                    return None
                 root_stat = os.fstat(root_fd)
             finally:
-                os.close(root_fd)
+                _close_directory(root_fd)
         except OSError:
             return _issue(
                 "workspace_unavailable",
@@ -1386,8 +1446,9 @@ class WorkspaceScanner:
                 continue
             try:
                 try:
-                    with os.scandir(os.dup(directory_fd)) as scanned:
-                        entries = sorted(scanned, key=lambda entry: entry.name)
+                    entries = sorted(
+                        _bound_directory_entries(directory_fd), key=lambda entry: entry.name
+                    )
                 except OSError:
                     issues.append(
                         _issue(
@@ -1407,7 +1468,7 @@ class WorkspaceScanner:
                     child_relative = _child_relative(relative_directory, entry.name)
                     if stat.S_ISLNK(entry_stat.st_mode):
                         try:
-                            target = os.readlink(entry.name, dir_fd=directory_fd)
+                            target = _bound_readlink(directory_fd, entry.name)
                         except OSError:
                             target = ".."
                         kind = (
@@ -1432,7 +1493,7 @@ class WorkspaceScanner:
                     ):
                         stack.append(child_relative)
             finally:
-                os.close(directory_fd)
+                _close_directory(directory_fd)
         return directories, issues
 
     def _external_git_state(
@@ -1541,23 +1602,22 @@ class WorkspaceScanner:
             return False
         try:
             try:
-                with os.scandir(os.dup(directory_fd)) as entries:
-                    for entry in entries:
-                        try:
-                            entry_stat = entry.stat(follow_symlinks=False)
-                        except OSError:
-                            continue
-                        if stat.S_ISREG(entry_stat.st_mode) and (
-                            entry.name in MANIFEST_NAMES
-                            or entry.name.endswith(".sln")
-                            or entry.name.endswith(".csproj")
-                        ):
-                            return True
+                for entry in _bound_directory_entries(directory_fd):
+                    try:
+                        entry_stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if stat.S_ISREG(entry_stat.st_mode) and (
+                        entry.name in MANIFEST_NAMES
+                        or entry.name.endswith(".sln")
+                        or entry.name.endswith(".csproj")
+                    ):
+                        return True
             except OSError:
                 return False
             return False
         finally:
-            os.close(directory_fd)
+            _close_directory(directory_fd)
 
     def _upsert_project(
         self, workspace_id: str, scan_run_id: str, workspace_root: Path, plan: ProjectPlan
@@ -1821,7 +1881,7 @@ class WorkspaceScanner:
                 )
                 continue
             finally:
-                os.close(file_fd)
+                close_file_descriptor(file_fd)
             content_sha256 = hashlib.sha256(content).hexdigest()
             cache_key = (
                 content_sha256,
@@ -1899,8 +1959,9 @@ class WorkspaceScanner:
                 continue
             try:
                 try:
-                    with os.scandir(os.dup(directory_fd)) as entries:
-                        children = sorted(entries, key=lambda entry: entry.name)
+                    children = sorted(
+                        _bound_directory_entries(directory_fd), key=lambda entry: entry.name
+                    )
                 except OSError:
                     issues.append(
                         _issue(
@@ -1944,7 +2005,7 @@ class WorkspaceScanner:
                     elif stat.S_ISREG(entry_stat.st_mode):
                         files.append(path)
             finally:
-                os.close(directory_fd)
+                _close_directory(directory_fd)
         files.sort(key=lambda path: str(path))
         return files
 

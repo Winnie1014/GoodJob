@@ -322,6 +322,8 @@ Phase 2 开卡前对 `docs/`、README、SKILL 清单做一次 `Codex|codex_task|
 
 ## 6. Phase 3：原生 Windows 平台支持（仅 Git FS 读隔离降级）
 
+> 当前状态（2026-08-14）：Phase 3-A 已终审并接受 ADR-0011，Phase 3-B 运行时候选已合入；`IMP-31A-G` 真机准入尚未通过，因此原生 Windows 继续 unsupported / fail-closed 并推荐 WSL2。下文保留派工时的 spike 与实现步骤作为交付追溯，不表示这些步骤已经获得发布证据。
+
 **目标：** 原生 Windows（非 WSL）可运行；只保留 Owner 已接受的 Git 文件系统读隔离缺口，网络隔离、扫描器授权根边界和进程树回收不降级。
 
 **改动量大的原因：** Windows 缺乏 `dir_fd`、`fcntl`、`sandbox-exec`、BSD `ps`，且 `pass_fds`（POSIX-only）、`os.fpathconf`（Unix-only）、`os.killpg`（POSIX-only）均不可用。整个文件系统安全层、能力传递链、子进程树回收和 bounded-output 循环均需 Win32 重新实现。

@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from goodjob.errors import GoodJobError
+from goodjob.errors import GoodJobError, UnsupportedPlatformError
+
+NATIVE_WINDOWS_RELEASE_ENABLED = False
 
 if TYPE_CHECKING:
     from goodjob.git_metadata import InternalGitBinding
@@ -51,6 +53,14 @@ def detect_platform() -> Platform:
     return Platform.from_sys_platform(sys.platform)
 
 
+def require_released_runtime() -> None:
+    """Keep native Windows closed until the IMP-31 release decision is committed."""
+    if detect_platform() == Platform.WINDOWS and not NATIVE_WINDOWS_RELEASE_ENABLED:
+        raise UnsupportedPlatformError(
+            "native Windows remains unsupported until IMP-31A-G pass on real hardware; use WSL2"
+        )
+
+
 def _macos_sandbox() -> GitSandbox:
     from goodjob.platform.sandbox_macos import SeatbeltSandbox
 
@@ -61,6 +71,12 @@ def _linux_sandbox() -> GitSandbox:
     from goodjob.platform.sandbox_linux import BwrapSandbox
 
     return BwrapSandbox()
+
+
+def _windows_sandbox(git_executable: str) -> GitSandbox:
+    from goodjob.platform.sandbox_windows import WfpGitSandbox
+
+    return WfpGitSandbox(git_executable)
 
 
 def select_git_sandbox(git_executable: str) -> GitSandbox:
@@ -74,6 +90,9 @@ def select_git_sandbox(git_executable: str) -> GitSandbox:
         return _macos_sandbox()
     if platform == Platform.LINUX:
         return _linux_sandbox()
+    if platform == Platform.WINDOWS:
+        require_released_runtime()
+        return _windows_sandbox(git_executable)
     raise OSError("a supported local Git filesystem sandbox is unavailable on this platform")
 
 
@@ -89,11 +108,19 @@ def git_executable_candidates() -> tuple[Path, ...]:
         )
     if platform == Platform.LINUX:
         return (Path("/usr/bin/git"),)
-    return (Path("git"),)
+    require_released_runtime()
+    from goodjob.platform.sandbox_windows import windows_git_candidates
+
+    return windows_git_candidates()
 
 
 def resolve_git_executable() -> str:
     """Resolve Git only from the platform's trusted absolute candidates."""
+    if detect_platform() == Platform.WINDOWS:
+        require_released_runtime()
+        from goodjob.platform.sandbox_windows import resolve_windows_git_executable
+
+        return resolve_windows_git_executable()
     for candidate in git_executable_candidates():
         if candidate.is_file():
             return str(candidate)

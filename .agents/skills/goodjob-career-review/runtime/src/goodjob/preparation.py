@@ -7,7 +7,6 @@ import hashlib
 import hmac
 import json
 import math
-import os
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -17,7 +16,12 @@ from typing import TypeGuard, cast
 
 from goodjob.db import Database
 from goodjob.errors import CapabilityError, InvalidInputError
-from goodjob.source_io import hash_regular_file, open_absolute_regular_file, read_open_file
+from goodjob.source_io import (
+    close_file_descriptor,
+    hash_regular_file,
+    open_absolute_regular_file,
+    read_open_file,
+)
 
 ROLE_LENS_CONTRACT_VERSION = "role-lens-v1"
 JOB_INPUT_CONTRACT_VERSION = "job-input-v1"
@@ -198,7 +202,7 @@ def _read_jd_file(raw_path: str) -> tuple[str, str, str]:
                 f"JD file is not bounded readable UTF-8: {canonical_path}"
             ) from exc
     finally:
-        os.close(file_fd)
+        close_file_descriptor(file_fd)
     if not text.strip():
         raise InvalidInputError(f"JD file must not be empty: {canonical_path}")
     return text, str(canonical_path), hashlib.sha256(content).hexdigest()

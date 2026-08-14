@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 
-from goodjob.source_io import open_absolute_regular_file, read_open_file
+from goodjob.source_io import (
+    close_file_descriptor,
+    open_absolute_regular_file,
+    read_open_file,
+)
 
 ProjectMatchKind = Literal["identity_key", "relative_location"]
 MAX_CONFIG_FILE_BYTES = 256 * 1024
@@ -62,7 +65,7 @@ def load_project_exclusions(config_file: Path) -> ProjectExclusionConfig:
         try:
             content = read_open_file(file_fd, maximum_bytes=MAX_CONFIG_FILE_BYTES)
         finally:
-            os.close(file_fd)
+            close_file_descriptor(file_fd)
         text = content.decode("utf-8")
     except (OSError, UnicodeError):
         return ProjectExclusionConfig(

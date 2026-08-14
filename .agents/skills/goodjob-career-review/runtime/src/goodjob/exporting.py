@@ -28,7 +28,7 @@ from goodjob.reporting import (
     canonical_report_bundle,
     report_bundle_sha256,
 )
-from goodjob.safe_fs import SafeDataTree
+from goodjob.safe_fs import PublicationDirectory, SafeDataTree
 
 TRANSLATION_EXPORT_REQUEST_CONTRACT_VERSION = "translation-export-request-v1"
 TRANSLATION_EXPORT_SOURCE_CONTRACT_VERSION = "translation-export-source-v1"
@@ -1021,9 +1021,9 @@ class ExportService:
             before_rename=before_rename,
         )
 
-    def _verify_rendered_files(self, relative: str, manifest: JSONObject) -> None:
+    def _verify_rendered_files(self, directory: PublicationDirectory, manifest: JSONObject) -> None:
         expected_set = {RESUME_FILENAME, INTERVIEW_FILENAME, MANIFEST_FILENAME}
-        if self._list_directory_relative(relative) != expected_set:
+        if directory.list_directory() != expected_set:
             raise InvalidInputError("export directory contains an unexpected file set")
         expected_hashes = {
             str(item["path"]): str(item["sha256"])
@@ -1032,12 +1032,9 @@ class ExportService:
         if set(expected_hashes) != {RESUME_FILENAME, INTERVIEW_FILENAME}:
             raise InvalidInputError("export manifest file set is incomplete")
         for name, expected_hash in expected_hashes.items():
-            if (
-                hashlib.sha256(self._read_regular_relative(f"{relative}/{name}")).hexdigest()
-                != expected_hash
-            ):
+            if hashlib.sha256(directory.read_regular(name)).hexdigest() != expected_hash:
                 raise InvalidInputError("rendered export hash does not match manifest")
-        manifest_bytes = self._read_regular_relative(f"{relative}/{MANIFEST_FILENAME}")
+        manifest_bytes = directory.read_regular(MANIFEST_FILENAME)
         try:
             parsed = json.loads(manifest_bytes, parse_constant=_reject_json_constant)
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
