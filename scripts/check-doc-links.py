@@ -10,7 +10,7 @@ import stat
 import subprocess
 import sys
 from collections.abc import Iterator
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -402,12 +402,16 @@ def broken_links(path: Path) -> Iterator[tuple[Path, str]]:
             yield path, target
 
 
+def format_broken_link(source: PurePath, target: str) -> str:
+    return f"{source.as_posix()}:{target}"
+
+
 def main() -> int:
     files = repository_markdown_files()
     failures = [failure for path in files for failure in broken_links(path)]
     if failures:
         for source, target in failures:
-            print(f"{source.relative_to(ROOT)}:{target}")
+            print(format_broken_link(source.relative_to(ROOT), target))
         return 1
     print(f"Markdown relative links OK: {len(files)} files")
     return 0

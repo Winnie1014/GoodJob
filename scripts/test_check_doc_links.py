@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import ModuleType
 from unittest import mock
 
@@ -49,12 +49,19 @@ class CheckerCliTests(unittest.TestCase):
             text=True,
         )
 
+    def load_checker(self) -> ModuleType:
+        checker_path = self.repo / "scripts" / CHECKER.name
+        spec = importlib.util.spec_from_file_location("check_doc_links", checker_path)
+        assert spec is not None and spec.loader is not None
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        assert isinstance(checker, ModuleType)
+        return checker
+
     def run_checker_as_windows(
         self, *, reparse_path: Path | None = None
     ) -> subprocess.CompletedProcess[str]:
         checker_path = self.repo / "scripts" / CHECKER.name
-        spec = importlib.util.spec_from_file_location("check_doc_links_windows", checker_path)
-        assert spec is not None and spec.loader is not None
 
         missing = object()
         saved_flags: dict[str, object] = {}
@@ -92,9 +99,7 @@ class CheckerCliTests(unittest.TestCase):
             return attributes
 
         try:
-            checker = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(checker)
-            assert isinstance(checker, ModuleType)
+            checker = self.load_checker()
             checker.ROOT = self.repo
             checker.IS_WINDOWS = True
             checker.windows_file_attributes = windows_file_attributes
@@ -145,6 +150,15 @@ class CheckerCliTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "docs/source.md:missing.md\n")
+
+    def test_broken_link_diagnostic_normalizes_windows_separators(self) -> None:
+        checker = self.load_checker()
+
+        diagnostic = checker.format_broken_link(
+            PureWindowsPath(r"docs\source.md"), "missing.md"
+        )
+
+        self.assertEqual(diagnostic, "docs/source.md:missing.md")
 
     def test_fenced_and_unfenced_links_are_distinguished(self) -> None:
         self.write(
