@@ -253,11 +253,13 @@ def test_windows_launcher_starts_only_after_successful_preflight(
 
     assert result == 0
     output = capsys.readouterr()
-    emitted = json.loads(output.out if preflight_only else output.err)
-    assert emitted["can_start_broker"] is True
     if preflight_only:
+        emitted = json.loads(output.out)
+        assert emitted["can_start_broker"] is True
         assert broker_calls == []
     else:
+        assert output.out == ""
+        assert output.err == ""
         assert len(broker_calls) == 1
         assert broker_calls[0][:2] == [r"C:\Windows\py.exe", "-3.12"]
         workspace_argument = broker_calls[0].index("--preflight-workspace")
@@ -317,6 +319,44 @@ def test_windows_launcher_rejects_success_report_missing_required_checks(
 
     assert report["can_start_broker"] is False
     assert report["checks"][0]["id"] == "windows_preflight"
+
+
+@pytest.mark.parametrize("mutation", ["missing_notice", "failure_fields_on_passed_check"])
+def test_windows_launcher_rejects_semantically_inconsistent_success_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    launch_broker = _load_launcher()
+    runtime = PythonRuntime((r"C:\Python312\python.exe",), "direct_python", (3, 12, 8))
+    report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=Path(__file__).resolve().parents[1],
+        python_version=(3, 12, 8),
+        launcher_kind="direct_python",
+        uv_available=False,
+        release_enabled=True,
+        probes=LauncherProbes(elevated=True),
+    ).as_dict()
+    if mutation == "missing_notice":
+        report["notices"] = []
+    else:
+        report["checks"][0]["code"] = "missing_dependency"
+        report["checks"][0]["remediation"] = {
+            "action": "request_installation",
+            "purpose": "contradict the passed state",
+            "requires_explicit_consent": True,
+        }
+    monkeypatch.setattr(
+        launch_broker.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, json.dumps(report), ""),
+    )
+
+    parsed = launch_broker._run_windows_preflight(runtime, str(tmp_path / "workspace"))
+
+    assert parsed["can_start_broker"] is False
+    assert parsed["checks"][0]["id"] == "windows_preflight"
 
 
 def test_windows_session_requires_its_own_successful_preflight(
@@ -384,6 +424,7 @@ def test_windows_session_rejects_a_missing_preflight_workspace(
 def test_windows_session_starts_only_after_its_preflight_passes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     session = _load_session()
     successful_report = evaluate_windows_preflight(
@@ -408,3 +449,9 @@ def test_windows_session_starts_only_after_its_preflight_passes(
     )
 
     assert result == 0
+    report = json.loads(capsys.readouterr().err)
+    assert report["can_start_broker"] is True
+    assert report["notices"] == [
+        "Native Windows Git subprocesses do not have filesystem read isolation; "
+        "use WSL2 when complete Git filesystem isolation is required."
+    ]

@@ -144,9 +144,12 @@ def run(argv: list[str] | None = None, *, platform_name: str = sys.platform) -> 
             _write_report(report, standard_output=args.windows_preflight_only)
             return 2
         report = _run_windows_preflight(runtime, args.workspace)
-        _write_report(report, standard_output=args.windows_preflight_only)
-        if not report["can_start_broker"] or args.windows_preflight_only:
+        if args.windows_preflight_only:
+            _write_report(report, standard_output=True)
             return 0 if report["can_start_broker"] else 2
+        if not report["can_start_broker"]:
+            _write_report(report, standard_output=False)
+            return 2
     elif args.windows_preflight_only:
         parser.error("--windows-preflight-only is available only on native Windows")
 

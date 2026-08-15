@@ -1632,7 +1632,7 @@ def _run_native_windows_session_preflight(workspace: str) -> WindowsPreflightRep
     ).as_dict()
 
 
-def _write_preflight_failure(report: WindowsPreflightReportDict) -> None:
+def _write_preflight_report(report: WindowsPreflightReportDict) -> None:
     sys.stderr.write(json.dumps(report, sort_keys=True) + "\n")
 
 
@@ -1656,7 +1656,7 @@ def run(
     args = parser.parse_args(argv)
     if platform_name == "win32":
         if not args.preflight_workspace:
-            _write_preflight_failure(
+            _write_preflight_report(
                 preflight_protocol_failure_report(
                     "native Windows session startup requires a prerequisite-preflight workspace"
                 ).as_dict()
@@ -1669,8 +1669,9 @@ def run(
                 "the native Windows session prerequisite preflight could not complete"
             ).as_dict()
         if not preflight_report["can_start_broker"]:
-            _write_preflight_failure(preflight_report)
+            _write_preflight_report(preflight_report)
             return 2
+        _write_preflight_report(preflight_report)
     broker = SessionBroker(args.data_dir, args.agent_runtime, args.preflight_workspace)
     for line in sys.stdin if input_stream is None else input_stream:
         response: JsonObject

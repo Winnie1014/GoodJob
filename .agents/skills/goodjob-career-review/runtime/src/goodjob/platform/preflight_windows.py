@@ -18,6 +18,10 @@ from goodjob.platform.handles_windows import load_windows_dll
 
 PreflightCode = Literal["missing_dependency", "permission_required", "unsupported_capability"]
 CheckStatus = Literal["passed", "failed"]
+WINDOWS_GIT_FS_NOTICE = (
+    "Native Windows Git subprocesses do not have filesystem read isolation; "
+    "use WSL2 when complete Git filesystem isolation is required."
+)
 WINDOWS_PREFLIGHT_REQUIRED_CHECK_IDS = frozenset(
     {
         "python_runtime",
@@ -256,10 +260,7 @@ class WindowsPreflightReport:
             status="ok" if can_start else "error",
             can_start_broker=can_start,
             checks=[check.as_dict() for check in self.checks],
-            notices=[
-                "Native Windows Git subprocesses do not have filesystem read isolation; "
-                "use WSL2 when complete Git filesystem isolation is required."
-            ],
+            notices=[WINDOWS_GIT_FS_NOTICE],
         )
 
 
@@ -331,8 +332,7 @@ def parse_windows_preflight_report(raw: object) -> WindowsPreflightReportDict | 
         or not isinstance(can_start, bool)
         or status not in ("ok", "error")
         or not isinstance(checks, list)
-        or not isinstance(notices, list)
-        or any(not isinstance(notice, str) for notice in notices)
+        or notices != [WINDOWS_GIT_FS_NOTICE]
     ):
         return None
     seen_ids: set[str] = set()
@@ -353,7 +353,10 @@ def parse_windows_preflight_report(raw: object) -> WindowsPreflightReportDict | 
         ):
             return None
         seen_ids.add(check_id)
-        if check_status == "failed":
+        if check_status == "passed":
+            if "code" in check or "remediation" in check:
+                return None
+        else:
             all_passed = False
             remediation = check.get("remediation")
             if (
