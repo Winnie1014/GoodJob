@@ -84,6 +84,29 @@ def _relative_path(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _posix_directory_flags() -> int:
+    """Return link-resistant POSIX directory flags or fail closed."""
+    directory_flag = cast(int | None, getattr(os, "O_DIRECTORY", None))
+    if directory_flag is None:
+        raise OSError("POSIX directory descriptors are unavailable on this platform")
+    return os.O_RDONLY | directory_flag | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _posix_fchdir(file_descriptor: int) -> None:
+    fchdir = cast(Callable[[int], None] | None, getattr(os, "fchdir", None))
+    if fchdir is None:
+        raise OSError("descriptor-relative working directories are unavailable on this platform")
+    fchdir(file_descriptor)
+
+
+def _kill_posix_process_group(process_id: int) -> None:
+    killpg = cast(Callable[[int, int], None] | None, getattr(os, "killpg", None))
+    sigkill = cast(int | None, getattr(signal, "SIGKILL", None))
+    if killpg is None or sigkill is None:
+        raise OSError("POSIX process-group termination is unavailable on this platform")
+    killpg(process_id, sigkill)
+
+
 def _open_regular_file(root: Path, relative_path: str) -> tuple[FileDescriptor, os.stat_result]:
     return open_regular_file(root, relative_path)
 
@@ -106,7 +129,7 @@ def _open_directory(root: Path, relative_path: str = ".") -> DirectoryDescriptor
         parts = ()
     if any(part in {"", ".", ".."} for part in parts):
         raise OSError("relative directory path is not safe to open")
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    flags = _posix_directory_flags()
     root_fd = os.open(root, flags)
     directory_fd = root_fd
     try:
@@ -131,7 +154,7 @@ def _open_absolute_directory(path: Path) -> DirectoryDescriptor:
     parts = path.parts
     if not parts or any(part in {"", ".", ".."} for part in parts[1:]):
         raise OSError("absolute directory path is not safe to open")
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    flags = _posix_directory_flags()
     directory_fd = os.open(parts[0], flags)
     try:
         for part in parts[1:]:
@@ -161,7 +184,7 @@ def _open_regular_file_at(
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise OSError("relative path is not safe to open")
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | nofollow
+    directory_flags = _posix_directory_flags()
     parent_fd = os.dup(directory_fd)
     try:
         for part in parts[:-1]:
@@ -1322,7 +1345,7 @@ class GitMetadataReader:
     @staticmethod
     def _fchdir_and_close_bound_directories(worktree_fd: int, *bound_fds: int) -> None:
         """Enter the bound worktree, then remove host directory capabilities before exec."""
-        os.fchdir(worktree_fd)
+        _posix_fchdir(worktree_fd)
         for descriptor in bound_fds:
             with suppress(OSError):
                 os.close(descriptor)
@@ -1442,7 +1465,7 @@ class GitMetadataReader:
         except BaseException:
             if process.poll() is None:
                 with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
+                    _kill_posix_process_group(process.pid)
             process.wait(timeout=self._timeout())
             raise
         finally:

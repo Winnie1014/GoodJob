@@ -796,8 +796,11 @@ def test_bad_jd_creates_no_job_lens_or_run(
     ],
 )
 def test_fifo_inputs_are_rejected_without_blocking(tmp_path: Path, script: str) -> None:
+    mkfifo = getattr(os, "mkfifo", None)
+    if mkfifo is None:
+        pytest.skip("FIFO creation is unavailable on this platform")
     fifo = tmp_path / "blocked-input"
-    os.mkfifo(fifo)
+    mkfifo(fifo)
 
     result = subprocess.run(
         [sys.executable, "-c", script, str(fifo)],

@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -383,10 +383,14 @@ def _protocol_error(message: str) -> CoreResponse:
 
 def _write_all(file_descriptor: int, payload: bytes) -> None:
     view = memoryview(payload)
-    try:
-        chunk_size = max(1, os.fpathconf(file_descriptor, "PC_PIPE_BUF"))
-    except (AttributeError, OSError):
+    fpathconf = cast(Callable[[int, str], int] | None, getattr(os, "fpathconf", None))
+    if fpathconf is None:
         chunk_size = 512
+    else:
+        try:
+            chunk_size = max(1, fpathconf(file_descriptor, "PC_PIPE_BUF"))
+        except OSError:
+            chunk_size = 512
     while view:
         written = os.write(file_descriptor, view[:chunk_size])
         if written <= 0:

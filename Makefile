@@ -9,6 +9,7 @@ gate-python:
 	cd "$(RUNTIME_DIR)" && uv run ruff format --check .
 	cd "$(RUNTIME_DIR)" && uv run ruff check .
 	cd "$(RUNTIME_DIR)" && uv run mypy .
+	cd "$(RUNTIME_DIR)" && uv run mypy --platform win32 .
 	cd "$(RUNTIME_DIR)" && uv run pytest -q
 
 gate-frontend:
@@ -16,8 +17,8 @@ gate-frontend:
 	cd "$(FRONTEND_DIR)" && npm test
 
 gate-docs:
-	python3 -m unittest scripts/test_check_doc_links.py
-	python3 scripts/check-doc-links.py
+	uv run --project "$(RUNTIME_DIR)" python -m unittest scripts/test_check_doc_links.py
+	uv run --project "$(RUNTIME_DIR)" python scripts/check-doc-links.py
 
 gate-release: gate
 	cd "$(FRONTEND_DIR)" && npm run verify
