@@ -12,7 +12,7 @@
 [跨平台多 Agent 适配计划](../../40-delivery/cross-platform-multi-agent-plan.md) §6 把 WFP、NT handle-relative FS 和 direct `CreateProcessW` 写成候选 spike 假设，并明确要求真机验证后才能形成权威架构。SWO-31 已在 Windows build 26200.8875、NTFS、64-bit Python 环境完成原语与组合复核：
 
 - 修正 ctypes ABI 后，WFP dynamic session 可打开；按 application ID 安装并回读 V4/V6 ALE filters、关闭会话后自动清理成立。早期 `FwpmEngineOpen0 -> ERROR_NOT_SUPPORTED (50)` 来自错误函数签名、截断的 `FWPM_SESSION0` 和错误参数，已经撤回，不是 Windows/WFP 不支持证据。
-- `NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory=...)` 可逐组件相对打开；`FILE_OPEN_REPARSE_POINT` 下 junction 不被跟随，volume serial 与 file ID 可由句柄回读。
+- `NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory=...)` 可逐组件相对打开；`FILE_OPEN_REPARSE_POINT` 下 junction 不被跟随，volume serial 与 file ID 可由句柄回读。该早期 NTFS spike 没有调用 `SetFileInformationByHandle`，因而未覆盖 rename/publish；两项能力必须以其后的产品实现定点真机证据为准，不能从早期 spike 外推。
 - direct `CreateProcessW(CREATE_SUSPENDED) -> AssignProcessToJobObject -> ResumeThread` 成立；进程在执行用户入口前已经进入 Job，`ACTIVE_PROCESS=1` 能拒绝成员派生进程。
 - 对真实 `C:\Program Files\Git\mingw64\bin\git.exe` 的组合测试中，本地 `rev-parse`/`log` 成功，远程 helper 派生被 Job 拒绝，WFP filters 在会话关闭后消失。
 - 保留 `CREATE_NO_WINDOW` 时，headless `conhost.exe` 可出现在 Job accounting 中，但不会消耗 Job 成员的派生名额；真实 Git helper 仍被 `ACTIVE_PROCESS=1` 拒绝。
@@ -57,7 +57,7 @@ Windows Git 启动必须满足以下顺序和约束：
 - `/`、`\` 等路径分隔符；
 - alternate data stream 分隔符 `:`。
 
-每个组件必须经 `NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory=<verified parent>)` 与 `FILE_OPEN_REPARSE_POINT` 相对打开，随后以 `FileAttributeTagInfo`/`FileIdInfo` 校验对象类型、reparse tag、volume 与身份。读取、枚举、创建、rename、publish 与删除都继续使用已经验证的 handle：rename 使用带目标 parent handle 的 `SetFileInformationByHandle(FileRenameInfoEx)`，delete 使用对象 handle 上的 disposition information。禁止 `GetFileAttributesW -> CreateFileW`、`DeleteFileW`、`RemoveDirectoryW` 或任何把已验证名称重新交给 pathname API 的降级。非 NTFS、跨卷或无法证明句柄原子语义的场景在获得单独真机证据前一律 fail-closed。
+每个组件必须经 `NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory=<verified parent>)` 与 `FILE_OPEN_REPARSE_POINT` 相对打开，随后以 `FileAttributeTagInfo`/`FileIdInfo` 校验对象类型、reparse tag、volume 与身份。读取、枚举、创建、rename、publish 与删除都继续使用已经验证的 handle：rename 使用带目标 parent handle 的 `SetFileInformationByHandle`，非替换发布使用 `FileRenameInfo`，原子替换使用带 `REPLACE_IF_EXISTS | POSIX_SEMANTICS` 的 `FileRenameInfoEx`；delete 使用对象 handle 上的 disposition information。禁止 `GetFileAttributesW -> CreateFileW`、`DeleteFileW`、`RemoveDirectoryW` 或任何把已验证名称重新交给 pathname API 的降级。非 NTFS、跨卷或无法证明句柄原子语义的场景在获得单独真机证据前一律 fail-closed。
 
 `safe_fs.py` 八项操作以及 scanner 的 readlink/枚举必须统一委托给该后端；详细操作契约由[扫描与分析设计](../../20-architecture/scanning-and-analysis.md#34-原生-windows-文件系统与-git-边界)定义。
 

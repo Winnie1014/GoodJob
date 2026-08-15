@@ -553,6 +553,140 @@ def test_windows_component_guard_accepts_the_explicit_ntfs_boundary() -> None:
     assert validate_component("source.py") == "source.py"
 
 
+def test_windows_rename_info_uses_fixed_16_bit_wchar_layout() -> None:
+    pointer_size = ctypes.sizeof(ctypes.c_void_p)
+
+    assert ctypes.sizeof(fs_windows.WINDOWS_WCHAR) == 2
+    assert fs_windows.FILE_RENAME_INFO.RootDirectory.offset == (8 if pointer_size == 8 else 4)
+    assert fs_windows.FILE_RENAME_INFO.FileNameLength.offset == (
+        fs_windows.FILE_RENAME_INFO.RootDirectory.offset + pointer_size
+    )
+    assert fs_windows.FILE_RENAME_INFO.FileName.offset == (
+        fs_windows.FILE_RENAME_INFO.FileNameLength.offset + ctypes.sizeof(ctypes.c_uint32)
+    )
+    assert ctypes.sizeof(fs_windows.FILE_RENAME_INFO) == (24 if pointer_size == 8 else 16)
+
+
+@pytest.mark.parametrize("target_name", ["x", "a" * 255])
+@pytest.mark.parametrize(
+    ("replace", "expected_class", "expected_mode"),
+    [
+        (False, fs_windows.FILE_RENAME_INFO_CLASS, 0),
+        (
+            True,
+            fs_windows.FILE_RENAME_INFO_EX_CLASS,
+            fs_windows.FILE_RENAME_REPLACE_IF_EXISTS | fs_windows.FILE_RENAME_POSIX_SEMANTICS,
+        ),
+    ],
+)
+def test_windows_handle_relative_rename_emits_documented_abi(
+    target_name: str,
+    replace: bool,
+    expected_class: int,
+    expected_mode: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeApi:
+        @staticmethod
+        def SetFileInformationByHandle(
+            source: ctypes.c_void_p, info_class: int, buffer: Any, size: int
+        ) -> int:
+            captured.update(
+                source=source.value,
+                info_class=info_class,
+                raw=bytes(buffer.raw[:size]),
+                size=size,
+            )
+            return 1
+
+    monkeypatch.setattr(fs_windows, "_kernel32", lambda: FakeApi())
+
+    fs_windows._rename_handle(41, 73, target_name, replace=replace)
+
+    encoded_name = target_name.encode("utf-16-le")
+    raw = captured["raw"]
+    root_offset = fs_windows.FILE_RENAME_INFO.RootDirectory.offset
+    root_end = root_offset + ctypes.sizeof(ctypes.c_void_p)
+    length_offset = fs_windows.FILE_RENAME_INFO.FileNameLength.offset
+    name_offset = fs_windows.FILE_RENAME_INFO.FileName.offset
+    assert captured["source"] == 41
+    assert captured["info_class"] == expected_class
+    assert captured["size"] == ctypes.sizeof(fs_windows.FILE_RENAME_INFO) + len(encoded_name)
+    assert int.from_bytes(raw[:4], "little") == expected_mode
+    assert raw[4:root_offset] == bytes(root_offset - 4)
+    assert int.from_bytes(raw[root_offset:root_end], "little") == 73
+    assert int.from_bytes(raw[length_offset : length_offset + 4], "little") == len(encoded_name)
+    assert raw[name_offset : name_offset + len(encoded_name)] == encoded_name
+    assert raw[name_offset + len(encoded_name) :] == bytes(
+        captured["size"] - name_offset - len(encoded_name)
+    )
+
+
+@pytest.mark.parametrize(
+    ("replace", "error", "message"),
+    [
+        (False, fs_windows.ERROR_ALREADY_EXISTS, "FileRenameInfo"),
+        (True, 5, "FileRenameInfoEx"),
+    ],
+)
+def test_windows_handle_relative_rename_preserves_api_failures(
+    replace: bool,
+    error: int,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeApi:
+        @staticmethod
+        def SetFileInformationByHandle(*_args: Any) -> int:
+            return 0
+
+    monkeypatch.setattr(fs_windows, "_kernel32", lambda: FakeApi())
+    monkeypatch.setattr(fs_windows, "last_error", lambda: error)
+
+    with pytest.raises(OSError, match=message) as failure:
+        fs_windows._rename_handle(41, 73, "target", replace=replace)
+
+    assert failure.value.errno == error
+
+
+def test_windows_target_parent_open_requests_traverse_and_read_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_access: list[int] = []
+    root_identity = fs_windows.WindowsFileIdentity(17, b"root".ljust(16, b"\0"))
+    root = fs_windows.WindowsRoot(
+        Path("/authorized-workspace"),
+        OwnedHandle(710, closer=lambda _value: None),
+        r"\\?\C:\authorized-workspace",
+        root_identity,
+    )
+
+    def open_relative(
+        _parent: int,
+        _component: str,
+        *,
+        access: int,
+        directory: bool | None,
+    ) -> OwnedHandle:
+        assert directory is True
+        requested_access.append(access)
+        return OwnedHandle(711, closer=lambda _value: None)
+
+    monkeypatch.setattr(fs_windows, "_open_relative", open_relative)
+    monkeypatch.setattr(fs_windows, "_identity", lambda _handle: root_identity)
+
+    with root.open_parent(("artifacts", "target")) as (parent, name, owner):
+        assert parent == 711
+        assert name == "target"
+        assert owner is not None
+
+    assert requested_access == [
+        fs_windows.FILE_LIST_DIRECTORY | fs_windows.FILE_TRAVERSE | fs_windows.FILE_READ_ATTRIBUTES
+    ]
+
+
 @pytest.mark.parametrize("relative", ["/rooted", "\\rooted", "a//b", "a/../b", "a/./b"])
 def test_windows_relative_path_rejects_rooted_empty_and_dot_components(relative: str) -> None:
     with pytest.raises(InvalidInputError):
@@ -1636,17 +1770,25 @@ windows_only = pytest.mark.skipif(
 
 
 @windows_only
-def test_nt_handle_relative_data_tree_smoke(tmp_path: Path) -> None:
+def test_nt_handle_relative_data_tree_smoke(
+    tmp_path: Path,
+    exclusive_outside_sentinel: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import goodjob.platform.detect as platform_detect
     from goodjob.platform.fs_windows import WindowsDataTree
 
+    monkeypatch.setattr(platform_detect, "NATIVE_WINDOWS_RELEASE_ENABLED", True)
     tree_root = tmp_path / "data"
     publication_parent = tree_root / "artifacts"
     publication_parent.mkdir(parents=True)
     with WindowsDataTree(tree_root, "test") as tree:
         tree.write_new("artifacts/source.tmp", b"source")
+        tree.write_new("artifacts/source.txt", b"stale")
         assert tree.read_regular("artifacts/source.tmp") == b"source"
         tree.replace_file("artifacts/source.tmp", "artifacts/source.txt")
         assert tree.list_directory("artifacts") == {"source.txt"}
+        assert tree.read_regular("artifacts/source.txt") == b"source"
         tree.publish_directory(
             "artifacts/candidate",
             "artifacts/final",

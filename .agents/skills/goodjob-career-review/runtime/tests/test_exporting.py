@@ -34,6 +34,11 @@ from goodjob.db import Database
 from goodjob.exporting import ExportService
 from goodjob.paths import DataPaths
 
+if sys.platform == "win32":
+    import goodjob.platform.detect as platform_detect
+
+    platform_detect.NATIVE_WINDOWS_RELEASE_ENABLED = True
+
 database = Database(DataPaths(Path(sys.argv[2])))
 workspace = Path(sys.argv[3])
 receipt_id = sys.argv[4]
@@ -621,7 +626,13 @@ def test_real_abrupt_exit_export_is_recovered_by_the_next_writer_entry(
     tmp_path: Path,
     data_paths: DataPaths,
     fault_at: str,
+    exclusive_outside_sentinel: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if sys.platform == "win32":
+        import goodjob.platform.detect as platform_detect
+
+        monkeypatch.setattr(platform_detect, "NATIVE_WINDOWS_RELEASE_ENABLED", True)
     workspace, database, receipt_id, snapshot = _published_snapshot(tmp_path, data_paths)
     service = ExportService(database)
     source = _prepare_translation(service, workspace, receipt_id, snapshot)
