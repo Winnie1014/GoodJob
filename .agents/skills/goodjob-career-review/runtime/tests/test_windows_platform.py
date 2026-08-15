@@ -731,7 +731,7 @@ def test_wfp_policy_write_probe_fails_closed_and_cleans_up(
     api = _FakeWfpApi(sublayer_status=5)
     monkeypatch.setattr(sandbox_windows, "_wfp_api", lambda: api)
 
-    with pytest.raises(OSError, match="FwpmSubLayerAdd0"):
+    with pytest.raises(PermissionError, match="FwpmSubLayerAdd0"):
         sandbox_windows.probe_wfp_policy_write_access()
 
     assert api.close_calls == 1

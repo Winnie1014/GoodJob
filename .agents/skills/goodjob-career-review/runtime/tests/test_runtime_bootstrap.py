@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,18 @@ def _load_launcher() -> ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_session() -> ModuleType:
+    script = Path(__file__).resolve().parents[1] / "scripts" / "session.py"
+    spec = importlib.util.spec_from_file_location("goodjob_test_session", script)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -45,6 +58,9 @@ class LauncherProbes:
         return True
 
     def wfp_policy_write_access(self) -> bool:
+        return True
+
+    def runtime_modules_importable(self) -> bool:
         return True
 
 
@@ -205,7 +221,11 @@ def test_windows_launcher_starts_only_after_successful_preflight(
     runtime_tree = tmp_path / "runtime"
     (runtime_tree / "scripts").mkdir(parents=True)
     (runtime_tree / "src" / "goodjob").mkdir(parents=True)
+    (runtime_tree / "scripts" / "launch_broker.py").write_text("# launcher\n", encoding="utf-8")
     (runtime_tree / "scripts" / "session.py").write_text("# broker\n", encoding="utf-8")
+    (runtime_tree / "scripts" / "windows_preflight.py").write_text(
+        "# preflight\n", encoding="utf-8"
+    )
     (runtime_tree / "src" / "goodjob" / "__init__.py").write_text("", encoding="utf-8")
     report = evaluate_windows_preflight(
         workspace=tmp_path / "workspace",
@@ -270,3 +290,121 @@ def test_windows_launcher_rejects_preflight_exit_report_mismatch(
 
     assert report["can_start_broker"] is False
     assert report["checks"][0]["id"] == "windows_preflight"
+
+
+def test_windows_launcher_rejects_success_report_missing_required_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_broker = _load_launcher()
+    runtime = PythonRuntime((r"C:\Python312\python.exe",), "direct_python", (3, 12, 8))
+    incomplete_report = {
+        "contract_version": "windows-prerequisite-preflight-v1",
+        "status": "ok",
+        "can_start_broker": True,
+        "checks": [],
+        "notices": [],
+    }
+    monkeypatch.setattr(
+        launch_broker.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, json.dumps(incomplete_report), ""
+        ),
+    )
+
+    report = launch_broker._run_windows_preflight(runtime, str(tmp_path / "workspace"))
+
+    assert report["can_start_broker"] is False
+    assert report["checks"][0]["id"] == "windows_preflight"
+
+
+def test_windows_session_requires_its_own_successful_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = _load_session()
+    failed_report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=tmp_path,
+        python_version=(3, 12, 8),
+        launcher_kind="direct_python",
+        uv_available=False,
+        release_enabled=False,
+        probes=LauncherProbes(elevated=True),
+    ).as_dict()
+    capability_calls = 0
+
+    def record_capability() -> bytes:
+        nonlocal capability_calls
+        capability_calls += 1
+        return b"unused"
+
+    monkeypatch.setattr(session, "generate_capability", record_capability)
+    monkeypatch.setattr(
+        session,
+        "_run_native_windows_session_preflight",
+        lambda _workspace: failed_report,
+    )
+
+    result = session.run(
+        ["--preflight-workspace", str(tmp_path / "workspace")],
+        platform_name="win32",
+        input_stream=[],
+    )
+
+    assert result == 2
+    assert capability_calls == 0
+    assert json.loads(capsys.readouterr().err)["can_start_broker"] is False
+
+
+def test_windows_session_rejects_a_missing_preflight_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = _load_session()
+    capability_calls = 0
+
+    def record_capability() -> bytes:
+        nonlocal capability_calls
+        capability_calls += 1
+        return b"unused"
+
+    monkeypatch.setattr(session, "generate_capability", record_capability)
+
+    result = session.run([], platform_name="win32", input_stream=[])
+
+    assert result == 2
+    assert capability_calls == 0
+    report = json.loads(capsys.readouterr().err)
+    assert report["checks"][0]["code"] == "unsupported_capability"
+
+
+def test_windows_session_starts_only_after_its_preflight_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _load_session()
+    successful_report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=Path(__file__).resolve().parents[1],
+        python_version=(3, 12, 8),
+        launcher_kind="direct_python",
+        uv_available=False,
+        release_enabled=True,
+        probes=LauncherProbes(elevated=True),
+    ).as_dict()
+    monkeypatch.setattr(
+        session,
+        "_run_native_windows_session_preflight",
+        lambda _workspace: successful_report,
+    )
+
+    result = session.run(
+        ["--preflight-workspace", str(tmp_path / "workspace")],
+        platform_name="win32",
+        input_stream=[],
+    )
+
+    assert result == 0

@@ -14,6 +14,8 @@ class FakeWindowsProbes:
     elevated: bool = True
     wfp_api: bool = True
     wfp_write: bool = True
+    wfp_error: OSError | None = None
+    runtime_importable: bool = True
 
     def trusted_git_executable(self) -> Path | None:
         return self.git_executable
@@ -32,14 +34,21 @@ class FakeWindowsProbes:
         return self.wfp_api
 
     def wfp_policy_write_access(self) -> bool:
+        if self.wfp_error is not None:
+            raise self.wfp_error
         return self.wfp_write
+
+    def runtime_modules_importable(self) -> bool:
+        return self.runtime_importable
 
 
 def _runtime_tree(tmp_path: Path) -> Path:
     runtime = tmp_path / "runtime"
     (runtime / "scripts").mkdir(parents=True)
     (runtime / "src" / "goodjob").mkdir(parents=True)
+    (runtime / "scripts" / "launch_broker.py").write_text("# launcher\n", encoding="utf-8")
     (runtime / "scripts" / "session.py").write_text("# broker\n", encoding="utf-8")
+    (runtime / "scripts" / "windows_preflight.py").write_text("# preflight\n", encoding="utf-8")
     (runtime / "src" / "goodjob" / "__init__.py").write_text("", encoding="utf-8")
     return runtime
 
@@ -153,6 +162,42 @@ def test_windows_preflight_requires_a_successful_wfp_policy_write_probe(tmp_path
     assert permission["status"] == "failed"
     assert permission["code"] == "permission_required"
     assert permission["remediation"]["action"] == "request_elevation"
+
+
+def test_windows_preflight_classifies_non_permission_wfp_failure_as_unsupported(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=_runtime_tree(tmp_path),
+        python_version=(3, 12, 8),
+        launcher_kind="direct_python",
+        uv_available=False,
+        release_enabled=True,
+        probes=FakeWindowsProbes(wfp_error=OSError("WFP policy store is unavailable")),
+    ).as_dict()
+
+    permission = next(check for check in report["checks"] if check["id"] == "wfp_permission")
+    assert permission["status"] == "failed"
+    assert permission["code"] == "unsupported_capability"
+    assert permission["remediation"]["action"] == "repair_windows_or_use_wsl2"
+
+
+def test_windows_preflight_rejects_an_unimportable_runtime(tmp_path: Path) -> None:
+    report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=_runtime_tree(tmp_path),
+        python_version=(3, 12, 8),
+        launcher_kind="direct_python",
+        uv_available=False,
+        release_enabled=True,
+        probes=FakeWindowsProbes(runtime_importable=False),
+    ).as_dict()
+
+    runtime = next(check for check in report["checks"] if check["id"] == "runtime_installation")
+    assert runtime["status"] == "failed"
+    assert runtime["code"] == "missing_dependency"
+    assert runtime["remediation"]["action"] == "request_reinstallation"
 
 
 def test_windows_preflight_keeps_unreleased_runtime_closed_without_ipv6_requirement(

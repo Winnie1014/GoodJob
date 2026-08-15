@@ -187,6 +187,14 @@ def _raise_wfp(operation: str, status: int) -> None:
     )
 
 
+def _raise_wfp_probe(operation: str, status: int) -> None:
+    if status == 5:
+        raise PermissionError(
+            f"Windows WFP policy write permission is unavailable ({operation}: 0x{status:08X})"
+        )
+    _raise_wfp(operation, status)
+
+
 def _retry_retained_wfp_engines() -> None:
     """Retry construction cleanup without losing ownership of a live WFP engine."""
     with _RETAINED_WFP_ENGINES_LOCK:
@@ -224,7 +232,7 @@ def probe_wfp_policy_write_access() -> None:
         )
     )
     if status != 0 or not engine.value:
-        _raise_wfp("FwpmEngineOpen0(prerequisite probe)", status)
+        _raise_wfp_probe("FwpmEngineOpen0(prerequisite probe)", status)
     assert engine.value is not None
     engine_value = int(engine.value)
     try:
@@ -235,7 +243,7 @@ def probe_wfp_policy_write_access() -> None:
         sublayer.weight = 0xFFFF
         status = int(api.FwpmSubLayerAdd0(engine, ctypes.byref(sublayer), None))
         if status != 0:
-            _raise_wfp("FwpmSubLayerAdd0(prerequisite probe)", status)
+            _raise_wfp_probe("FwpmSubLayerAdd0(prerequisite probe)", status)
     except BaseException as primary_error:
         close_status = int(api.FwpmEngineClose0(engine))
         if close_status != 0:
@@ -482,15 +490,26 @@ def windows_git_candidates() -> tuple[Path, ...]:
     return tuple(unique)
 
 
-def resolve_windows_git_executable() -> str:
-    require_released_runtime()
+def find_trusted_windows_git_executable() -> str | None:
+    """Return the trusted Git for Windows entry point without opening the release gate."""
     for candidate in windows_git_candidates():
         if not candidate.is_file():
             continue
-        resolved = candidate.resolve(strict=True)
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
         tail = tuple(part.lower() for part in resolved.parts[-3:])
         if tail == ("mingw64", "bin", "git.exe"):
             return str(resolved)
+    return None
+
+
+def resolve_windows_git_executable() -> str:
+    require_released_runtime()
+    executable = find_trusted_windows_git_executable()
+    if executable is not None:
+        return executable
     raise GitSandboxUnavailableError(
         r"Git for Windows is unavailable at a trusted mingw64\bin\git.exe path; "
         r"cmd\git.exe is not an allowed entry point"

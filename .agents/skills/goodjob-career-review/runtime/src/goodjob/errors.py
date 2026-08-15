@@ -27,3 +27,15 @@ class UnsupportedSchemaError(GoodJobError):
 
 class UnsupportedPlatformError(GoodJobError):
     code = "unsupported_platform"
+
+
+class MissingDependencyError(GoodJobError):
+    code = "missing_dependency"
+
+
+class PermissionRequiredError(GoodJobError):
+    code = "permission_required"
+
+
+class UnsupportedCapabilityError(GoodJobError):
+    code = "unsupported_capability"

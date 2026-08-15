@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
 
 RUNTIME_DIR = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = RUNTIME_DIR / "scripts"
@@ -21,6 +20,8 @@ sys.path.insert(0, str(TRUSTED_SOURCE_DIR))
 from goodjob.platform.preflight_windows import (  # noqa: E402
     WindowsPreflightReportDict,
     missing_python_runtime_report,
+    parse_windows_preflight_report,
+    preflight_protocol_failure_report,
 )
 from goodjob.platform.runtime_bootstrap import (  # noqa: E402
     PythonRuntime,
@@ -53,28 +54,7 @@ def _discover_runtime(platform_name: str) -> PythonRuntime | None:
 
 
 def _preflight_protocol_failure(message: str) -> WindowsPreflightReportDict:
-    return {
-        "contract_version": "windows-prerequisite-preflight-v1",
-        "status": "error",
-        "can_start_broker": False,
-        "checks": [
-            {
-                "id": "windows_preflight",
-                "status": "failed",
-                "code": "unsupported_capability",
-                "message": message,
-                "remediation": {
-                    "action": "repair_skill_or_use_wsl2",
-                    "purpose": "complete every mandatory prerequisite before protected execution",
-                    "requires_explicit_consent": False,
-                },
-            }
-        ],
-        "notices": [
-            "Native Windows Git subprocesses do not have filesystem read isolation; "
-            "use WSL2 when complete Git filesystem isolation is required."
-        ],
-    }
+    return preflight_protocol_failure_report(message).as_dict()
 
 
 def _run_windows_preflight(runtime: PythonRuntime, workspace: str) -> WindowsPreflightReportDict:
@@ -102,21 +82,17 @@ def _run_windows_preflight(runtime: PythonRuntime, workspace: str) -> WindowsPre
         raw: object = json.loads(result.stdout)
     except (json.JSONDecodeError, RecursionError):
         return _preflight_protocol_failure("the Windows prerequisite probe returned invalid JSON")
-    if (
-        not isinstance(raw, dict)
-        or raw.get("contract_version") != "windows-prerequisite-preflight-v1"
-        or not isinstance(raw.get("can_start_broker"), bool)
-        or not isinstance(raw.get("checks"), list)
-    ):
+    report = parse_windows_preflight_report(raw)
+    if report is None:
         return _preflight_protocol_failure("the Windows prerequisite report is incomplete")
-    can_start = raw["can_start_broker"]
+    can_start = report["can_start_broker"]
     expected_status = "ok" if can_start else "error"
     expected_returncode = 0 if can_start else 2
-    if raw.get("status") != expected_status or result.returncode != expected_returncode:
+    if report["status"] != expected_status or result.returncode != expected_returncode:
         return _preflight_protocol_failure(
             "the Windows prerequisite process and report status disagree"
         )
-    return cast(WindowsPreflightReportDict, raw)
+    return report
 
 
 def _write_report(report: WindowsPreflightReportDict, *, standard_output: bool) -> None:
