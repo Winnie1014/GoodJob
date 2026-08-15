@@ -120,6 +120,44 @@ def test_windows_runtime_discovery_accepts_python_exe_fallback() -> None:
     assert runtime.version == (3, 12, 4)
 
 
+def test_windows_runtime_discovery_accepts_uv_only_newer_python() -> None:
+    uv = r"C:\tools\uv.exe"
+    find_command = (
+        uv,
+        "python",
+        "find",
+        "--no-project",
+        "--no-config",
+        "--offline",
+        "--no-python-downloads",
+        "--show-version",
+        ">=3.12",
+    )
+    runner = FakeRunner({find_command: (0, "Python 3.13.5\n", "")})
+
+    runtime = discover_python312(
+        platform_name="win32",
+        which=lambda name: uv if name == "uv" else None,
+        runner=runner,
+    )
+
+    assert runtime is not None
+    assert runtime.command == (
+        uv,
+        "run",
+        "--isolated",
+        "--no-project",
+        "--no-config",
+        "--offline",
+        "--no-python-downloads",
+        "--python",
+        "3.13.5",
+        "python",
+    )
+    assert runtime.kind == "uv"
+    assert runtime.version == (3, 13, 5)
+
+
 def test_runtime_discovery_reports_missing_when_uv_and_python_are_unusable() -> None:
     uv = r"C:\tools\uv.exe"
     runner = FakeRunner(
@@ -133,8 +171,8 @@ def test_runtime_discovery_reports_missing_when_uv_and_python_are_unusable() -> 
                 "--offline",
                 "--no-python-downloads",
                 "--show-version",
-                "3.12",
-            ): (2, "", "No Python 3.12 found"),
+                ">=3.12",
+            ): (2, "", "No compatible Python found"),
         }
     )
 

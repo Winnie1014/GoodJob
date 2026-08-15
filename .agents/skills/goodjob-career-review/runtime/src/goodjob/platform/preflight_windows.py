@@ -14,7 +14,13 @@ from goodjob.errors import (
     PermissionRequiredError,
     UnsupportedCapabilityError,
 )
-from goodjob.platform.handles_windows import load_windows_dll
+from goodjob.platform.handles_windows import (
+    OwnedHandle,
+    close_owned_resources,
+    last_error,
+    load_windows_dll,
+    retry_retained_owners,
+)
 
 PreflightCode = Literal["missing_dependency", "permission_required", "unsupported_capability"]
 CheckStatus = Literal["passed", "failed"]
@@ -96,12 +102,14 @@ class SystemWindowsPrerequisiteProbes:
     """Read native Windows capability state without installing or enabling anything."""
 
     def trusted_git_executable(self) -> Path | None:
+        retry_retained_owners()
         from goodjob.platform.sandbox_windows import find_trusted_windows_git_executable
 
         executable = find_trusted_windows_git_executable()
         return Path(executable) if executable is not None else None
 
     def workspace_filesystem(self, workspace: Path) -> str:
+        retry_retained_owners()
         kernel32 = load_windows_dll("kernel32.dll")
         kernel32.GetVolumePathNameW.argtypes = [
             ctypes.c_wchar_p,
@@ -138,6 +146,7 @@ class SystemWindowsPrerequisiteProbes:
         return filesystem.value
 
     def bfe_is_running(self) -> bool:
+        retry_retained_owners()
         advapi32 = load_windows_dll("advapi32.dll")
         advapi32.OpenSCManagerW.argtypes = [
             ctypes.c_wchar_p,
@@ -157,36 +166,47 @@ class SystemWindowsPrerequisiteProbes:
         advapi32.QueryServiceStatusEx.restype = ctypes.c_int
         advapi32.CloseServiceHandle.argtypes = [ctypes.c_void_p]
         advapi32.CloseServiceHandle.restype = ctypes.c_int
-        manager = advapi32.OpenSCManagerW(None, None, 0x0001)
-        if not manager:
+        manager_value = int(advapi32.OpenSCManagerW(None, None, 0x0001) or 0)
+        if manager_value == 0:
             return False
-        service = None
+
+        def close_service_handle(value: int) -> None:
+            if not advapi32.CloseServiceHandle(ctypes.c_void_p(value)):
+                raise OSError(last_error(), "CloseServiceHandle")
+
+        manager = OwnedHandle(manager_value, closer=close_service_handle)
+        service: OwnedHandle | None = None
         try:
-            service = advapi32.OpenServiceW(manager, "BFE", 0x0004)
-            if not service:
-                return False
-            status = SERVICE_STATUS_PROCESS()
-            needed = ctypes.c_uint32()
-            ok = advapi32.QueryServiceStatusEx(
-                service,
-                0,
-                ctypes.cast(ctypes.byref(status), ctypes.POINTER(ctypes.c_ubyte)),
-                ctypes.sizeof(status),
-                ctypes.byref(needed),
-            )
-            return bool(ok) and int(status.dwCurrentState) == 4
-        finally:
-            if service:
-                advapi32.CloseServiceHandle(service)
-            advapi32.CloseServiceHandle(manager)
+            service_value = int(advapi32.OpenServiceW(manager.value, "BFE", 0x0004) or 0)
+            if service_value == 0:
+                running = False
+            else:
+                service = OwnedHandle(service_value, closer=close_service_handle)
+                status = SERVICE_STATUS_PROCESS()
+                needed = ctypes.c_uint32()
+                ok = advapi32.QueryServiceStatusEx(
+                    service.value,
+                    0,
+                    ctypes.cast(ctypes.byref(status), ctypes.POINTER(ctypes.c_ubyte)),
+                    ctypes.sizeof(status),
+                    ctypes.byref(needed),
+                )
+                running = bool(ok) and int(status.dwCurrentState) == 4
+        except BaseException as primary_error:
+            close_owned_resources((service, manager), cause=primary_error)
+            raise
+        close_owned_resources((service, manager))
+        return running
 
     def is_elevated(self) -> bool:
+        retry_retained_owners()
         shell32 = load_windows_dll("shell32.dll")
         shell32.IsUserAnAdmin.argtypes = []
         shell32.IsUserAnAdmin.restype = ctypes.c_int
         return bool(shell32.IsUserAnAdmin())
 
     def wfp_api_is_available(self) -> bool:
+        retry_retained_owners()
         try:
             api = load_windows_dll("fwpuclnt.dll")
         except OSError:
@@ -196,12 +216,14 @@ class SystemWindowsPrerequisiteProbes:
         )
 
     def wfp_policy_write_access(self) -> bool:
+        retry_retained_owners()
         from goodjob.platform.sandbox_windows import probe_wfp_policy_write_access
 
         probe_wfp_policy_write_access()
         return True
 
     def runtime_modules_importable(self) -> bool:
+        retry_retained_owners()
         try:
             importlib.import_module("goodjob.cli")
             importlib.import_module("goodjob.platform.launcher_windows")

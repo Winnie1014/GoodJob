@@ -21,6 +21,7 @@ from goodjob.platform import (
     fs_windows,
     handles_windows,
     launcher_windows,
+    preflight_windows,
     sandbox_windows,
 )
 from goodjob.platform.capability_windows import WindowsTransferPipe
@@ -109,6 +110,95 @@ def test_windows_owner_cleanup_continues_and_retries_the_failed_owner() -> None:
     assert first.closed
     assert handles_windows._RETAINED_OWNERS == []
     assert closed == [93, 92]
+
+
+class _FakeBfeCall:
+    argtypes: object
+    restype: object
+
+    def __init__(self, callback: Any) -> None:
+        self._callback = callback
+
+    def __call__(self, *args: Any) -> Any:
+        return self._callback(*args)
+
+
+class _FakeBfeApi:
+    manager_handle = 101
+    service_handle = 202
+
+    def __init__(self, fail_close_once_for: int) -> None:
+        self.close_attempts: list[int] = []
+        self._fail_close_once_for = fail_close_once_for
+        self._close_failed = False
+        self.OpenSCManagerW = _FakeBfeCall(lambda *_args: self.manager_handle)
+        self.OpenServiceW = _FakeBfeCall(lambda *_args: self.service_handle)
+        self.QueryServiceStatusEx = _FakeBfeCall(self._query_service_status)
+        self.CloseServiceHandle = _FakeBfeCall(self._close_service_handle)
+
+    @staticmethod
+    def _query_service_status(
+        _service: Any,
+        _info_level: int,
+        status_buffer: Any,
+        _status_size: int,
+        _needed: Any,
+    ) -> int:
+        status = ctypes.cast(
+            status_buffer, ctypes.POINTER(preflight_windows.SERVICE_STATUS_PROCESS)
+        )
+        status.contents.dwCurrentState = 4
+        return 1
+
+    def _close_service_handle(self, handle: Any) -> int:
+        raw_value = getattr(handle, "value", handle)
+        value = int(raw_value)
+        self.close_attempts.append(value)
+        if value == self._fail_close_once_for and not self._close_failed:
+            self._close_failed = True
+            return 0
+        return 1
+
+
+class _FakeAdministratorApi:
+    def __init__(self) -> None:
+        self.IsUserAnAdmin = _FakeBfeCall(lambda: 1)
+
+
+@pytest.mark.parametrize(
+    "failed_handle",
+    [_FakeBfeApi.service_handle, _FakeBfeApi.manager_handle],
+    ids=["service", "manager"],
+)
+def test_bfe_probe_retains_failed_close_and_retries_before_next_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    failed_handle: int,
+) -> None:
+    api = _FakeBfeApi(failed_handle)
+    administrator_api = _FakeAdministratorApi()
+    loaded_dlls: list[str] = []
+
+    def load_api(name: str) -> Any:
+        loaded_dlls.append(name)
+        return api if name == "advapi32.dll" else administrator_api
+
+    monkeypatch.setattr(preflight_windows, "load_windows_dll", load_api)
+    probes = preflight_windows.SystemWindowsPrerequisiteProbes()
+
+    with pytest.raises(OSError, match="CloseServiceHandle"):
+        probes.bfe_is_running()
+
+    assert api.close_attempts == [api.service_handle, api.manager_handle]
+    assert len(handles_windows._RETAINED_OWNERS) == 1
+    retained = handles_windows._RETAINED_OWNERS[0]
+    assert isinstance(retained, OwnedHandle)
+    assert retained.value == failed_handle
+
+    assert probes.is_elevated() is True
+    assert handles_windows._RETAINED_OWNERS == []
+    assert api.close_attempts[-1] == failed_handle
+    assert api.close_attempts.count(failed_handle) == 2
+    assert loaded_dlls == ["advapi32.dll", "shell32.dll"]
 
 
 class _FailingMsvcrt:

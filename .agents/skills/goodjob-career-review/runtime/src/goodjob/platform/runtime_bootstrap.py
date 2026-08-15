@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Protocol
 
 _VERSION_PATTERN = re.compile(r"(?:Python\s+)?(3)\.(\d+)\.(\d+)")
+_MINIMUM_PYTHON = (3, 12, 0)
+_UV_PYTHON_REQUEST = ">=3.12"
 
 
 class CommandRunner(Protocol):
@@ -84,7 +86,7 @@ def _uv_runtime(uv: str, runner: CommandRunner) -> PythonRuntime | None:
         "--offline",
         "--no-python-downloads",
         "--show-version",
-        "3.12",
+        _UV_PYTHON_REQUEST,
     )
     try:
         result = runner(
@@ -99,8 +101,9 @@ def _uv_runtime(uv: str, runner: CommandRunner) -> PythonRuntime | None:
     if result.returncode != 0:
         return None
     version = _version_from_output(f"{result.stdout}\n{result.stderr}")
-    if version is None or version < (3, 12, 0):
+    if version is None or version < _MINIMUM_PYTHON:
         return None
+    exact_version = ".".join(str(part) for part in version)
     return PythonRuntime(
         command=(
             uv,
@@ -111,7 +114,7 @@ def _uv_runtime(uv: str, runner: CommandRunner) -> PythonRuntime | None:
             "--offline",
             "--no-python-downloads",
             "--python",
-            "3.12",
+            exact_version,
             "python",
         ),
         kind="uv",
@@ -159,6 +162,6 @@ def discover_python312(
             continue
         seen.add(command)
         version = _probe_version(command, runner)
-        if version is not None and version >= (3, 12, 0):
+        if version is not None and version >= _MINIMUM_PYTHON:
             return PythonRuntime(command=command, kind=kind, version=version)
     return None
