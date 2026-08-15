@@ -419,6 +419,23 @@ class CheckerCliTests(unittest.TestCase):
 
 
 class GateIntegrationTests(unittest.TestCase):
+    def test_gate_python_checks_host_and_windows_types(self) -> None:
+        result = subprocess.run(
+            ["make", "--no-print-directory", "-n", "gate-python"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        commands = result.stdout.splitlines()
+        self.assertIn('cd ".agents/skills/goodjob-career-review/runtime" && uv run mypy .', commands)
+        self.assertIn(
+            'cd ".agents/skills/goodjob-career-review/runtime" && '
+            "uv run mypy --platform win32 .",
+            commands,
+        )
+
     def test_gate_docs_runs_tests_before_checker(self) -> None:
         result = subprocess.run(
             ["make", "--no-print-directory", "-n", "gate-docs"],
@@ -431,8 +448,10 @@ class GateIntegrationTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                "python3 -m unittest scripts/test_check_doc_links.py",
-                "python3 scripts/check-doc-links.py",
+                'uv run --project ".agents/skills/goodjob-career-review/runtime" '
+                "python -m unittest scripts/test_check_doc_links.py",
+                'uv run --project ".agents/skills/goodjob-career-review/runtime" '
+                "python scripts/check-doc-links.py",
             ],
         )
 

@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Protocol
+from typing import Protocol, cast
 
 from goodjob.errors import InvalidInputError
 
@@ -20,6 +20,14 @@ class PublicationDirectory(Protocol):
     def list_directory(self) -> set[str]: ...
 
     def read_regular(self, name: str) -> bytes: ...
+
+
+def _fchmod(file_descriptor: int, mode: int) -> None:
+    """Apply POSIX descriptor permissions or fail closed when unavailable."""
+    fchmod = cast(Callable[[int, int], None] | None, getattr(os, "fchmod", None))
+    if fchmod is None:
+        raise OSError("descriptor permission changes are unavailable on this platform")
+    fchmod(file_descriptor, mode)
 
 
 @dataclass(frozen=True)
@@ -273,7 +281,7 @@ class SafeDataTree:
                 try:
                     if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                         raise InvalidInputError(f"{self.label} destination is not a regular file")
-                    os.fchmod(descriptor, mode)
+                    _fchmod(descriptor, mode)
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)
@@ -367,11 +375,11 @@ class SafeDataTree:
                                 raise InvalidInputError(
                                     f"published {self.label} is not a regular file"
                                 )
-                            os.fchmod(file_fd, stat.S_IRUSR)
+                            _fchmod(file_fd, stat.S_IRUSR)
                             os.fsync(file_fd)
                         finally:
                             os.close(file_fd)
-                    os.fchmod(final_fd, stat.S_IRUSR | stat.S_IXUSR)
+                    _fchmod(final_fd, stat.S_IRUSR | stat.S_IXUSR)
                     os.fsync(final_fd)
                 finally:
                     os.close(final_fd)
@@ -412,7 +420,7 @@ class SafeDataTree:
         )
         child_fd = os.open(name, flags, dir_fd=directory_fd)
         try:
-            os.fchmod(child_fd, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+            _fchmod(child_fd, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
             for child_name in os.listdir(child_fd):
                 cls._remove_entry_at(child_fd, child_name)
         finally:

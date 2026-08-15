@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import sqlite3
 import stat
 import subprocess
@@ -20,10 +19,11 @@ from goodjob.locks import ExclusiveWriterLock
 from goodjob.paths import DataPaths
 from goodjob.reporting import ArtifactSnapshotService
 
-_SIGKILL_EXPORT_SCRIPT = r"""
+_ABRUPT_EXIT_CODE = 86
+
+_ABRUPT_EXIT_EXPORT_SCRIPT = r"""
 import json
 import os
-import signal
 import sys
 from pathlib import Path
 
@@ -38,6 +38,7 @@ database = Database(DataPaths(Path(sys.argv[2])))
 workspace = Path(sys.argv[3])
 receipt_id = sys.argv[4]
 fault_at = sys.argv[5]
+exit_code = int(sys.argv[6])
 request = json.loads(sys.stdin.buffer.read())
 service = ExportService(database)
 
@@ -46,31 +47,31 @@ if fault_at == "after_temp":
 
     def kill_after_temp(self, relative, manifest):
         original_verify(self, relative, manifest)
-        os.kill(os.getpid(), signal.SIGKILL)
+        os._exit(exit_code)
 
     ExportService._verify_rendered_files = kill_after_temp
-elif fault_at == "after_rename":
-    original_rename = safe_fs.os.rename
+elif fault_at == "after_publish":
+    original_publish = safe_fs.SafeDataTree.publish_directory
 
-    def kill_after_rename(*args, **kwargs):
-        original_rename(*args, **kwargs)
-        os.kill(os.getpid(), signal.SIGKILL)
+    def kill_after_publish(self, *args, **kwargs):
+        original_publish(self, *args, **kwargs)
+        os._exit(exit_code)
 
-    safe_fs.os.rename = kill_after_rename
+    safe_fs.SafeDataTree.publish_directory = kill_after_publish
 elif fault_at == "before_database_commit":
     def kill_before_database_commit(self, connection, attempt, manifest_sha256):
-        os.kill(os.getpid(), signal.SIGKILL)
+        os._exit(exit_code)
 
     ExportService._record_success = kill_before_database_commit
 else:
-    raise RuntimeError("unknown SIGKILL test stage")
+    raise RuntimeError("unknown abrupt-exit test stage")
 
 service.translate_export(
     workspace_path=workspace,
     authorization_receipt_id=receipt_id,
     request_value=request,
 )
-raise RuntimeError("export unexpectedly survived SIGKILL hook")
+raise RuntimeError("export unexpectedly survived abrupt-exit hook")
 """
 
 
@@ -604,8 +605,8 @@ def test_dead_export_owner_recovery_cleans_only_registered_paths_and_retries_fre
     assert export_count == (2,)
 
 
-@pytest.mark.parametrize("fault_at", ["after_temp", "after_rename", "before_database_commit"])
-def test_real_sigkill_export_is_recovered_by_the_next_writer_entry(
+@pytest.mark.parametrize("fault_at", ["after_temp", "after_publish", "before_database_commit"])
+def test_real_abrupt_exit_export_is_recovered_by_the_next_writer_entry(
     tmp_path: Path,
     data_paths: DataPaths,
     fault_at: str,
@@ -621,12 +622,13 @@ def test_real_sigkill_export_is_recovered_by_the_next_writer_entry(
             "-I",
             "-B",
             "-c",
-            _SIGKILL_EXPORT_SCRIPT,
+            _ABRUPT_EXIT_EXPORT_SCRIPT,
             str(runtime_source),
             str(data_paths.root),
             str(workspace),
             receipt_id,
             fault_at,
+            str(_ABRUPT_EXIT_CODE),
         ],
         input=json.dumps(_translation_request(source)).encode("utf-8"),
         capture_output=True,
@@ -634,7 +636,7 @@ def test_real_sigkill_export_is_recovered_by_the_next_writer_entry(
         timeout=15,
     )
 
-    assert killed.returncode == -signal.SIGKILL, killed.stderr.decode("utf-8", "replace")
+    assert killed.returncode == _ABRUPT_EXIT_CODE, killed.stderr.decode("utf-8", "replace")
     connection = sqlite3.connect(data_paths.database_file)
     try:
         row = connection.execute(
