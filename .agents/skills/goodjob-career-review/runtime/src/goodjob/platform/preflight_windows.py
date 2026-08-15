@@ -81,6 +81,8 @@ WindowsReportDict = WindowsPreflightReportDict | WindowsBootstrapReportDict
 class WindowsPrerequisiteProbes(Protocol):
     """Host probes used before authorization or protected execution."""
 
+    def retry_retained_cleanup(self) -> None: ...
+
     def trusted_git_executable(self) -> Path | None: ...
 
     def workspace_filesystem(self, workspace: Path) -> str: ...
@@ -94,6 +96,24 @@ class WindowsPrerequisiteProbes(Protocol):
     def wfp_policy_write_access(self) -> bool: ...
 
     def runtime_modules_importable(self) -> bool: ...
+
+
+def retry_windows_preflight_cleanup() -> None:
+    """Retry every retained Windows owner before any new prerequisite probe."""
+    first_error: RetainedOwnerCleanupError | None = None
+    try:
+        retry_retained_owners()
+    except RetainedOwnerCleanupError as error:
+        first_error = error
+    from goodjob.platform.sandbox_windows import _retry_retained_wfp_engines
+
+    try:
+        _retry_retained_wfp_engines()
+    except RetainedOwnerCleanupError as error:
+        if first_error is None:
+            first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 class SERVICE_STATUS_PROCESS(ctypes.Structure):
@@ -112,6 +132,9 @@ class SERVICE_STATUS_PROCESS(ctypes.Structure):
 
 class SystemWindowsPrerequisiteProbes:
     """Read native Windows capability state without installing or enabling anything."""
+
+    def retry_retained_cleanup(self) -> None:
+        retry_windows_preflight_cleanup()
 
     def trusted_git_executable(self) -> Path | None:
         retry_retained_owners()
@@ -535,6 +558,11 @@ def evaluate_windows_preflight(
             )
         )
     python_check = checks[0]
+
+    try:
+        probes.retry_retained_cleanup()
+    except RetainedOwnerCleanupError:
+        return _retained_owner_cleanup_report(python_check, release_enabled=release_enabled)
 
     runtime_files = (
         runtime_dir / "scripts" / "launch_broker.py",

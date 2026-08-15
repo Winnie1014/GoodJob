@@ -46,6 +46,9 @@ def _load_session() -> ModuleType:
 class LauncherProbes:
     elevated: bool
 
+    def retry_retained_cleanup(self) -> None:
+        return None
+
     def trusted_git_executable(self) -> Path | None:
         return Path(r"C:\Program Files\Git\mingw64\bin\git.exe")
 

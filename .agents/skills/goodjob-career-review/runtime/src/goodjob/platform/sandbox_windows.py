@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from goodjob.platform.detect import GitSandboxUnavailableError, require_released_runtime
-from goodjob.platform.handles_windows import load_windows_dll
+from goodjob.platform.handles_windows import RetainedOwnerCleanupError, load_windows_dll
 
 if TYPE_CHECKING:
     from goodjob.git_metadata import InternalGitBinding
@@ -209,7 +209,10 @@ def _retry_retained_wfp_engines() -> None:
                 failure_status = status
         _RETAINED_WFP_ENGINES[:] = remaining
     if remaining:
-        _raise_wfp("FwpmEngineClose0(retained construction cleanup)", failure_status)
+        raise RetainedOwnerCleanupError(
+            "previous Windows WFP engine cleanup remains incomplete "
+            f"(FwpmEngineClose0: 0x{failure_status:08X})"
+        )
 
 
 def _retain_wfp_engine(api: Any, engine: int) -> None:

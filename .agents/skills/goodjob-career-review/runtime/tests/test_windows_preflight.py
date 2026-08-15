@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from goodjob.platform import sandbox_windows
 from goodjob.platform.handles_windows import (
     OwnedHandle,
     RetainedOwnerCleanupError,
@@ -18,6 +19,7 @@ from goodjob.platform.preflight_windows import (
     parse_windows_bootstrap_report,
     parse_windows_preflight_report,
     preflight_protocol_failure_report,
+    retry_windows_preflight_cleanup,
 )
 
 
@@ -31,6 +33,9 @@ class FakeWindowsProbes:
     wfp_write: bool = True
     wfp_error: OSError | None = None
     runtime_importable: bool = True
+
+    def retry_retained_cleanup(self) -> None:
+        return None
 
     def trusted_git_executable(self) -> Path | None:
         return self.git_executable
@@ -61,8 +66,10 @@ class FakeWindowsProbes:
 class CleanupAwareWindowsProbes(FakeWindowsProbes):
     calls: list[str] = field(default_factory=list)
 
+    def retry_retained_cleanup(self) -> None:
+        retry_windows_preflight_cleanup()
+
     def _record(self, name: str) -> None:
-        retry_retained_owners()
         self.calls.append(name)
 
     def trusted_git_executable(self) -> Path | None:
@@ -103,6 +110,16 @@ def _runtime_tree(tmp_path: Path) -> Path:
     (runtime / "scripts" / "windows_preflight.py").write_text("# preflight\n", encoding="utf-8")
     (runtime / "src" / "goodjob" / "__init__.py").write_text("", encoding="utf-8")
     return runtime
+
+
+class _RetainedWfpApi:
+    def __init__(self) -> None:
+        self.cleanup_blocked = True
+        self.close_calls = 0
+
+    def FwpmEngineClose0(self, _engine: object) -> int:
+        self.close_calls += 1
+        return 5 if self.cleanup_blocked else 0
 
 
 @pytest.mark.parametrize(
@@ -361,3 +378,70 @@ def test_windows_preflight_stops_before_new_probes_until_retained_cleanup_succee
     finally:
         cleanup_blocked = False
         retry_retained_owners()
+
+
+def test_windows_preflight_stops_before_probes_until_retained_wfp_cleanup_succeeds(
+    tmp_path: Path,
+) -> None:
+    api = _RetainedWfpApi()
+    sandbox_windows._RETAINED_WFP_ENGINES.append((api, 31901))
+    probes = CleanupAwareWindowsProbes()
+    runtime = _runtime_tree(tmp_path)
+
+    try:
+        blocked = evaluate_windows_preflight(
+            workspace=tmp_path / "workspace",
+            runtime_dir=runtime,
+            python_version=(3, 13, 5),
+            launcher_kind="uv",
+            uv_available=True,
+            release_enabled=True,
+            probes=probes,
+        ).as_dict()
+
+        assert probes.calls == []
+        assert api.close_calls == 1
+        assert [(api, 31901)] == sandbox_windows._RETAINED_WFP_ENGINES
+        assert parse_windows_preflight_report(blocked) == blocked
+        cleanup_failures = [
+            check
+            for check in blocked["checks"]
+            if check["id"] not in {"python_runtime", "native_windows_release"}
+        ]
+        assert {check["code"] for check in cleanup_failures} == {"unsupported_capability"}
+        assert {check["remediation"]["action"] for check in cleanup_failures} == {
+            "retry_cleanup_or_repair_runtime_or_use_wsl2"
+        }
+        assert all(
+            check["remediation"]["action"]
+            not in {"request_installation", "request_service_enablement", "request_elevation"}
+            for check in blocked["checks"]
+            if check["status"] == "failed"
+        )
+
+        api.cleanup_blocked = False
+        recovered = evaluate_windows_preflight(
+            workspace=tmp_path / "workspace",
+            runtime_dir=runtime,
+            python_version=(3, 13, 5),
+            launcher_kind="uv",
+            uv_available=True,
+            release_enabled=True,
+            probes=probes,
+        ).as_dict()
+
+        assert recovered["status"] == "ok"
+        assert api.close_calls == 2
+        assert sandbox_windows._RETAINED_WFP_ENGINES == []
+        assert probes.calls == [
+            "runtime_installation",
+            "trusted_git",
+            "workspace_filesystem",
+            "bfe_service",
+            "administrator",
+            "wfp_api",
+            "wfp_permission",
+        ]
+    finally:
+        api.cleanup_blocked = False
+        sandbox_windows._retry_retained_wfp_engines()
