@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -90,6 +91,73 @@ class FakeRunner:
         self.calls.append(key)
         returncode, stdout, stderr = self.results.get(key, (1, "", "not found"))
         return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+
+def _write_windows_entry_shim(bin_dir: Path, name: str) -> Path:
+    shim = bin_dir / name
+    shim.write_text(
+        f"""#!{sys.executable}
+import os
+import sys
+
+args = sys.argv[1:]
+name = os.path.basename(sys.argv[0])
+if name == "py":
+    if args == ["-3.12", "--version"]:
+        raise SystemExit(2)
+    if args == ["-3", "--version"]:
+        print("Python 3.13.5")
+        raise SystemExit(0)
+    if not args or args[0] != "-3":
+        raise SystemExit(91)
+    args = args[1:]
+elif name == "uv":
+    find_args = [
+        "python", "find", "--no-project", "--no-config", "--offline",
+        "--no-python-downloads", "--show-version", ">=3.12",
+    ]
+    if args == find_args:
+        print("Python 3.13.5")
+        raise SystemExit(0)
+    run_prefix = [
+        "run", "--isolated", "--no-project", "--no-config", "--offline",
+        "--no-python-downloads", "--python",
+    ]
+    if (
+        args[:len(run_prefix)] != run_prefix
+        or len(args) <= len(run_prefix) + 1
+        or args[len(run_prefix)] not in {{">=3.12", "3.13.5"}}
+        or args[len(run_prefix) + 1] != "python"
+    ):
+        raise SystemExit(92)
+    args = args[len(run_prefix) + 2:]
+else:
+    raise SystemExit(93)
+
+if args[:2] != ["-I", "-B"] or len(args) < 3:
+    raise SystemExit(94)
+script, script_args = args[2], args[3:]
+wrapper = (
+    "import importlib.util,os,sys;"
+    "script=sys.argv[1];"
+    "spec=importlib.util.spec_from_file_location('entry_under_test',script);"
+    "module=importlib.util.module_from_spec(spec);"
+    "sys.modules[spec.name]=module;"
+    "spec.loader.exec_module(module);"
+    "args=sys.argv[2:];"
+    "result=(module.run(args,platform_name='win32') "
+    "if os.path.basename(script)=='launch_broker.py' else module.run(args));"
+    "raise SystemExit(result)"
+)
+os.execv(
+    sys.executable,
+    [sys.executable, "-I", "-B", "-c", wrapper, script, *script_args],
+)
+""",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim
 
 
 def test_windows_runtime_discovery_supports_python_launcher() -> None:
@@ -181,6 +249,69 @@ def test_windows_runtime_discovery_accepts_uv_only_newer_python() -> None:
     )
     assert runtime.kind == "uv"
     assert runtime.version == (3, 13, 5)
+
+
+@pytest.mark.parametrize("entry_kind", ["py", "uv"], ids=["py-3", "uv-managed"])
+def test_windows_public_command_reaches_full_preflight_with_only_one_entry(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    entry = _write_windows_entry_shim(bin_dir, entry_kind)
+    launcher = Path(__file__).resolve().parents[1] / "scripts" / "launch_broker.py"
+    workspace = tmp_path / "workspace"
+    if entry_kind == "py":
+        command = [str(entry), "-3", "-I", "-B", str(launcher)]
+    else:
+        command = [
+            str(entry),
+            "run",
+            "--isolated",
+            "--no-project",
+            "--no-config",
+            "--offline",
+            "--no-python-downloads",
+            "--python",
+            ">=3.12",
+            "python",
+            "-I",
+            "-B",
+            str(launcher),
+        ]
+    command.extend(
+        [
+            "--windows-preflight-only",
+            "--workspace",
+            str(workspace),
+            "--agent-runtime",
+            "test-runtime",
+        ]
+    )
+
+    result = subprocess.run(
+        command,
+        env={**os.environ, "PATH": str(bin_dir)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30.0,
+    )
+
+    assert result.returncode == 2, result.stderr
+    report = json.loads(result.stdout)
+    assert report["contract_version"] == "windows-prerequisite-preflight-v1"
+    assert {check["id"] for check in report["checks"]} == {
+        "python_runtime",
+        "runtime_installation",
+        "trusted_git",
+        "workspace_filesystem",
+        "bfe_service",
+        "administrator",
+        "wfp_api",
+        "wfp_permission",
+        "native_windows_release",
+    }
 
 
 def test_runtime_discovery_reports_missing_when_uv_and_python_are_unusable() -> None:
