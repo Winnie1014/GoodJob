@@ -8,8 +8,10 @@ import hmac
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +24,11 @@ sys.path.insert(0, str(TRUSTED_SOURCE_DIR))
 from goodjob.auth import ReceiptKind, generate_capability  # noqa: E402
 from goodjob.errors import GoodJobError, InvalidInputError  # noqa: E402
 from goodjob.platform.detect import require_released_runtime  # noqa: E402
+from goodjob.platform.preflight_windows import (  # noqa: E402
+    WindowsPreflightReportDict,
+    WindowsReportDict,
+    preflight_protocol_failure_report,
+)
 
 CORE_BOOTSTRAP = (
     "import sys;"
@@ -390,10 +397,20 @@ def _write_all(file_descriptor: int, payload: bytes) -> None:
 class SessionBroker:
     """Hold one raw capability only until the parent task closes standard input."""
 
-    def __init__(self, data_dir: str | None, agent_runtime: str | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: str | None,
+        agent_runtime: str | None = None,
+        preflight_workspace: str | None = None,
+    ) -> None:
         self._capability = generate_capability()
         self._data_dir = str(Path(data_dir).expanduser().resolve()) if data_dir else None
         self._agent_runtime = agent_runtime or "codex_task_runtime"
+        self._preflight_workspace = (
+            os.path.normcase(str(_workspace_path(preflight_workspace)))
+            if preflight_workspace
+            else None
+        )
         self._source_receipts: dict[str, ReceiptEnvelope] = {}
         self._relation_receipts: dict[str, ReceiptEnvelope] = {}
         self._metadata_receipts: dict[str, ReceiptEnvelope] = {}
@@ -407,6 +424,12 @@ class SessionBroker:
 
     def dispatch(self, message: JsonObject) -> JsonObject:
         require_released_runtime()
+        if self._preflight_workspace is not None and "workspace" in message:
+            workspace = os.path.normcase(str(_workspace_path(_required_text(message, "workspace"))))
+            if workspace != self._preflight_workspace:
+                raise InvalidInputError(
+                    "the requested workspace does not match this session's prerequisite preflight"
+                )
         operation = _required_text(message, "op")
         if operation == "authorize_source_analysis":
             return self._authorize_source_analysis(message).payload
@@ -1592,7 +1615,34 @@ class SessionBroker:
         return CoreResponse.from_process(completed)
 
 
-def main() -> None:
+def _run_native_windows_session_preflight(workspace: str) -> WindowsPreflightReportDict:
+    from goodjob.platform.detect import NATIVE_WINDOWS_RELEASE_ENABLED
+    from goodjob.platform.preflight_windows import (
+        SystemWindowsPrerequisiteProbes,
+        evaluate_windows_preflight,
+    )
+
+    return evaluate_windows_preflight(
+        workspace=_workspace_path(workspace),
+        runtime_dir=RUNTIME_DIR,
+        python_version=(sys.version_info.major, sys.version_info.minor, sys.version_info.micro),
+        launcher_kind="session_runtime",
+        uv_available=shutil.which("uv") is not None,
+        release_enabled=NATIVE_WINDOWS_RELEASE_ENABLED,
+        probes=SystemWindowsPrerequisiteProbes(),
+    ).as_dict()
+
+
+def _write_preflight_report(report: WindowsReportDict) -> None:
+    sys.stderr.write(json.dumps(report, sort_keys=True) + "\n")
+
+
+def run(
+    argv: list[str] | None = None,
+    *,
+    platform_name: str = sys.platform,
+    input_stream: Iterable[str] | None = None,
+) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir")
     parser.add_argument(
@@ -1600,9 +1650,32 @@ def main() -> None:
         default="codex_task_runtime",
         help="host agent runtime identifier for authorization receipts",
     )
-    args = parser.parse_args()
-    broker = SessionBroker(args.data_dir, args.agent_runtime)
-    for line in sys.stdin:
+    parser.add_argument(
+        "--preflight-workspace",
+        help="workspace bound by a successful native Windows prerequisite preflight",
+    )
+    args = parser.parse_args(argv)
+    if platform_name == "win32":
+        if not args.preflight_workspace:
+            _write_preflight_report(
+                preflight_protocol_failure_report(
+                    "native Windows session startup requires a prerequisite-preflight workspace"
+                ).as_dict()
+            )
+            return 2
+        preflight_report: WindowsReportDict
+        try:
+            preflight_report = _run_native_windows_session_preflight(args.preflight_workspace)
+        except Exception:
+            preflight_report = preflight_protocol_failure_report(
+                "the native Windows session prerequisite preflight could not complete"
+            ).as_dict()
+        if not preflight_report["can_start_broker"]:
+            _write_preflight_report(preflight_report)
+            return 2
+        _write_preflight_report(preflight_report)
+    broker = SessionBroker(args.data_dir, args.agent_runtime, args.preflight_workspace)
+    for line in sys.stdin if input_stream is None else input_stream:
         response: JsonObject
         try:
             response = broker.dispatch(_json_object(line))
@@ -1615,6 +1688,11 @@ def main() -> None:
                 "message": "session broker input could not be processed safely",
             }
         print(json.dumps(response, ensure_ascii=False, sort_keys=True), flush=True)
+    return 0
+
+
+def main() -> None:
+    raise SystemExit(run())
 
 
 if __name__ == "__main__":

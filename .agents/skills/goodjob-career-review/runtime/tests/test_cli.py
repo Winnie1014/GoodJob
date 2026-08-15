@@ -24,9 +24,22 @@ def _send_json(process: subprocess.Popen[str], payload: dict[str, object]) -> di
     return response
 
 
-def _start_broker(data_dir: Path, *, cwd: Path = RUNTIME_DIR) -> subprocess.Popen[str]:
+def _start_broker(
+    data_dir: Path,
+    *,
+    cwd: Path = RUNTIME_DIR,
+    preflight_workspace: Path | None = None,
+) -> subprocess.Popen[str]:
+    command = [
+        sys.executable,
+        str(RUNTIME_DIR / "scripts" / "session.py"),
+        "--data-dir",
+        str(data_dir),
+    ]
+    if preflight_workspace is not None:
+        command.extend(["--preflight-workspace", str(preflight_workspace)])
     return subprocess.Popen(
-        [sys.executable, str(RUNTIME_DIR / "scripts" / "session.py"), "--data-dir", str(data_dir)],
+        command,
         cwd=cwd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -34,6 +47,33 @@ def _start_broker(data_dir: Path, *, cwd: Path = RUNTIME_DIR) -> subprocess.Pope
         text=True,
         env={**os.environ, "PYTHONPATH": str(RUNTIME_DIR / "src")},
     )
+
+
+def test_session_broker_rejects_authorization_outside_preflight_workspace(
+    tmp_path: Path,
+) -> None:
+    preflight_workspace = tmp_path / "preflight-workspace"
+    preflight_workspace.mkdir()
+    other_workspace = tmp_path / "other-workspace"
+    other_workspace.mkdir()
+    broker = _start_broker(
+        tmp_path / "data",
+        preflight_workspace=preflight_workspace,
+    )
+
+    rejected = _send_json(
+        broker,
+        {
+            "op": "authorize_source_analysis",
+            "workspace": str(other_workspace),
+            "confirmed": True,
+        },
+    )
+
+    assert rejected["status"] == "error"
+    assert rejected["code"] == "invalid_input"
+    assert "prerequisite preflight" in str(rejected["message"])
+    _stop_broker(broker)
 
 
 def _stop_broker(broker: subprocess.Popen[str]) -> None:
@@ -440,7 +480,7 @@ def test_documented_launcher_entry_ignores_python_environment_injection(
 ) -> None:
     skill_text = (RUNTIME_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
     assert (
-        "Start `python3 -I -B <runtime_dir>/scripts/launch_broker.py "
+        "`python3 -I -B <runtime_dir>/scripts/launch_broker.py "
         "--agent-runtime <agent-runtime>`" in skill_text
     )
 
@@ -468,6 +508,31 @@ def test_documented_launcher_entry_ignores_python_environment_injection(
     assert result.returncode == 1
     assert not marker.exists()
     assert "Traceback" not in result.stderr
+
+
+def test_skill_windows_preflight_requires_explicit_consent_and_retry() -> None:
+    skill_text = (RUNTIME_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "-I -B <runtime_dir>/scripts/launch_broker.py --windows-preflight-only "
+        "--workspace <workspace>",
+        "py -3 -I -B <runtime_dir>/scripts/launch_broker.py --windows-preflight-only",
+        "uv run --isolated --no-project --no-config --offline --no-python-downloads "
+        '--python "\u003e=3.12" python -I -B <runtime_dir>/scripts/launch_broker.py '
+        "--windows-preflight-only",
+        "`windows-bootstrap-report-v1`",
+        "`windows-prerequisite-preflight-v1` report always contains all nine checks",
+        "`missing_dependency`",
+        "`permission_required`",
+        "`unsupported_capability`",
+        "https://www.python.org/downloads/windows/",
+        "https://git-scm.com/download/win",
+        "Never install a component or request elevation without explicit Owner consent",
+        "If the Owner refuses installation or elevation, stop fail-closed",
+        "`make` is a development and acceptance-gate dependency",
+        "An absent IPv6 default route is not an ordinary user-runtime blocker",
+    ):
+        assert expected in skill_text
 
 
 def test_job_input_preflight_blocks_bad_jd_before_scan_state(tmp_path: Path) -> None:
