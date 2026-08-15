@@ -50,14 +50,25 @@ if fault_at == "after_temp":
         os._exit(exit_code)
 
     ExportService._verify_rendered_files = kill_after_temp
-elif fault_at == "after_publish":
-    original_publish = safe_fs.SafeDataTree.publish_directory
+elif fault_at == "after_rename":
+    if sys.platform == "win32":
+        import goodjob.platform.fs_windows as fs_windows
 
-    def kill_after_publish(self, *args, **kwargs):
-        original_publish(self, *args, **kwargs)
-        os._exit(exit_code)
+        original_rename = fs_windows._rename_handle
 
-    safe_fs.SafeDataTree.publish_directory = kill_after_publish
+        def kill_after_rename(*args, **kwargs):
+            original_rename(*args, **kwargs)
+            os._exit(exit_code)
+
+        fs_windows._rename_handle = kill_after_rename
+    else:
+        original_rename = safe_fs.os.rename
+
+        def kill_after_rename(*args, **kwargs):
+            original_rename(*args, **kwargs)
+            os._exit(exit_code)
+
+        safe_fs.os.rename = kill_after_rename
 elif fault_at == "before_database_commit":
     def kill_before_database_commit(self, connection, attempt, manifest_sha256):
         os._exit(exit_code)
@@ -605,7 +616,7 @@ def test_dead_export_owner_recovery_cleans_only_registered_paths_and_retries_fre
     assert export_count == (2,)
 
 
-@pytest.mark.parametrize("fault_at", ["after_temp", "after_publish", "before_database_commit"])
+@pytest.mark.parametrize("fault_at", ["after_temp", "after_rename", "before_database_commit"])
 def test_real_abrupt_exit_export_is_recovered_by_the_next_writer_entry(
     tmp_path: Path,
     data_paths: DataPaths,
