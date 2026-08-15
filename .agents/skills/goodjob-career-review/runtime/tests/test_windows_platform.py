@@ -638,7 +638,7 @@ def test_windows_filetime_marker_preserves_all_64_bits() -> None:
 
 
 class _FakeWfpApi:
-    def __init__(self, *, corrupt_readback: bool = False) -> None:
+    def __init__(self, *, corrupt_readback: bool = False, sublayer_status: int = 0) -> None:
         self.blob_data = (ctypes.c_ubyte * 4)(1, 2, 3, 4)
         self.blob = sandbox_windows.FWP_BYTE_BLOB(4, self.blob_data)
         self.retrieved = sandbox_windows.FWPM_FILTER0()
@@ -650,6 +650,8 @@ class _FakeWfpApi:
         self.close_calls = 0
         self.corrupt_readback = corrupt_readback
         self.close_statuses: list[int] = []
+        self.sublayer_calls = 0
+        self.sublayer_status = sublayer_status
 
     def FwpmEngineOpen0(self, *_args: Any) -> int:
         output = ctypes.cast(_args[-1], ctypes.POINTER(ctypes.c_void_p))
@@ -657,7 +659,8 @@ class _FakeWfpApi:
         return 0
 
     def FwpmSubLayerAdd0(self, *_args: Any) -> int:
-        return 0
+        self.sublayer_calls += 1
+        return self.sublayer_status
 
     def FwpmGetAppIdFromFileName0(self, _path: str, output: Any) -> int:
         pointer = ctypes.cast(output, ctypes.POINTER(ctypes.POINTER(sandbox_windows.FWP_BYTE_BLOB)))
@@ -706,6 +709,32 @@ def test_wfp_filter_structure_keeps_the_native_64_bit_union_offsets() -> None:
         assert sandbox_windows.FWPM_FILTER0.reserved.offset == 168
         assert sandbox_windows.FWPM_FILTER0.filterId.offset == 176
         assert ctypes.sizeof(sandbox_windows.FWPM_FILTER0) == 200
+
+
+def test_wfp_policy_write_probe_adds_only_a_dynamic_sublayer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeWfpApi()
+    monkeypatch.setattr(sandbox_windows, "_wfp_api", lambda: api)
+
+    sandbox_windows.probe_wfp_policy_write_access()
+
+    assert api.sublayer_calls == 1
+    assert api.added_layers == []
+    assert api.readbacks == []
+    assert api.close_calls == 1
+
+
+def test_wfp_policy_write_probe_fails_closed_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeWfpApi(sublayer_status=5)
+    monkeypatch.setattr(sandbox_windows, "_wfp_api", lambda: api)
+
+    with pytest.raises(OSError, match="FwpmSubLayerAdd0"):
+        sandbox_windows.probe_wfp_policy_write_access()
+
+    assert api.close_calls == 1
 
 
 def test_wfp_session_requires_four_filter_additions_and_readbacks(

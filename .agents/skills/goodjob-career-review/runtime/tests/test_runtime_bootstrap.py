@@ -44,6 +44,9 @@ class LauncherProbes:
     def wfp_api_is_available(self) -> bool:
         return True
 
+    def wfp_policy_write_access(self) -> bool:
+        return True
+
 
 class FakeRunner:
     def __init__(self, results: dict[tuple[str, ...], tuple[int, str, str]]) -> None:
@@ -237,7 +240,8 @@ def test_windows_launcher_starts_only_after_successful_preflight(
     else:
         assert len(broker_calls) == 1
         assert broker_calls[0][:2] == [r"C:\Windows\py.exe", "-3.12"]
-        assert "--workspace" not in broker_calls[0]
+        workspace_argument = broker_calls[0].index("--preflight-workspace")
+        assert broker_calls[0][workspace_argument + 1] == str(tmp_path / "workspace")
         assert "--capability" not in " ".join(broker_calls[0])
 
 

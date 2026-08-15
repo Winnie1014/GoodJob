@@ -13,6 +13,7 @@ class FakeWindowsProbes:
     bfe: bool = True
     elevated: bool = True
     wfp_api: bool = True
+    wfp_write: bool = True
 
     def trusted_git_executable(self) -> Path | None:
         return self.git_executable
@@ -29,6 +30,9 @@ class FakeWindowsProbes:
 
     def wfp_api_is_available(self) -> bool:
         return self.wfp_api
+
+    def wfp_policy_write_access(self) -> bool:
+        return self.wfp_write
 
 
 def _runtime_tree(tmp_path: Path) -> Path:
@@ -132,6 +136,23 @@ def test_windows_preflight_retries_after_installation_and_elevation(tmp_path: Pa
         "wfp_permission",
         "native_windows_release",
     }
+
+
+def test_windows_preflight_requires_a_successful_wfp_policy_write_probe(tmp_path: Path) -> None:
+    report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=_runtime_tree(tmp_path),
+        python_version=(3, 12, 8),
+        launcher_kind="direct_python",
+        uv_available=False,
+        release_enabled=True,
+        probes=FakeWindowsProbes(wfp_write=False),
+    ).as_dict()
+
+    permission = next(check for check in report["checks"] if check["id"] == "wfp_permission")
+    assert permission["status"] == "failed"
+    assert permission["code"] == "permission_required"
+    assert permission["remediation"]["action"] == "request_elevation"
 
 
 def test_windows_preflight_keeps_unreleased_runtime_closed_without_ipv6_requirement(

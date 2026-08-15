@@ -37,7 +37,7 @@ class WindowsPreflightReportDict(TypedDict):
 
 
 class WindowsPrerequisiteProbes(Protocol):
-    """Read-only host probes used before authorization or protected execution."""
+    """Host probes used before authorization or protected execution."""
 
     def trusted_git_executable(self) -> Path | None: ...
 
@@ -48,6 +48,8 @@ class WindowsPrerequisiteProbes(Protocol):
     def is_elevated(self) -> bool: ...
 
     def wfp_api_is_available(self) -> bool: ...
+
+    def wfp_policy_write_access(self) -> bool: ...
 
 
 class SERVICE_STATUS_PROCESS(ctypes.Structure):
@@ -175,6 +177,15 @@ class SystemWindowsPrerequisiteProbes:
         return all(
             hasattr(api, name) for name in ("FwpmEngineOpen0", "FwpmEngineClose0", "FwpmFilterAdd0")
         )
+
+    def wfp_policy_write_access(self) -> bool:
+        from goodjob.platform.sandbox_windows import probe_wfp_policy_write_access
+
+        try:
+            probe_wfp_policy_write_access()
+        except OSError:
+            return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -427,13 +438,31 @@ def evaluate_windows_preflight(
         )
 
     if elevated and bfe_running and wfp_available:
-        checks.append(
-            _passed(
-                "wfp_permission",
-                "WFP permission prerequisites are present; each protected launch still "
-                "installs and reads back its filters before resuming the child",
+        try:
+            wfp_write_access = probes.wfp_policy_write_access()
+        except OSError:
+            wfp_write_access = False
+        if wfp_write_access:
+            checks.append(
+                _passed(
+                    "wfp_permission",
+                    "WFP dynamic policy write access is available; each protected launch still "
+                    "installs and reads back its filters before resuming the child",
+                )
             )
-        )
+        else:
+            checks.append(
+                _failed(
+                    "wfp_permission",
+                    "permission_required",
+                    "the current token could not create a dynamic WFP policy",
+                    PreflightRemediation(
+                        action="request_elevation",
+                        purpose="install and verify request-scoped WFP filters",
+                        requires_explicit_consent=True,
+                    ),
+                )
+            )
     elif not elevated:
         checks.append(
             _failed(

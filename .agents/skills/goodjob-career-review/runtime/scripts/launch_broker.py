@@ -178,6 +178,8 @@ def run(argv: list[str] | None = None, *, platform_name: str = sys.platform) -> 
     if args.data_dir:
         broker_args.extend(["--data-dir", args.data_dir])
     broker_args.extend(["--agent-runtime", args.agent_runtime])
+    if platform_name == "win32":
+        broker_args.extend(["--preflight-workspace", args.workspace])
 
     command = [*runtime.command, "-I", "-B", *broker_args]
 

@@ -24,9 +24,22 @@ def _send_json(process: subprocess.Popen[str], payload: dict[str, object]) -> di
     return response
 
 
-def _start_broker(data_dir: Path, *, cwd: Path = RUNTIME_DIR) -> subprocess.Popen[str]:
+def _start_broker(
+    data_dir: Path,
+    *,
+    cwd: Path = RUNTIME_DIR,
+    preflight_workspace: Path | None = None,
+) -> subprocess.Popen[str]:
+    command = [
+        sys.executable,
+        str(RUNTIME_DIR / "scripts" / "session.py"),
+        "--data-dir",
+        str(data_dir),
+    ]
+    if preflight_workspace is not None:
+        command.extend(["--preflight-workspace", str(preflight_workspace)])
     return subprocess.Popen(
-        [sys.executable, str(RUNTIME_DIR / "scripts" / "session.py"), "--data-dir", str(data_dir)],
+        command,
         cwd=cwd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -34,6 +47,33 @@ def _start_broker(data_dir: Path, *, cwd: Path = RUNTIME_DIR) -> subprocess.Pope
         text=True,
         env={**os.environ, "PYTHONPATH": str(RUNTIME_DIR / "src")},
     )
+
+
+def test_session_broker_rejects_authorization_outside_preflight_workspace(
+    tmp_path: Path,
+) -> None:
+    preflight_workspace = tmp_path / "preflight-workspace"
+    preflight_workspace.mkdir()
+    other_workspace = tmp_path / "other-workspace"
+    other_workspace.mkdir()
+    broker = _start_broker(
+        tmp_path / "data",
+        preflight_workspace=preflight_workspace,
+    )
+
+    rejected = _send_json(
+        broker,
+        {
+            "op": "authorize_source_analysis",
+            "workspace": str(other_workspace),
+            "confirmed": True,
+        },
+    )
+
+    assert rejected["status"] == "error"
+    assert rejected["code"] == "invalid_input"
+    assert "prerequisite preflight" in str(rejected["message"])
+    _stop_broker(broker)
 
 
 def _stop_broker(broker: subprocess.Popen[str]) -> None:

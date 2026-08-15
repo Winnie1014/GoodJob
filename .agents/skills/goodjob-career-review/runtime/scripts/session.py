@@ -390,10 +390,20 @@ def _write_all(file_descriptor: int, payload: bytes) -> None:
 class SessionBroker:
     """Hold one raw capability only until the parent task closes standard input."""
 
-    def __init__(self, data_dir: str | None, agent_runtime: str | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: str | None,
+        agent_runtime: str | None = None,
+        preflight_workspace: str | None = None,
+    ) -> None:
         self._capability = generate_capability()
         self._data_dir = str(Path(data_dir).expanduser().resolve()) if data_dir else None
         self._agent_runtime = agent_runtime or "codex_task_runtime"
+        self._preflight_workspace = (
+            os.path.normcase(str(_workspace_path(preflight_workspace)))
+            if preflight_workspace
+            else None
+        )
         self._source_receipts: dict[str, ReceiptEnvelope] = {}
         self._relation_receipts: dict[str, ReceiptEnvelope] = {}
         self._metadata_receipts: dict[str, ReceiptEnvelope] = {}
@@ -407,6 +417,12 @@ class SessionBroker:
 
     def dispatch(self, message: JsonObject) -> JsonObject:
         require_released_runtime()
+        if self._preflight_workspace is not None and "workspace" in message:
+            workspace = os.path.normcase(str(_workspace_path(_required_text(message, "workspace"))))
+            if workspace != self._preflight_workspace:
+                raise InvalidInputError(
+                    "the requested workspace does not match this session's prerequisite preflight"
+                )
         operation = _required_text(message, "op")
         if operation == "authorize_source_analysis":
             return self._authorize_source_analysis(message).payload
@@ -1600,8 +1616,12 @@ def main() -> None:
         default="codex_task_runtime",
         help="host agent runtime identifier for authorization receipts",
     )
+    parser.add_argument(
+        "--preflight-workspace",
+        help="workspace bound by a successful native Windows prerequisite preflight",
+    )
     args = parser.parse_args()
-    broker = SessionBroker(args.data_dir, args.agent_runtime)
+    broker = SessionBroker(args.data_dir, args.agent_runtime, args.preflight_workspace)
     for line in sys.stdin:
         response: JsonObject
         try:

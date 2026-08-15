@@ -209,6 +209,48 @@ def _retain_wfp_engine(api: Any, engine: int) -> None:
         _RETAINED_WFP_ENGINES.append((api, engine))
 
 
+def probe_wfp_policy_write_access() -> None:
+    """Verify dynamic WFP policy writes without installing traffic filters."""
+    _retry_retained_wfp_engines()
+    api = _wfp_api()
+    session = FWPM_SESSION0()
+    session.displayData.name = "GoodJob prerequisite probe"
+    session.displayData.description = "Temporary WFP policy write check"
+    session.flags = FWPM_SESSION_FLAG_DYNAMIC
+    engine = ctypes.c_void_p()
+    status = int(
+        api.FwpmEngineOpen0(
+            None, RPC_C_AUTHN_WINNT, None, ctypes.byref(session), ctypes.byref(engine)
+        )
+    )
+    if status != 0 or not engine.value:
+        _raise_wfp("FwpmEngineOpen0(prerequisite probe)", status)
+    assert engine.value is not None
+    engine_value = int(engine.value)
+    try:
+        sublayer = FWPM_SUBLAYER0()
+        sublayer.subLayerKey = GUID.parse(str(uuid.uuid4()))
+        sublayer.displayData.name = "GoodJob prerequisite probe"
+        sublayer.displayData.description = "Temporary dynamic sublayer"
+        sublayer.weight = 0xFFFF
+        status = int(api.FwpmSubLayerAdd0(engine, ctypes.byref(sublayer), None))
+        if status != 0:
+            _raise_wfp("FwpmSubLayerAdd0(prerequisite probe)", status)
+    except BaseException as primary_error:
+        close_status = int(api.FwpmEngineClose0(engine))
+        if close_status != 0:
+            _retain_wfp_engine(api, engine_value)
+            try:
+                _raise_wfp("FwpmEngineClose0(prerequisite probe cleanup)", close_status)
+            except GitSandboxUnavailableError as cleanup_error:
+                raise cleanup_error from primary_error
+        raise
+    close_status = int(api.FwpmEngineClose0(engine))
+    if close_status != 0:
+        _retain_wfp_engine(api, engine_value)
+        _raise_wfp("FwpmEngineClose0(prerequisite probe)", close_status)
+
+
 def _make_filter(
     sublayer_key: GUID,
     layer_key: GUID,
