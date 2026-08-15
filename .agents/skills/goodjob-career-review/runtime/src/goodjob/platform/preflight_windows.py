@@ -16,6 +16,7 @@ from goodjob.errors import (
 )
 from goodjob.platform.handles_windows import (
     OwnedHandle,
+    RetainedOwnerCleanupError,
     close_owned_resources,
     last_error,
     load_windows_dll,
@@ -64,6 +65,17 @@ class WindowsPreflightReportDict(TypedDict):
     can_start_broker: bool
     checks: list[PreflightCheckDict]
     notices: list[str]
+
+
+class WindowsBootstrapReportDict(TypedDict):
+    contract_version: str
+    status: Literal["error"]
+    can_start_broker: bool
+    checks: list[PreflightCheckDict]
+    notices: list[str]
+
+
+WindowsReportDict = WindowsPreflightReportDict | WindowsBootstrapReportDict
 
 
 class WindowsPrerequisiteProbes(Protocol):
@@ -286,22 +298,33 @@ class WindowsPreflightReport:
         )
 
 
-def missing_python_runtime_report() -> WindowsPreflightReport:
+@dataclass(frozen=True)
+class WindowsBootstrapReport:
+    check: PreflightCheck
+
+    def as_dict(self) -> WindowsBootstrapReportDict:
+        return WindowsBootstrapReportDict(
+            contract_version="windows-bootstrap-report-v1",
+            status="error",
+            can_start_broker=False,
+            checks=[self.check.as_dict()],
+            notices=[],
+        )
+
+
+def missing_python_runtime_report() -> WindowsBootstrapReport:
     """Return the report used when no child can run the full Windows probes."""
-    return WindowsPreflightReport(
-        (
-            _failed(
-                "python_runtime",
-                MissingDependencyError(
-                    "Python 3.12 or newer is unavailable; uv is optional and no usable fallback "
-                    "exists"
-                ),
-                PreflightRemediation(
-                    action="request_installation",
-                    purpose="run the isolated GoodJob broker with Python 3.12 or newer",
-                    source_url="https://www.python.org/downloads/windows/",
-                    requires_explicit_consent=True,
-                ),
+    return WindowsBootstrapReport(
+        _failed(
+            "python_runtime",
+            MissingDependencyError(
+                "Python 3.12 or newer is unavailable; uv is optional and no usable fallback exists"
+            ),
+            PreflightRemediation(
+                action="request_installation",
+                purpose="run the isolated GoodJob broker with Python 3.12 or newer",
+                source_url="https://www.python.org/downloads/windows/",
+                requires_explicit_consent=True,
             ),
         )
     )
@@ -325,20 +348,64 @@ def _failed(
     )
 
 
-def preflight_protocol_failure_report(message: str) -> WindowsPreflightReport:
+def preflight_protocol_failure_report(message: str) -> WindowsBootstrapReport:
     """Return a stable fail-closed report for a broken preflight command boundary."""
-    return WindowsPreflightReport(
-        (
-            _failed(
-                "windows_preflight",
-                UnsupportedCapabilityError(message),
-                PreflightRemediation(
-                    action="repair_skill_or_use_wsl2",
-                    purpose="complete every mandatory prerequisite before protected execution",
-                ),
+    return WindowsBootstrapReport(
+        _failed(
+            "windows_preflight",
+            UnsupportedCapabilityError(message),
+            PreflightRemediation(
+                action="repair_skill_or_use_wsl2",
+                purpose="complete every mandatory prerequisite before protected execution",
             ),
         )
     )
+
+
+def _valid_failed_check(check: dict[object, object], allowed_ids: frozenset[str]) -> bool:
+    check_id = check.get("id")
+    remediation = check.get("remediation")
+    if (
+        not isinstance(check_id, str)
+        or check_id not in allowed_ids
+        or check.get("status") != "failed"
+        or check.get("code")
+        not in ("missing_dependency", "permission_required", "unsupported_capability")
+        or not isinstance(check.get("message"), str)
+        or not check["message"]
+        or not isinstance(remediation, dict)
+        or not isinstance(remediation.get("action"), str)
+        or not remediation["action"]
+        or not isinstance(remediation.get("purpose"), str)
+        or not remediation["purpose"]
+        or not isinstance(remediation.get("requires_explicit_consent"), bool)
+    ):
+        return False
+    if "source_url" in remediation:
+        source_url = remediation["source_url"]
+        if not isinstance(source_url, str) or not source_url:
+            return False
+    return True
+
+
+def parse_windows_bootstrap_report(raw: object) -> WindowsBootstrapReportDict | None:
+    """Validate a launcher-level failure produced before a full preflight is available."""
+    if not isinstance(raw, dict):
+        return None
+    checks = raw.get("checks")
+    if (
+        set(raw) != {"contract_version", "status", "can_start_broker", "checks", "notices"}
+        or raw.get("contract_version") != "windows-bootstrap-report-v1"
+        or raw.get("status") != "error"
+        or raw.get("can_start_broker") is not False
+        or not isinstance(checks, list)
+        or len(checks) != 1
+        or raw.get("notices") != []
+        or not isinstance(checks[0], dict)
+        or not _valid_failed_check(checks[0], frozenset({"python_runtime", "windows_preflight"}))
+    ):
+        return None
+    return cast(WindowsBootstrapReportDict, raw)
 
 
 def parse_windows_preflight_report(raw: object) -> WindowsPreflightReportDict | None:
@@ -380,21 +447,55 @@ def parse_windows_preflight_report(raw: object) -> WindowsPreflightReportDict | 
                 return None
         else:
             all_passed = False
-            remediation = check.get("remediation")
-            if (
-                check.get("code")
-                not in ("missing_dependency", "permission_required", "unsupported_capability")
-                or not isinstance(remediation, dict)
-                or not isinstance(remediation.get("action"), str)
-                or not isinstance(remediation.get("purpose"), str)
-                or not isinstance(remediation.get("requires_explicit_consent"), bool)
-            ):
+            if not _valid_failed_check(check, WINDOWS_PREFLIGHT_REQUIRED_CHECK_IDS):
                 return None
     if seen_ids != WINDOWS_PREFLIGHT_REQUIRED_CHECK_IDS:
         return None
     if can_start != all_passed or status != ("ok" if all_passed else "error"):
         return None
     return cast(WindowsPreflightReportDict, raw)
+
+
+def _retained_owner_cleanup_report(
+    python_check: PreflightCheck, *, release_enabled: bool
+) -> WindowsPreflightReport:
+    cleanup_error = UnsupportedCapabilityError(
+        "previous Windows owner cleanup remains incomplete; no new system probe was run"
+    )
+    cleanup_checks = tuple(
+        _failed(
+            check_id,
+            cleanup_error,
+            PreflightRemediation(
+                action="retry_cleanup_or_repair_runtime_or_use_wsl2",
+                purpose="finish retained Windows resource cleanup before any new system probe",
+            ),
+        )
+        for check_id in (
+            "runtime_installation",
+            "trusted_git",
+            "workspace_filesystem",
+            "bfe_service",
+            "administrator",
+            "wfp_api",
+            "wfp_permission",
+        )
+    )
+    release_check = (
+        _passed("native_windows_release", "native Windows release gate is enabled")
+        if release_enabled
+        else _failed(
+            "native_windows_release",
+            UnsupportedCapabilityError(
+                "native Windows remains unsupported until IMP-31A-G pass on one release candidate"
+            ),
+            PreflightRemediation(
+                action="use_wsl2",
+                purpose="keep all protected execution fail-closed until release acceptance",
+            ),
+        )
+    )
+    return WindowsPreflightReport((python_check, *cleanup_checks, release_check))
 
 
 def evaluate_windows_preflight(
@@ -433,6 +534,7 @@ def evaluate_windows_preflight(
                 f"Python {'.'.join(str(part) for part in python_version)} via {method}",
             )
         )
+    python_check = checks[0]
 
     runtime_files = (
         runtime_dir / "scripts" / "launch_broker.py",
@@ -442,6 +544,8 @@ def evaluate_windows_preflight(
     )
     try:
         runtime_importable = probes.runtime_modules_importable()
+    except RetainedOwnerCleanupError:
+        return _retained_owner_cleanup_report(python_check, release_enabled=release_enabled)
     except (ImportError, OSError):
         runtime_importable = False
     if all(path.is_file() for path in runtime_files) and runtime_importable:
@@ -461,6 +565,8 @@ def evaluate_windows_preflight(
 
     try:
         git_executable = probes.trusted_git_executable()
+    except RetainedOwnerCleanupError:
+        return _retained_owner_cleanup_report(python_check, release_enabled=release_enabled)
     except OSError:
         git_executable = None
     if git_executable is None:
@@ -483,6 +589,8 @@ def evaluate_windows_preflight(
 
     try:
         filesystem = probes.workspace_filesystem(workspace)
+    except RetainedOwnerCleanupError:
+        return _retained_owner_cleanup_report(python_check, release_enabled=release_enabled)
     except OSError:
         filesystem = "unavailable"
     if filesystem.upper() != "NTFS":
@@ -503,6 +611,8 @@ def evaluate_windows_preflight(
 
     try:
         bfe_running = probes.bfe_is_running()
+    except RetainedOwnerCleanupError:
+        return _retained_owner_cleanup_report(python_check, release_enabled=release_enabled)
     except OSError:
         bfe_running = False
     if bfe_running:
@@ -522,6 +632,8 @@ def evaluate_windows_preflight(
 
     try:
         elevated = probes.is_elevated()
+    except RetainedOwnerCleanupError:
+        return _retained_owner_cleanup_report(python_check, release_enabled=release_enabled)
     except OSError:
         elevated = False
     if elevated:
@@ -543,6 +655,8 @@ def evaluate_windows_preflight(
 
     try:
         wfp_available = probes.wfp_api_is_available()
+    except RetainedOwnerCleanupError:
+        return _retained_owner_cleanup_report(python_check, release_enabled=release_enabled)
     except OSError:
         wfp_available = False
     if wfp_available:
@@ -563,6 +677,8 @@ def evaluate_windows_preflight(
         try:
             wfp_write_access = probes.wfp_policy_write_access()
             wfp_error: OSError | None = None
+        except RetainedOwnerCleanupError:
+            return _retained_owner_cleanup_report(python_check, release_enabled=release_enabled)
         except OSError as error:
             wfp_write_access = False
             wfp_error = error

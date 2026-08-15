@@ -11,7 +11,11 @@ from types import ModuleType
 
 import pytest
 
-from goodjob.platform.preflight_windows import evaluate_windows_preflight
+from goodjob.platform.preflight_windows import (
+    WindowsPreflightReportDict,
+    evaluate_windows_preflight,
+    parse_windows_bootstrap_report,
+)
 from goodjob.platform.runtime_bootstrap import PythonRuntime, discover_python312
 
 
@@ -102,6 +106,27 @@ def test_windows_runtime_discovery_supports_python_launcher() -> None:
     assert runtime.command == (py, "-3.12")
     assert runtime.kind == "windows_py_launcher"
     assert runtime.version == (3, 12, 8)
+
+
+def test_windows_runtime_discovery_accepts_py3_newer_fallback() -> None:
+    py = r"C:\Windows\py.exe"
+    runner = FakeRunner(
+        {
+            (py, "-3.12", "--version"): (1, "", "Requested Python not installed"),
+            (py, "-3", "--version"): (0, "Python 3.13.5\n", ""),
+        }
+    )
+
+    runtime = discover_python312(
+        platform_name="win32",
+        which=lambda name: py if name == "py" else None,
+        runner=runner,
+    )
+
+    assert runtime is not None
+    assert runtime.command == (py, "-3")
+    assert runtime.kind == "windows_py_launcher"
+    assert runtime.version == (3, 13, 5)
 
 
 def test_windows_runtime_discovery_accepts_python_exe_fallback() -> None:
@@ -207,10 +232,69 @@ def test_windows_launcher_reports_missing_runtime_without_starting_broker(
     output = capsys.readouterr()
     assert output.out == ""
     report = json.loads(output.err)
+    assert parse_windows_bootstrap_report(report) == report
     assert report["status"] == "error"
     assert report["can_start_broker"] is False
     assert report["checks"][0]["code"] == "missing_dependency"
     assert report["checks"][0]["remediation"]["requires_explicit_consent"] is True
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    [
+        PythonRuntime((r"C:\Windows\py.exe", "-3"), "windows_py_launcher", (3, 13, 5)),
+        PythonRuntime(
+            (
+                r"C:\tools\uv.exe",
+                "run",
+                "--isolated",
+                "--no-project",
+                "--no-config",
+                "--offline",
+                "--no-python-downloads",
+                "--python",
+                "3.13.5",
+                "python",
+            ),
+            "uv",
+            (3, 13, 5),
+        ),
+    ],
+    ids=["py-3", "uv-managed"],
+)
+def test_windows_launcher_compatible_runtime_reaches_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    runtime: PythonRuntime,
+) -> None:
+    launch_broker = _load_launcher()
+    observed: list[PythonRuntime] = []
+    successful_report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=Path(__file__).resolve().parents[1],
+        python_version=runtime.version,
+        launcher_kind=runtime.kind,
+        uv_available=runtime.kind == "uv",
+        release_enabled=True,
+        probes=LauncherProbes(elevated=True),
+    ).as_dict()
+
+    def record_preflight(selected: PythonRuntime, _workspace: str) -> WindowsPreflightReportDict:
+        observed.append(selected)
+        return successful_report
+
+    monkeypatch.setattr(launch_broker, "discover_python312", lambda **_kwargs: runtime)
+    monkeypatch.setattr(launch_broker, "_run_windows_preflight", record_preflight)
+
+    result = launch_broker.run(
+        ["--windows-preflight-only", "--workspace", str(tmp_path / "workspace")],
+        platform_name="win32",
+    )
+
+    assert result == 0
+    assert observed == [runtime]
+    assert json.loads(capsys.readouterr().out)["can_start_broker"] is True
 
 
 def test_windows_launcher_does_not_start_broker_after_refused_preflight(
@@ -328,6 +412,7 @@ def test_windows_launcher_rejects_preflight_exit_report_mismatch(
 
     report = launch_broker._run_windows_preflight(runtime, str(tmp_path / "workspace"))
 
+    assert parse_windows_bootstrap_report(report) == report
     assert report["can_start_broker"] is False
     assert report["checks"][0]["id"] == "windows_preflight"
 
@@ -355,6 +440,7 @@ def test_windows_launcher_rejects_success_report_missing_required_checks(
 
     report = launch_broker._run_windows_preflight(runtime, str(tmp_path / "workspace"))
 
+    assert parse_windows_bootstrap_report(report) == report
     assert report["can_start_broker"] is False
     assert report["checks"][0]["id"] == "windows_preflight"
 
@@ -393,6 +479,7 @@ def test_windows_launcher_rejects_semantically_inconsistent_success_report(
 
     parsed = launch_broker._run_windows_preflight(runtime, str(tmp_path / "workspace"))
 
+    assert parse_windows_bootstrap_report(parsed) == parsed
     assert parsed["can_start_broker"] is False
     assert parsed["checks"][0]["id"] == "windows_preflight"
 
@@ -456,6 +543,7 @@ def test_windows_session_rejects_a_missing_preflight_workspace(
     assert result == 2
     assert capability_calls == 0
     report = json.loads(capsys.readouterr().err)
+    assert parse_windows_bootstrap_report(report) == report
     assert report["checks"][0]["code"] == "unsupported_capability"
 
 

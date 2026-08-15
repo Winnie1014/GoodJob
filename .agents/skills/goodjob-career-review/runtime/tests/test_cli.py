@@ -516,6 +516,12 @@ def test_skill_windows_preflight_requires_explicit_consent_and_retry() -> None:
     for expected in (
         "-I -B <runtime_dir>/scripts/launch_broker.py --windows-preflight-only "
         "--workspace <workspace>",
+        "py -3 -I -B <runtime_dir>/scripts/launch_broker.py --windows-preflight-only",
+        "uv run --isolated --no-project --no-config --offline --no-python-downloads "
+        '--python "\u003e=3.12" python -I -B <runtime_dir>/scripts/launch_broker.py '
+        "--windows-preflight-only",
+        "`windows-bootstrap-report-v1`",
+        "`windows-prerequisite-preflight-v1` report always contains all nine checks",
         "`missing_dependency`",
         "`permission_required`",
         "`unsupported_capability`",

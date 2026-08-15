@@ -18,7 +18,7 @@ TRUSTED_SOURCE_DIR = RUNTIME_DIR / "src"
 sys.path.insert(0, str(TRUSTED_SOURCE_DIR))
 
 from goodjob.platform.preflight_windows import (  # noqa: E402
-    WindowsPreflightReportDict,
+    WindowsReportDict,
     missing_python_runtime_report,
     parse_windows_preflight_report,
     preflight_protocol_failure_report,
@@ -53,11 +53,11 @@ def _discover_runtime(platform_name: str) -> PythonRuntime | None:
     return discover_python312(platform_name=platform_name)
 
 
-def _preflight_protocol_failure(message: str) -> WindowsPreflightReportDict:
+def _preflight_protocol_failure(message: str) -> WindowsReportDict:
     return preflight_protocol_failure_report(message).as_dict()
 
 
-def _run_windows_preflight(runtime: PythonRuntime, workspace: str) -> WindowsPreflightReportDict:
+def _run_windows_preflight(runtime: PythonRuntime, workspace: str) -> WindowsReportDict:
     command = [
         *runtime.command,
         "-I",
@@ -95,7 +95,7 @@ def _run_windows_preflight(runtime: PythonRuntime, workspace: str) -> WindowsPre
     return report
 
 
-def _write_report(report: WindowsPreflightReportDict, *, standard_output: bool) -> None:
+def _write_report(report: WindowsReportDict, *, standard_output: bool) -> None:
     stream = sys.stdout if standard_output else sys.stderr
     stream.write(json.dumps(report, sort_keys=True) + "\n")
 
@@ -124,6 +124,7 @@ def run(argv: list[str] | None = None, *, platform_name: str = sys.platform) -> 
     )
     args = parser.parse_args(argv)
 
+    report: WindowsReportDict
     runtime = _discover_runtime(platform_name)
     if runtime is None:
         if platform_name == "win32":

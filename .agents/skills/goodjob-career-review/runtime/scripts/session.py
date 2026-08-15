@@ -26,6 +26,7 @@ from goodjob.errors import GoodJobError, InvalidInputError  # noqa: E402
 from goodjob.platform.detect import require_released_runtime  # noqa: E402
 from goodjob.platform.preflight_windows import (  # noqa: E402
     WindowsPreflightReportDict,
+    WindowsReportDict,
     preflight_protocol_failure_report,
 )
 
@@ -1632,7 +1633,7 @@ def _run_native_windows_session_preflight(workspace: str) -> WindowsPreflightRep
     ).as_dict()
 
 
-def _write_preflight_report(report: WindowsPreflightReportDict) -> None:
+def _write_preflight_report(report: WindowsReportDict) -> None:
     sys.stderr.write(json.dumps(report, sort_keys=True) + "\n")
 
 
@@ -1662,6 +1663,7 @@ def run(
                 ).as_dict()
             )
             return 2
+        preflight_report: WindowsReportDict
         try:
             preflight_report = _run_native_windows_session_preflight(args.preflight_workspace)
         except Exception:

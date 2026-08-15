@@ -21,6 +21,10 @@ class RetryableOwner(Protocol):
     def retry_close(self) -> None: ...
 
 
+class RetainedOwnerCleanupError(OSError):
+    """A prior Windows resource owner still cannot be closed safely."""
+
+
 _RETAINED_OWNERS: list[RetryableOwner] = []
 _RETAINED_OWNERS_LOCK = threading.RLock()
 
@@ -74,7 +78,9 @@ def retry_retained_owners() -> None:
                     first_error = exc
         incomplete = bool(_RETAINED_OWNERS)
         if incomplete:
-            raise OSError("previous Windows owner cleanup remains incomplete") from first_error
+            raise RetainedOwnerCleanupError(
+                "previous Windows owner cleanup remains incomplete"
+            ) from first_error
 
 
 def require_windows() -> None:

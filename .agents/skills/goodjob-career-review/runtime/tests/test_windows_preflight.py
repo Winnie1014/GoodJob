@@ -1,9 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from goodjob.platform.preflight_windows import evaluate_windows_preflight
+import pytest
+
+from goodjob.platform.handles_windows import (
+    OwnedHandle,
+    RetainedOwnerCleanupError,
+    close_owned_resources,
+    retry_retained_owners,
+)
+from goodjob.platform.preflight_windows import (
+    WindowsBootstrapReport,
+    evaluate_windows_preflight,
+    missing_python_runtime_report,
+    parse_windows_bootstrap_report,
+    parse_windows_preflight_report,
+    preflight_protocol_failure_report,
+)
 
 
 @dataclass
@@ -42,6 +57,43 @@ class FakeWindowsProbes:
         return self.runtime_importable
 
 
+@dataclass
+class CleanupAwareWindowsProbes(FakeWindowsProbes):
+    calls: list[str] = field(default_factory=list)
+
+    def _record(self, name: str) -> None:
+        retry_retained_owners()
+        self.calls.append(name)
+
+    def trusted_git_executable(self) -> Path | None:
+        self._record("trusted_git")
+        return super().trusted_git_executable()
+
+    def workspace_filesystem(self, workspace: Path) -> str:
+        self._record("workspace_filesystem")
+        return super().workspace_filesystem(workspace)
+
+    def bfe_is_running(self) -> bool:
+        self._record("bfe_service")
+        return super().bfe_is_running()
+
+    def is_elevated(self) -> bool:
+        self._record("administrator")
+        return super().is_elevated()
+
+    def wfp_api_is_available(self) -> bool:
+        self._record("wfp_api")
+        return super().wfp_api_is_available()
+
+    def wfp_policy_write_access(self) -> bool:
+        self._record("wfp_permission")
+        return super().wfp_policy_write_access()
+
+    def runtime_modules_importable(self) -> bool:
+        self._record("runtime_installation")
+        return super().runtime_modules_importable()
+
+
 def _runtime_tree(tmp_path: Path) -> Path:
     runtime = tmp_path / "runtime"
     (runtime / "scripts").mkdir(parents=True)
@@ -51,6 +103,22 @@ def _runtime_tree(tmp_path: Path) -> Path:
     (runtime / "scripts" / "windows_preflight.py").write_text("# preflight\n", encoding="utf-8")
     (runtime / "src" / "goodjob" / "__init__.py").write_text("", encoding="utf-8")
     return runtime
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        missing_python_runtime_report(),
+        preflight_protocol_failure_report("the preflight command boundary failed"),
+    ],
+)
+def test_windows_bootstrap_reports_round_trip_through_their_parser(
+    report: WindowsBootstrapReport,
+) -> None:
+    raw = report.as_dict()
+
+    assert parse_windows_bootstrap_report(raw) == raw
+    assert parse_windows_preflight_report(raw) is None
 
 
 def test_windows_preflight_classifies_every_failed_prerequisite(tmp_path: Path) -> None:
@@ -74,6 +142,8 @@ def test_windows_preflight_classifies_every_failed_prerequisite(tmp_path: Path) 
     ).as_dict()
 
     assert report["contract_version"] == "windows-prerequisite-preflight-v1"
+    assert parse_windows_preflight_report(report) == report
+    assert parse_windows_bootstrap_report(report) is None
     assert report["status"] == "error"
     assert report["can_start_broker"] is False
     failed = {
@@ -219,3 +289,75 @@ def test_windows_preflight_keeps_unreleased_runtime_closed_without_ipv6_requirem
     ]
     assert all("ipv6" not in check["id"].lower() for check in report["checks"])
     assert report["can_start_broker"] is False
+
+
+def test_windows_preflight_stops_before_new_probes_until_retained_cleanup_succeeds(
+    tmp_path: Path,
+) -> None:
+    cleanup_blocked = True
+
+    def close_owner(_value: int) -> None:
+        if cleanup_blocked:
+            raise OSError("injected retained-owner cleanup failure")
+
+    owner = OwnedHandle(17486, closer=close_owner)
+    with pytest.raises(OSError, match="cleanup failure"):
+        close_owned_resources((owner,))
+    try:
+        with pytest.raises(RetainedOwnerCleanupError):
+            retry_retained_owners()
+        probes = CleanupAwareWindowsProbes()
+        runtime = _runtime_tree(tmp_path)
+
+        blocked = evaluate_windows_preflight(
+            workspace=tmp_path / "workspace",
+            runtime_dir=runtime,
+            python_version=(3, 13, 5),
+            launcher_kind="windows_py_launcher",
+            uv_available=False,
+            release_enabled=True,
+            probes=probes,
+        ).as_dict()
+
+        assert probes.calls == []
+        assert parse_windows_preflight_report(blocked) == blocked
+        cleanup_failures = [
+            check
+            for check in blocked["checks"]
+            if check["id"] not in {"python_runtime", "native_windows_release"}
+        ]
+        assert {check["code"] for check in cleanup_failures} == {"unsupported_capability"}
+        assert {check["remediation"]["action"] for check in cleanup_failures} == {
+            "retry_cleanup_or_repair_runtime_or_use_wsl2"
+        }
+        assert all(
+            check["remediation"]["action"]
+            not in {"request_installation", "request_service_enablement", "request_elevation"}
+            for check in blocked["checks"]
+            if check["status"] == "failed"
+        )
+
+        cleanup_blocked = False
+        recovered = evaluate_windows_preflight(
+            workspace=tmp_path / "workspace",
+            runtime_dir=runtime,
+            python_version=(3, 13, 5),
+            launcher_kind="windows_py_launcher",
+            uv_available=False,
+            release_enabled=True,
+            probes=probes,
+        ).as_dict()
+
+        assert recovered["status"] == "ok"
+        assert probes.calls == [
+            "runtime_installation",
+            "trusted_git",
+            "workspace_filesystem",
+            "bfe_service",
+            "administrator",
+            "wfp_api",
+            "wfp_permission",
+        ]
+    finally:
+        cleanup_blocked = False
+        retry_retained_owners()
