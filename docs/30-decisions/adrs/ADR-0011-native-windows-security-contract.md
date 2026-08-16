@@ -57,7 +57,9 @@ Windows Git 启动必须满足以下顺序和约束：
 - `/`、`\` 等路径分隔符；
 - alternate data stream 分隔符 `:`。
 
-每个组件必须经 `NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory=<verified parent>)` 与 `FILE_OPEN_REPARSE_POINT` 相对打开，随后以 `FileAttributeTagInfo`/`FileIdInfo` 校验对象类型、reparse tag、volume 与身份。读取、枚举、创建、rename、publish 与删除都继续使用已经验证的 handle：rename 使用带目标 parent handle 的 `SetFileInformationByHandle`，非替换发布使用 `FileRenameInfo`，原子替换使用带 `REPLACE_IF_EXISTS | POSIX_SEMANTICS` 的 `FileRenameInfoEx`；delete 使用对象 handle 上的 disposition information。禁止 `GetFileAttributesW -> CreateFileW`、`DeleteFileW`、`RemoveDirectoryW` 或任何把已验证名称重新交给 pathname API 的降级。非 NTFS、跨卷或无法证明句柄原子语义的场景在获得单独真机证据前一律 fail-closed。
+每个组件必须经 `NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory=<verified parent>)` 与 `FILE_OPEN_REPARSE_POINT` 相对打开，随后以 `FileAttributeTagInfo`/`FileIdInfo` 校验对象类型、reparse tag、volume 与身份。读取、枚举、创建、rename、publish 与删除都继续使用已经验证的 handle：rename/publish 使用 `NtSetInformationFile(FileRenameInformation=10)`，传入 source handle、已验证 target parent handle 与单个相对组件；`ReplaceIfExists` 按调用语义取 `TRUE`/`FALSE`，`FileNameLength` 只计 UTF-16LE 名称字节且不含终止 NUL。目录枚举每次调用先用 `FileIdBothDirectoryRestartInfo=11`，后续分页用 `FileIdBothDirectoryInfo=10`，不得依赖上一次调用的 cursor。delete 使用对象 handle 上的 disposition information。禁止 `GetFileAttributesW -> CreateFileW`、`DeleteFileW`、`RemoveDirectoryW` 或任何把已验证名称重新交给 pathname API 的降级。非 NTFS、跨卷或无法证明句柄原子语义的场景在获得单独真机证据前一律 fail-closed。
+
+后续 Windows 真机取证显示，live target-parent 的 Win32 `SetFileInformationByHandle` rename 对照返回 `ERROR_INVALID_PARAMETER (87)`，而同一 source/parent handle 的 NT class 10 相对 rename 为阳性；该结果来自候选 build 的定点诊断，不构成 GA 准入，早期 NTFS spike 仍不覆盖 rename/publish。
 
 `safe_fs.py` 八项操作以及 scanner 的 readlink/枚举必须统一委托给该后端；详细操作契约由[扫描与分析设计](../../20-architecture/scanning-and-analysis.md#34-原生-windows-文件系统与-git-边界)定义。
 

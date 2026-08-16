@@ -568,40 +568,39 @@ def test_windows_rename_info_uses_fixed_16_bit_wchar_layout() -> None:
 
 
 @pytest.mark.parametrize("target_name", ["x", "a" * 255])
-@pytest.mark.parametrize(
-    ("replace", "expected_class", "expected_mode"),
-    [
-        (False, fs_windows.FILE_RENAME_INFO_CLASS, 0),
-        (
-            True,
-            fs_windows.FILE_RENAME_INFO_EX_CLASS,
-            fs_windows.FILE_RENAME_REPLACE_IF_EXISTS | fs_windows.FILE_RENAME_POSIX_SEMANTICS,
-        ),
-    ],
-)
-def test_windows_handle_relative_rename_emits_documented_abi(
+@pytest.mark.parametrize("replace", [False, True])
+def test_windows_handle_relative_rename_emits_nt_class_10_abi(
     target_name: str,
     replace: bool,
-    expected_class: int,
-    expected_mode: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
 
     class FakeApi:
         @staticmethod
-        def SetFileInformationByHandle(
-            source: ctypes.c_void_p, info_class: int, buffer: Any, size: int
+        def NtSetInformationFile(
+            source: ctypes.c_void_p,
+            io_status: Any,
+            buffer: Any,
+            size: int,
+            info_class: int,
         ) -> int:
             captured.update(
                 source=source.value,
                 info_class=info_class,
-                raw=bytes(buffer.raw[:size]),
+                io_status=bytes(
+                    ctypes.string_at(io_status, ctypes.sizeof(fs_windows.IO_STATUS_BLOCK))
+                ),
+                raw=bytes(ctypes.string_at(buffer, size)),
                 size=size,
             )
-            return 1
+            return 0
 
-    monkeypatch.setattr(fs_windows, "_kernel32", lambda: FakeApi())
+        @staticmethod
+        def RtlNtStatusToDosError(_status: ctypes.c_int32) -> int:
+            return 0
+
+    monkeypatch.setattr(fs_windows, "_ntdll", lambda: FakeApi())
 
     fs_windows._rename_handle(41, 73, target_name, replace=replace)
 
@@ -612,9 +611,10 @@ def test_windows_handle_relative_rename_emits_documented_abi(
     length_offset = fs_windows.FILE_RENAME_INFO.FileNameLength.offset
     name_offset = fs_windows.FILE_RENAME_INFO.FileName.offset
     assert captured["source"] == 41
-    assert captured["info_class"] == expected_class
+    assert captured["info_class"] == 10
     assert captured["size"] == ctypes.sizeof(fs_windows.FILE_RENAME_INFO) + len(encoded_name)
-    assert int.from_bytes(raw[:4], "little") == expected_mode
+    assert captured["io_status"] == bytes(ctypes.sizeof(fs_windows.IO_STATUS_BLOCK))
+    assert int.from_bytes(raw[:4], "little") == int(replace)
     assert raw[4:root_offset] == bytes(root_offset - 4)
     assert int.from_bytes(raw[root_offset:root_end], "little") == 73
     assert int.from_bytes(raw[length_offset : length_offset + 4], "little") == len(encoded_name)
@@ -622,33 +622,131 @@ def test_windows_handle_relative_rename_emits_documented_abi(
     assert raw[name_offset + len(encoded_name) :] == bytes(
         captured["size"] - name_offset - len(encoded_name)
     )
+    assert handles_windows._RETAINED_OWNERS == []
 
 
+@pytest.mark.parametrize("replace", [False, True])
 @pytest.mark.parametrize(
-    ("replace", "error", "message"),
-    [
-        (False, fs_windows.ERROR_ALREADY_EXISTS, "FileRenameInfo"),
-        (True, 5, "FileRenameInfoEx"),
-    ],
+    ("error", "exception_type"),
+    [(fs_windows.ERROR_ALREADY_EXISTS, FileExistsError), (5, OSError)],
 )
-def test_windows_handle_relative_rename_preserves_api_failures(
+def test_windows_handle_relative_rename_maps_ntstatus_failures(
     replace: bool,
     error: int,
-    message: str,
+    exception_type: type[OSError],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeApi:
         @staticmethod
-        def SetFileInformationByHandle(*_args: Any) -> int:
-            return 0
+        def NtSetInformationFile(*_args: Any) -> int:
+            return -1
 
-    monkeypatch.setattr(fs_windows, "_kernel32", lambda: FakeApi())
-    monkeypatch.setattr(fs_windows, "last_error", lambda: error)
+        @staticmethod
+        def RtlNtStatusToDosError(status: ctypes.c_int32) -> int:
+            assert status.value == -1
+            return error
 
-    with pytest.raises(OSError, match=message) as failure:
+    monkeypatch.setattr(fs_windows, "_ntdll", lambda: FakeApi())
+
+    with pytest.raises(
+        exception_type, match=r"NtSetInformationFile\(FileRenameInformation\)"
+    ) as failure:
         fs_windows._rename_handle(41, 73, "target", replace=replace)
 
     assert failure.value.errno == error
+
+
+def _write_windows_directory_page(buffer: Any, name: str) -> None:
+    ctypes.memset(buffer, 0, ctypes.sizeof(buffer))
+    record = fs_windows.FILE_ID_BOTH_DIR_INFO.from_buffer(buffer)
+    encoded = name.encode("utf-16-le")
+    record.FileNameLength = len(encoded)
+    record.EndOfFile = len(encoded)
+    ctypes.memmove(
+        ctypes.addressof(buffer) + fs_windows.FILE_ID_BOTH_DIR_INFO.FileName.offset,
+        encoded,
+        len(encoded),
+    )
+
+
+def test_windows_directory_enumeration_restarts_each_independent_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeApi:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+            self.cursor = 0
+            self.error = 0
+
+        def GetFileInformationByHandleEx(
+            self, _handle: Any, info_class: int, buffer: Any, _size: int
+        ) -> int:
+            self.calls.append(info_class)
+            if info_class == 11:
+                self.cursor = 0
+            if self.cursor == 2:
+                self.error = fs_windows.ERROR_NO_MORE_FILES
+                return 0
+            _write_windows_directory_page(buffer, ("alpha", "beta")[self.cursor])
+            self.cursor += 1
+            return 1
+
+    api = FakeApi()
+    monkeypatch.setattr(fs_windows, "_kernel32", lambda: api)
+    monkeypatch.setattr(fs_windows, "last_error", lambda: api.error)
+
+    first = fs_windows._list_handle(41)
+    second = fs_windows._list_handle(41)
+
+    assert [entry.name for entry in first] == ["alpha", "beta"]
+    assert second == first
+    assert api.calls == [11, 10, 10, 11, 10, 10]
+
+
+def test_windows_directory_enumeration_returns_empty_on_initial_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    class FakeApi:
+        @staticmethod
+        def GetFileInformationByHandleEx(
+            _handle: Any, info_class: int, _buffer: Any, _size: int
+        ) -> int:
+            calls.append(info_class)
+            return 0
+
+    monkeypatch.setattr(fs_windows, "_kernel32", lambda: FakeApi())
+    monkeypatch.setattr(fs_windows, "last_error", lambda: fs_windows.ERROR_NO_MORE_FILES)
+
+    assert fs_windows._list_handle(41) == []
+    assert calls == [11]
+
+
+def test_windows_directory_enumeration_fails_closed_midstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    class FakeApi:
+        @staticmethod
+        def GetFileInformationByHandleEx(
+            _handle: Any, info_class: int, buffer: Any, _size: int
+        ) -> int:
+            calls.append(info_class)
+            if len(calls) == 1:
+                _write_windows_directory_page(buffer, "alpha")
+                return 1
+            return 0
+
+    monkeypatch.setattr(fs_windows, "_kernel32", lambda: FakeApi())
+    monkeypatch.setattr(fs_windows, "last_error", lambda: 5)
+
+    with pytest.raises(OSError, match="FileIdBothDirectoryInfo") as failure:
+        fs_windows._list_handle(41)
+
+    assert failure.value.errno == 5
+    assert calls == [11, 10]
 
 
 def test_windows_target_parent_open_requests_traverse_and_read_attributes(
@@ -1779,6 +1877,7 @@ def test_nt_handle_relative_data_tree_smoke(
     from goodjob.platform.fs_windows import WindowsDataTree
 
     monkeypatch.setattr(platform_detect, "NATIVE_WINDOWS_RELEASE_ENABLED", True)
+    assert handles_windows._RETAINED_OWNERS == []
     tree_root = tmp_path / "data"
     publication_parent = tree_root / "artifacts"
     publication_parent.mkdir(parents=True)
@@ -1799,6 +1898,7 @@ def test_nt_handle_relative_data_tree_smoke(
         assert tree.read_regular("artifacts/final/report.txt") == b"report"
         tree.remove("artifacts/final")
         assert tree.list_directory("artifacts") == {"source.txt"}
+    assert handles_windows._RETAINED_OWNERS == []
 
 
 def test_windows_git_runner_scopes_wfp_and_job_to_the_exact_application(

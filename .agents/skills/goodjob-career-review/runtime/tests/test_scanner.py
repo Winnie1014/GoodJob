@@ -148,7 +148,9 @@ def _git_wrapper(tmp_path: Path) -> tuple[dict[str, str], Path]:
     )
 
 
-def _direct_scanner(data_dir: Path, workspace: Path) -> tuple[WorkspaceScanner, str]:
+def _direct_scanner(
+    data_dir: Path, workspace: Path, *, git_executable: str | None = None
+) -> tuple[WorkspaceScanner, str]:
     database = Database(DataPaths(data_dir))
     capability = generate_capability()
     request = AuthorizationRequest.from_values(
@@ -160,7 +162,45 @@ def _direct_scanner(data_dir: Path, workspace: Path) -> tuple[WorkspaceScanner, 
         capability=capability,
         request=request,
     )
-    return WorkspaceScanner(database), receipt.authorization_receipt_id
+    return (
+        WorkspaceScanner(database, git_executable=git_executable),
+        receipt.authorization_receipt_id,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="native Windows active-root regression")
+def test_native_windows_active_root_restarts_each_discovery_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import goodjob.platform.detect as platform_detect
+    from goodjob.platform import fs_windows, handles_windows
+
+    monkeypatch.setattr(platform_detect, "NATIVE_WINDOWS_RELEASE_ENABLED", True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    (workspace / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    scanner, receipt_id = _direct_scanner(
+        tmp_path / "data", workspace, git_executable=sys.executable
+    )
+
+    with fs_windows.bind_authorized_root(workspace):
+        directories, issues = scanner._walk_directories(workspace)
+        assert directories == [workspace]
+        assert issues == []
+        assert scanner._non_git_manifest(workspace, ".")
+        plans, _issues = scanner._discover(workspace, (), datetime.now(UTC).isoformat())
+        assert [plan.identity_kind for plan in plans] == ["non_git_root"]
+
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="windows-active-root-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.status == "completed"
+    assert result.coverage["fresh_projects"] == 1
+    assert handles_windows._RETAINED_OWNERS == []
 
 
 def _write_project_exclusions(

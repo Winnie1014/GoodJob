@@ -77,10 +77,10 @@ Git 元数据损坏时，该候选项目产生 `broken_repository` 类 `ScanIssu
 | 操作 | Windows handle 契约 |
 | --- | --- |
 | `read_regular` | 相对打开同一 owned file handle，验证非目录/非 reparse 后有界 `ReadFile`；不重新打开 |
-| `list_directory` | 从 directory handle 枚举名称；每个待访问 entry 仍从该 parent handle 相对打开并验证 |
+| `list_directory` | 从 directory handle 枚举名称；每次调用首个查询使用 `FileIdBothDirectoryRestartInfo` (11) 重置 cursor，后续分页使用 `FileIdBothDirectoryInfo` (10)；每个待访问 entry 仍从该 parent handle 相对打开并验证 |
 | `write_new_file_at` / `write_new` | 从已验证 parent 用 `FILE_CREATE | FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT` 创建；同名、大小写别名或 reparse 已存在即失败 |
 | `open_parent` | 每个组件相对打开并验证，新 owned directory handle 成为下一层 borrowed parent |
-| `replace_file` / `publish_directory` | 固定 source 与 target parent handles，使用 `SetFileInformationByHandle(FileRenameInfoEx)` 的 `RootDirectory`；只允许同 volume 且原子语义可证明 |
+| `replace_file` / `publish_directory` | 固定 source 与 target parent handles，使用 `NtSetInformationFile(FileRenameInformation=10)` 的 `RootDirectory`；`ReplaceIfExists` 按调用语义取值，名称为不含终止 NUL 的 UTF-16LE 相对组件；只允许同 volume 且原子语义可证明 |
 | `remove` | 相对打开目标并取得 `DELETE` 权限，在同一 object handle 上设置 disposition information |
 
 scanner `readlink` 从 reparse handle 调 `FSCTL_GET_REPARSE_POINT`，只返回 reparse 数据而不跟随；枚举不使用 pathname `FindFirstFileExW`。非 NTFS、UNC root、跨卷或当前文件系统不能证明上述语义时先 fail-closed，只有新增对应真机证据和契约后才能扩大支持范围。

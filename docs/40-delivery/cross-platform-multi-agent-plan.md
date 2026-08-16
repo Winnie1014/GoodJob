@@ -353,10 +353,10 @@ Phase 3 先以真机 spike 验证 §6.1 的 WFP、NT handle-relative FS 和 dire
 - **句柄所有权：** 平台层使用唯一的 `OwnedHandle` wrapper；入参 root/parent 是 borrowed，成功返回值是 owned，所有异常路径 `CloseHandle`。rename/disposition 成功后按句柄重新读取身份并更新上层对象；禁止缓存 pathname 作为授权依据。
 - **必须覆盖 `safe_fs.py` 全部 8 个操作：**
   - `read_regular`：`NtCreateFile` 相对打开 + `ReadFile` 同句柄读取；打开前后均拒绝 reparse/directory，读取大小受限。
-  - `list_directory`：打开目录句柄后用 `GetFileInformationByHandleEx(FileIdBothDirectoryInfo)` 枚举；每个待访问 entry 仍须从父句柄重新相对打开并验证，不把枚举名称升级为授权。
+  - `list_directory`：打开目录句柄后每次枚举首查 `FileIdBothDirectoryRestartInfo`、续页查 `FileIdBothDirectoryInfo`，避免连续调用共享 cursor；每个待访问 entry 仍须从父句柄重新相对打开并验证，不把枚举名称升级为授权。
   - `write_new_file_at` / `write_new`：从已验证 parent handle 调 `NtCreateFile(FILE_CREATE | FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT)`；若同名对象、大小写别名或 reparse 已存在则失败。
   - `open_parent`：逐组件 `NtCreateFile`，每层验证后只把新目录 handle 传给下一层。
-  - `replace_file` / `publish_directory`：源对象和目标 parent 均以句柄固定；用 `SetFileInformationByHandle(FileRenameInfoEx)`，在 `FILE_RENAME_INFO.RootDirectory` 传目标 parent handle。只允许同一 volume，跨卷、目标 reparse、大小写碰撞或不满足原子替换语义时 fail-closed。
+  - `replace_file` / `publish_directory`：源对象和目标 parent 均以句柄固定；候选的 `SetFileInformationByHandle(FileRenameInfoEx)` 路径已被 Windows 真机 live-parent `ERROR_INVALID_PARAMETER (87)` 取证取代，现用 `NtSetInformationFile(FileRenameInformation=10)` 并在 `FILE_RENAME_INFO.RootDirectory` 传目标 parent handle。只允许同一 volume，跨卷、目标 reparse、大小写碰撞或不满足原子替换语义时 fail-closed；该候选 build 诊断不构成 GA 准入。
   - `remove`：从 parent handle 相对打开目标（含 `DELETE` 权限），验证后在该对象 handle 上调用 `SetFileInformationByHandle(FileDispositionInfoEx/FileDispositionInfo)`；不调用 `DeleteFileW`/`RemoveDirectoryW` 重新解析路径。
 - **scanner.py 委托：** `readlink` 对相对打开的 reparse handle 调 `DeviceIoControl(FSCTL_GET_REPARSE_POINT)`，只返回数据、不跟随目标；目录枚举复用上述 handle API，不使用 `FindFirstFileExW` pathname 枚举。
 - **对抗验收：** 在每个 open/rename/delete 阶段并发把父目录换成 junction/symlink，均不得越出 root identity；另覆盖大小写别名、ADS、跨卷、UNC root、目标替换、reparse tag、超长组件和关闭竞态。每项都要有“根外哨兵未读/未写/未删”的断言。
