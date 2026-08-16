@@ -7,7 +7,7 @@
 
 ## 1. 设计摘要
 
-GoodJob 是一个由 host agent 显式调用的个人 Skill，而不是独立桌面应用。host agent 负责理解岗位、读取本地证据、生成叙事与开展访谈；随 Skill 分发的 Python 核心负责确定性的发现、索引、SQLite 持久化和产物编排；预构建的 TypeScript 前端只负责渲染无需服务的离线 HTML 看板。每个显式会话先形成范围级 `AuthorizationReceipt`，它确认 Owner 有权让当前 host agent 会话分析该工作区，但不重新定义 host agent 平台的数据边界。当前运行时支持 macOS 和 Linux（含 WSL2），由 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md) 定义安全后端；原生 Windows 安全契约 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 已接受，Phase 3-B 运行时候选已合入，但在 `IMP-31` 真机验收完成前仍为 unsupported 并推荐 WSL2。
+GoodJob 是一个由 host agent 显式调用的个人 Skill，而不是独立桌面应用。host agent 负责理解岗位、读取本地证据、生成叙事与开展访谈；随 Skill 分发的 Python 核心负责确定性的发现、索引、SQLite 持久化和产物编排；预构建的 TypeScript 前端只负责渲染无需服务的离线 HTML 看板。每个显式会话先形成范围级 `AuthorizationReceipt`，它确认 Owner 有权让当前 host agent 会话分析该工作区，但不重新定义 host agent 平台的数据边界。当前运行时支持 macOS、Linux（含 WSL2）和满足九项 prerequisite 的原生 Windows。macOS/Linux 安全后端由 [ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md) 定义；原生 Windows 由 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 与 [ADR-0012](../30-decisions/adrs/ADR-0012-windows-nt-rename-and-directory-enumeration-correction.md) 定义，每次运行在 broker 前重新验证 Python/runtime、Git、NTFS、BFE、管理员及 WFP 边界，任一失败即 fail-closed。唯一已接受的限制是 Git 子进程缺少文件系统读隔离，用户运行不依赖 GNU Make。
 
 同一份岗位无关证据目录可以被不同 `RoleLens` 重排。源码仍以用户指定工作区内的原文件为事实源；数据库只保存证据指针、哈希、短摘要和结构化结论。版本化 Skill 目录与持续增长的个人数据目录严格分离。
 

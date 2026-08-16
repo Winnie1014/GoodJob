@@ -29,7 +29,7 @@ GoodJob 不会仅凭 Git 作者信息把整个项目归为你的个人贡献。�
 ## 环境要求
 
 - macOS 或 Linux（含 WSL2）。运行时把 Git 子进程限制在平台原生沙箱中运行（macOS 使用 `sandbox-exec` Seatbelt，Linux 使用 `bwrap` bubblewrap），拒绝网络、只读授权根、禁用 hooks，并用进程启动时间作为进程身份。任一沙箱后端不可用时 fail-closed（不回退到无沙箱）。WSL1 不支持用户命名空间，仅 WSL2 提供完整沙箱；
-- **原生 Windows 当前不受支持。** WFP/Job、NT handle-relative FS 与 direct launcher 的安全契约已经终审接受，Phase 3-B 运行时候选也已合入，但真实 Windows `IMP-31` 尚未通过；在此之前必须 fail-closed，请使用 WSL2。未来准入后唯一允许的降级也只是 Git 子进程缺少文件系统读隔离；Git 网络、扫描器授权根、进程树和 capability 隔离不得降级；
+- **原生 Windows。** Skill 会发现本机已有的 Python 3.12+ 或可选 uv；用户运行不依赖 GNU Make。每次授权前都必须通过包含 Python/runtime、可信 Git for Windows、工作区 NTFS、BFE、管理员权限、WFP API/写权限和发布门在内的九项 prerequisite，任一项失败都不会启动 broker，并会给出对应的安装、启服务、提升权限、修复 Windows 或使用 WSL2 建议。唯一已接受的限制是 Git 子进程缺少文件系统读隔离；Git 网络、扫描器授权根、进程树和 capability 隔离不得降级；
 - 宿主支持状态：Codex 是既有支持基线，但尚待统一的五项探针回归；ZCode、ClaudeCode、OpenCode、MimoCode 均为待支持，在探针和真机 E2E 全部通过前不进入支持矩阵；
 - Python 3.12 或更高版本，已安装在本机；uv 路径固定选择 `--python 3.12`，无 uv 时优先使用 `python3.12`，或回退到版本不低于 3.12 的 `python3`；
 - [`uv`](https://docs.astral.sh/uv/)（可选，未安装时自动回退到 python3.12）；
@@ -234,7 +234,7 @@ Git authorship、计划文档、配置文件或一句用户陈述都不会单独
 - Git 子进程在平台原生沙箱中运行（macOS `sandbox-exec` / Linux `bwrap`），拒绝网络、只读授权根、禁用 hooks；任一沙箱后端不可用时 fail-closed。
 - 不执行 `git fetch`、`checkout`，也不主动联网读取项目内容。
 - SQLite 只保存路径、locator、哈希、有限 Git 元数据、短证据摘要和结构化结论，不保存完整源码或完整 diff。
-- 会话能力只存在当前 broker 进程内存并通过平台私有继承通道传递（当前 POSIX 文件描述符；未来原生 Windows allowlisted HANDLE），不进入参数、环境变量、日志、数据库或报告。
+- 会话能力只存在当前 broker 进程内存并通过平台私有继承通道传递（POSIX 文件描述符或原生 Windows allowlisted HANDLE），不进入参数、环境变量、日志、数据库或报告。
 - JD、源码、Git 文本和用户回答都按不可信数据处理，不能改变工作流、扩大授权或成为看板中的可执行标记。
 - GoodJob 不增加独立上传或遥测通道，但 host agent 打开的源码仍进入当前 host agent 会话既有的模型处理边界。
 - 工具无法替你判断 NDA、版权、雇主政策，或哪些项目细节适合写入对外简历。

@@ -45,28 +45,33 @@ def _load_session() -> ModuleType:
 @dataclass
 class LauncherProbes:
     elevated: bool
+    git_executable: Path | None = Path(r"C:\Program Files\Git\mingw64\bin\git.exe")
+    filesystem: str = "NTFS"
+    bfe: bool = True
+    wfp_api: bool = True
+    wfp_write: bool = True
 
     def retry_retained_cleanup(self) -> None:
         return None
 
     def trusted_git_executable(self) -> Path | None:
-        return Path(r"C:\Program Files\Git\mingw64\bin\git.exe")
+        return self.git_executable
 
     def workspace_filesystem(self, workspace: Path) -> str:
         del workspace
-        return "NTFS"
+        return self.filesystem
 
     def bfe_is_running(self) -> bool:
-        return True
+        return self.bfe
 
     def is_elevated(self) -> bool:
         return self.elevated
 
     def wfp_api_is_available(self) -> bool:
-        return True
+        return self.wfp_api
 
     def wfp_policy_write_access(self) -> bool:
-        return True
+        return self.wfp_write
 
     def runtime_modules_importable(self) -> bool:
         return True
@@ -94,6 +99,127 @@ class FakeRunner:
         self.calls.append(key)
         returncode, stdout, stderr = self.results.get(key, (1, "", "not found"))
         return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+
+def _run_isolated_windows_launcher(
+    tmp_path: Path,
+    report: WindowsPreflightReportDict,
+) -> tuple[subprocess.CompletedProcess[str], bool]:
+    launcher = Path(__file__).resolve().parents[1] / "scripts" / "launch_broker.py"
+    preflight = tmp_path / "windows_preflight.py"
+    broker = tmp_path / "session.py"
+    broker_marker = tmp_path / "broker-started"
+    preflight.write_text(
+        "import sys\n"
+        f"sys.stdout.write({json.dumps(report, sort_keys=True)!r} + '\\n')\n"
+        f"raise SystemExit({0 if report['can_start_broker'] else 2})\n",
+        encoding="utf-8",
+    )
+    broker.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(broker_marker)!r}).write_text('started', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    wrapper = (
+        "import importlib.util,sys;"
+        "from pathlib import Path;"
+        "launcher_path,preflight_path,broker_path,workspace=sys.argv[1:];"
+        "spec=importlib.util.spec_from_file_location('isolated_windows_launcher',launcher_path);"
+        "module=importlib.util.module_from_spec(spec);"
+        "sys.modules[spec.name]=module;"
+        "spec.loader.exec_module(module);"
+        "module.WINDOWS_PREFLIGHT_SCRIPT=Path(preflight_path);"
+        "module.SESSION_SCRIPT=Path(broker_path);"
+        "module._discover_runtime=lambda _platform: module.PythonRuntime("
+        "(sys.executable,),'direct_python',tuple(sys.version_info[:3]));"
+        "raise SystemExit(module.run(['--workspace',workspace],platform_name='win32'))"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            wrapper,
+            str(launcher),
+            str(preflight),
+            str(broker),
+            str(tmp_path / "workspace"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30.0,
+    )
+    return result, broker_marker.exists()
+
+
+def test_native_windows_release_is_enabled_in_fresh_isolated_python() -> None:
+    source_dir = Path(__file__).resolve().parents[1] / "src"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            (
+                "import sys;"
+                "sys.path.insert(0,sys.argv[1]);"
+                "from goodjob.platform.detect import NATIVE_WINDOWS_RELEASE_ENABLED;"
+                "print(str(NATIVE_WINDOWS_RELEASE_ENABLED).lower())"
+            ),
+            str(source_dir),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30.0,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "true"
+
+
+@pytest.mark.parametrize(
+    "failed_check",
+    [None, "trusted_git", "workspace_filesystem", "bfe_service", "administrator", "wfp"],
+    ids=["all-nine-pass", "git", "ntfs", "bfe", "administrator", "wfp"],
+)
+def test_isolated_windows_launcher_starts_broker_only_after_all_nine_checks_pass(
+    tmp_path: Path,
+    failed_check: str | None,
+) -> None:
+    probes = LauncherProbes(elevated=True)
+    if failed_check == "trusted_git":
+        probes.git_executable = None
+    elif failed_check == "workspace_filesystem":
+        probes.filesystem = "ReFS"
+    elif failed_check == "bfe_service":
+        probes.bfe = False
+    elif failed_check == "administrator":
+        probes.elevated = False
+    elif failed_check == "wfp":
+        probes.wfp_write = False
+    report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=Path(__file__).resolve().parents[1],
+        python_version=(
+            sys.version_info.major,
+            sys.version_info.minor,
+            sys.version_info.micro,
+        ),
+        launcher_kind="direct_python",
+        uv_available=False,
+        release_enabled=True,
+        probes=probes,
+    ).as_dict()
+
+    result, broker_started = _run_isolated_windows_launcher(tmp_path, report)
+
+    assert result.returncode == (0 if failed_check is None else 2), result.stderr
+    assert broker_started is (failed_check is None)
+    if failed_check is not None:
+        assert report["can_start_broker"] is False
 
 
 def _write_windows_entry_shim(bin_dir: Path, name: str) -> Path:

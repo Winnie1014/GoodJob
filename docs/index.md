@@ -7,7 +7,7 @@
 
 ## 当前阶段
 
-GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 host agent Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。Phase 1 覆盖 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；真实 Ubuntu 24.04 的完整 `make gate` 已通过，ADR-0009 已接受，WSL2 复用同一 Linux 后端。原生 Windows 的基础安全契约由 [ADR-0011](30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 接受，其 §3 的 Win32 rename/publish primitive 已由 [ADR-0012](30-decisions/adrs/ADR-0012-windows-nt-rename-and-directory-enumeration-correction.md) 基于真机取证替代；ADR-0012 同时在既有 handle-relative 枚举边界上新增 cursor/reset 操作细化。Phase 3-B 运行时候选已合入，但 [IMP-31](40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 尚未通过，因此原生 Windows 仍为 unsupported 并推荐 WSL2。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
+GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的 host agent Skill、Python 扫描/SQLite 运行时、离线 HTML 看板和自动化测试。Phase 1 覆盖 macOS 和 Linux（含 WSL2）平台，各平台使用等价的 Git 沙箱与进程身份安全模型（[ADR-0009](30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)）；真实 Ubuntu 24.04 的完整 `make gate` 已通过，ADR-0009 已接受，WSL2 复用同一 Linux 后端。原生 Windows 的基础安全契约由 [ADR-0011](30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 接受，其 §3 的 Win32 rename/publish primitive 已由 [ADR-0012](30-decisions/adrs/ADR-0012-windows-nt-rename-and-directory-enumeration-correction.md) 基于真机取证替代；ADR-0012 同时在既有 handle-relative 枚举边界上新增 cursor/reset 操作细化。原生 Windows 发布门已启用，但每次运行仍须通过 [IMP-31](40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 固化的九项 prerequisite 后才能启动 broker；缺失 Git、NTFS、BFE、管理员或 WFP 能力时继续 fail-closed 并给出准确修复动作或 WSL2 建议。用户运行不依赖 GNU Make，唯一已接受的限制仍是 Git 子进程缺少文件系统读隔离。文档仍是产品与架构契约的权威来源；本页及各设计文档的“待 Owner 核对”状态表示**当前文档修订**仍可被 Owner 复核，不表示运行时不存在。
 
 当前阶段的边界如下：
 
@@ -88,7 +88,7 @@ GoodJob 已进入私有首版的实现与验证阶段：仓库包含可安装的
 | 项目访谈、模拟面试与复习 | D-029、D-032、D-033 | ADR-0002、ADR-0007、产物与学习闭环、验收基线 |
 | 运行恢复与个人数据保留 | D-037、D-038 | 系统设计、证据模型、验收基线 |
 | 不可信输入与安全呈现 | D-036、D-041、D-043 | ADR-0008、系统设计、扫描与分析设计、证据模型、看板呈现契约 |
-| 跨平台与 host agent 会话 | D-045、D-046、D-047 已接受；Phase 3-B 运行时候选已合入，IMP-31 待通过 | ADR-0009、ADR-0010、ADR-0011、ADR-0012、系统设计、扫描与分析设计、验收基线 |
+| 跨平台与 host agent 会话 | D-045、D-046、D-047 已接受；原生 Windows 发布门已启用，九项 prerequisite 逐次 fail-closed | ADR-0009、ADR-0010、ADR-0011、ADR-0012、系统设计、扫描与分析设计、验收基线 |
 | 明确延后能力 | F-001 至 F-009 | 决策账本“明确的非首版能力” |
 
 ## Owner 核对清单

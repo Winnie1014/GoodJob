@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from goodjob.errors import GoodJobError, UnsupportedPlatformError
 
-NATIVE_WINDOWS_RELEASE_ENABLED = False
+NATIVE_WINDOWS_RELEASE_ENABLED = True
 
 if TYPE_CHECKING:
     from goodjob.git_metadata import InternalGitBinding
