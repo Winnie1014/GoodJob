@@ -1,7 +1,7 @@
 # GoodJob 决策账本
 
 > 状态：待 Owner 核对  
-> 权威范围：记录截至 2026-08-14 已接受、待接受、未来扩展与已否决的产品、架构和交付决策状态；硬决策的完整理由以对应 ADR 为准
+> 权威范围：记录截至 2026-08-16 已接受、待接受、未来扩展与已否决的产品、架构和交付决策状态；硬决策的完整理由以对应 ADR 为准
 > 上游：[产品目标](../00-product/vision-and-goals.md)、[产品需求](../10-product/product-requirements.md)  
 > 下游：[系统设计](../20-architecture/system-design.md)、[验收基线](../40-delivery/acceptance-baseline.md)
 
@@ -62,7 +62,7 @@
 | D-044 | 呈现层动态几何与行为验收 | 呈现层禁用全部 `.style` 运行时写入，动态几何用内联 SVG 几何属性配合整数 `viewBox`；看板行为由跨 Chromium/WebKit 的真实文档核对验收，并以「注入 `style` 属性必须触发违规」为阳性对照，不以源码字符串匹配代替行为断言 | [ADR-0008](adrs/ADR-0008-single-file-dashboard-and-structured-token-embedding.md)、[看板呈现契约](../20-architecture/dashboard-design.md)、[验收基线](../40-delivery/acceptance-baseline.md) |
 | D-045 | 跨平台运行时安全 | macOS 与 Linux（含 WSL2）使用等价的 Git 沙箱后端（sandbox-exec / bwrap）与进程身份（BSD ps / /proc）；任一后端不可用时 fail-closed，不回退到无沙箱。ADR-0009 部分替代 ADR-0001/ADR-0006 的 macOS-only 平台限定 | [ADR-0009](adrs/ADR-0009-cross-platform-runtime-security.md) |
 | D-046 | Host Agent 无关会话 | 解除 `issuer_kind` CHECK 约束（DB v11），参数化宿主运行时，新增 uv+python 回退启动器，并以五项探针管理宿主准入。ADR-0010 部分替代 ADR-0001/0003/0006/0007 中绑定 Codex 的条款 | [ADR-0010](adrs/ADR-0010-host-agent-neutral-session.md) |
-| D-047 | 原生 Windows 安全运行时 | 接受 WFP ALE dynamic filters + `ACTIVE_PROCESS=1` Git Job、NT handle-relative FS、direct `CreateProcessW`、最小 capability handle 继承与逆序清理契约。唯一允许降级为 Git FS 读隔离；其余边界 fail-closed。ADR-0011 扩展并部分替代 ADR-0006 的 POSIX-only 传输条款和 ADR-0009 的 Windows 延后声明；运行时候选已合入，IMP-31 全过前仍 unsupported/推荐 WSL2 | [ADR-0011](adrs/ADR-0011-native-windows-security-contract.md) |
+| D-047 | 原生 Windows 安全运行时 | 接受 WFP ALE dynamic filters + `ACTIVE_PROCESS=1` Git Job、NT handle-relative FS、direct `CreateProcessW`、最小 capability handle 继承与逆序清理契约。ADR-0012 基于真机反证，仅替代 ADR-0011 §3 的 rename/publish primitive 与目录枚举 cursor；其余决策及唯一 Git FS 读隔离降级继续有效。运行时候选已合入，IMP-31 全过前仍 unsupported/推荐 WSL2 | [ADR-0011](adrs/ADR-0011-native-windows-security-contract.md)、[ADR-0012](adrs/ADR-0012-windows-nt-rename-and-directory-enumeration-correction.md) |
 
 ## 待接受决策
 

@@ -2,7 +2,7 @@
 
 > 状态：待 Owner 核对  
 > 权威范围：定义授权工作区的发现、索引、增量刷新、Git 历史读取、语言适配和 host agent 按证据深读的行为；不定义 SQLite 实体字段或最终报告章节
-> 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0005](../30-decisions/adrs/ADR-0005-local-first-discovery-and-degradation.md)、[ADR-0006](../30-decisions/adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md)、[ADR-0007](../30-decisions/adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md)、[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)、[ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md)
+> 上游：[产品需求](../10-product/product-requirements.md)、[系统设计](system-design.md)、[证据模型](evidence-model.md)、[ADR-0003](../30-decisions/adrs/ADR-0003-evidence-pointers-without-source-snapshots.md)、[ADR-0005](../30-decisions/adrs/ADR-0005-local-first-discovery-and-degradation.md)、[ADR-0006](../30-decisions/adrs/ADR-0006-authorized-codex-analysis-and-external-git-metadata.md)、[ADR-0007](../30-decisions/adrs/ADR-0007-review-state-lineage-and-snapshot-integrity.md)、[ADR-0009](../30-decisions/adrs/ADR-0009-cross-platform-runtime-security.md)、[ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md)、[ADR-0012](../30-decisions/adrs/ADR-0012-windows-nt-rename-and-directory-enumeration-correction.md)
 > 下游：[产物与学习闭环](artifacts-and-learning.md)、[验收基线](../40-delivery/acceptance-baseline.md)
 
 ## 1. 目标与边界
