@@ -5,7 +5,7 @@
 > 权威范围：原生 Windows handle-relative rename/publish primitive 与 retained directory handle 的独立枚举 cursor 契约
 > 上游：[ADR-0011](ADR-0011-native-windows-security-contract.md) §3、SWO-31 真机取证
 > 下游：[扫描与分析设计](../../20-architecture/scanning-and-analysis.md)、[验收基线](../../40-delivery/acceptance-baseline.md)（IMP-31C）
-> 关系：本 ADR 仅替代 ADR-0011 §3 中的 rename/publish primitive 与目录枚举 cursor 范围。ADR-0011 的授权根、逐组件相对打开、reparse/identity/同卷、pathname 禁降级、WFP、Job、launcher、capability、所有权与逆序清理决策继续有效。
+> 关系：本 ADR 的 rename/publish 决策替代 ADR-0011 §3 中的 Win32 primitive；目录枚举 cursor/reset 决策不替代 ADR-0011，而是在其 handle-relative 枚举安全边界上新增操作细化。ADR-0011 的授权根、逐组件相对打开、reparse/identity/同卷、pathname 禁降级、WFP、Job、launcher、capability、所有权与逆序清理决策继续有效。
 
 ## 背景
 
@@ -33,9 +33,9 @@ ADR-0011 接受 `SetFileInformationByHandle(FileRenameInfoEx)` 作为候选 rena
 
 一次调用消费的 cursor 不得影响下一次调用。同一 retained root 或 directory handle 连续两次独立枚举必须得到相同完整结果；不得为重置 cursor 而关闭 active root、重新按 pathname 打开目录或改变 handle 所有权。
 
-### 3. 替代边界
+### 3. 替代与补充边界
 
-本 ADR 不替代 ADR-0011 §3 的其余内容，也不修改 WFP/Job、direct launcher、capability HANDLE、资源所有权、逆序清理、唯一 Git FS 降级或支持状态。原生 Windows 在 [IMP-31](../../40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 全部通过前继续 unsupported / fail-closed，并推荐 WSL2。
+本 ADR 第 1 节仅替代 ADR-0011 §3 的 Win32 rename/publish primitive；第 2 节是在其既有 handle-relative 枚举边界上补充 cursor/reset 操作契约，不表示 ADR-0011 曾定义该规则。本 ADR 不修改 WFP/Job、direct launcher、capability HANDLE、资源所有权、逆序清理、唯一 Git FS 降级或支持状态。原生 Windows 在 [IMP-31](../../40-delivery/acceptance-baseline.md#33-后续原生-windows-准入门) 全部通过前继续 unsupported / fail-closed，并推荐 WSL2。
 
 ## 影响与验证
 

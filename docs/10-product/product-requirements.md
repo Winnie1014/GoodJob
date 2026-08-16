@@ -234,7 +234,7 @@ WSL1 不支持用户命名空间（bwrap 依赖），因此 WSL1 上 bwrap 后�
 
 GoodJob 在原生 Windows 上必须以独立的安全后端完成与现有平台相同的可观察安全结果：Git 远程访问和 helper 绕过失败而本地白名单操作正常；Git 与业务子进程在用户代码执行前进入可回收边界且不能逃逸；扫描器全部文件操作保持授权根身份并拒绝路径穿越、reparse、别名、ADS 与跨卷逃逸；SessionCapability 与私有 payload 只进入目标子进程的最小能力集合，不进入参数、环境变量或持久状态；输出总量受同一预算约束，失败后不遗留活动子进程、网络规则或系统资源。
 
-上述结果的 Windows 实现机制由已接受的 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 唯一定义，产品需求不允许实现用不同机制弱化这些结果。
+上述结果的 Windows 实现机制由已接受的 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 与 [ADR-0012](../30-decisions/adrs/ADR-0012-windows-nt-rename-and-directory-enumeration-correction.md) 决策链共同定义，产品需求不允许实现用不同机制弱化这些结果。
 
 在 `IMP-31` 全部真机 E2E 通过前，原生 Windows 必须保持 unsupported / fail-closed，运行前提示推荐 WSL2；文档冻结或原语 spike 通过都不能提前改变支持状态。
 
@@ -256,7 +256,7 @@ macOS Seatbelt 和 Linux bwrap 沙箱在安全语义上必须等价：都拒绝�
 
 Git 网络隔离、扫描器授权根/reparse/TOCTOU 边界、进程树回收和 capability 隔离不得降级。任一原生 Windows 安全前置条件不可用、无权限、无法验证或无法收窄到本次请求时，相关操作必须在受保护执行前 fail-closed；不得静默切换到无网络隔离、路径名重解析、非受控进程启动或宽泛能力继承。
 
-正常结束、失败、取消和超限都不得遗留活动子进程、临时网络边界或未释放系统资源；stdout/stderr 必须共用一个端到端累计预算，不允许任一阶段形成无界缓冲。具体机制与清理顺序由 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 定义。
+正常结束、失败、取消和超限都不得遗留活动子进程、临时网络边界或未释放系统资源；stdout/stderr 必须共用一个端到端累计预算，不允许任一阶段形成无界缓冲。具体机制由 [ADR-0011](../30-decisions/adrs/ADR-0011-native-windows-security-contract.md) 与 [ADR-0012](../30-decisions/adrs/ADR-0012-windows-nt-rename-and-directory-enumeration-correction.md) 决策链定义，清理顺序仍由 ADR-0011 定义。
 
 ## 5. 关键失败路径
 
@@ -284,7 +284,7 @@ Git 网络隔离、扫描器授权根/reparse/TOCTOU 边界、进程树回收和
 | G-03 建立可信叙事 | FR-06、FR-07、FR-10、FR-11；NFR-02、NFR-04 | 证据模型、产物与学习闭环、ADR-0003 |
 | G-04 产出可使用材料 | FR-08、FR-09、FR-12、FR-13；NFR-03 | 产物与学习闭环、系统设计、ADR-0002 |
 | G-05 可持续复习闭环 | FR-04、FR-10、FR-14；NFR-04、NFR-06 | 证据模型、产物与学习闭环、ADR-0007 |
-| G-06 本地、可审计、可维护 | FR-01、FR-15、FR-16、FR-18；NFR-01 至 NFR-06、NFR-08、NFR-09、NFR-11 | 系统设计、扫描与分析设计、ADR-0001、ADR-0005、ADR-0006、ADR-0009、ADR-0011 |
+| G-06 本地、可审计、可维护 | FR-01、FR-15、FR-16、FR-18；NFR-01 至 NFR-06、NFR-08、NFR-09、NFR-11 | 系统设计、扫描与分析设计、ADR-0001、ADR-0005、ADR-0006、ADR-0009、ADR-0011、ADR-0012 |
 
 ## 7. 首版边界重申
 
