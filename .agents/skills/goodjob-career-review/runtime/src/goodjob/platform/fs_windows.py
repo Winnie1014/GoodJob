@@ -28,6 +28,7 @@ FILE_READ_DATA = 0x0001
 FILE_LIST_DIRECTORY = 0x0001
 FILE_WRITE_DATA = 0x0002
 FILE_APPEND_DATA = 0x0004
+FILE_TRAVERSE = 0x0020
 FILE_READ_ATTRIBUTES = 0x0080
 FILE_WRITE_ATTRIBUTES = 0x0100
 DELETE = 0x00010000
@@ -54,11 +55,10 @@ FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
 FILE_NAME_INFO_CLASS = 2
 FILE_STANDARD_INFO_CLASS = 1
 FILE_ID_BOTH_DIRECTORY_INFO_CLASS = 10
-FILE_RENAME_INFO_EX_CLASS = 22
+FILE_ID_BOTH_DIRECTORY_RESTART_INFO_CLASS = 11
+FILE_RENAME_INFORMATION_CLASS = 10
 FILE_DISPOSITION_INFO_EX_CLASS = 21
 FILE_DISPOSITION_INFO_CLASS = 4
-FILE_RENAME_REPLACE_IF_EXISTS = 0x00000001
-FILE_RENAME_POSIX_SEMANTICS = 0x00000002
 FILE_DISPOSITION_DELETE = 0x00000001
 FILE_DISPOSITION_POSIX_SEMANTICS = 0x00000002
 FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE = 0x00000010
@@ -72,6 +72,7 @@ ERROR_FILE_EXISTS = 80
 ERROR_ALREADY_EXISTS = 183
 MAX_COMPONENT_UTF16_UNITS = 255
 MAX_READ_BYTES = 2 * 1024 * 1024
+TARGET_PARENT_ACCESS = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES
 
 
 class FILE_ID_128(ctypes.Structure):
@@ -144,12 +145,16 @@ class FILE_ID_BOTH_DIR_INFO(ctypes.Structure):
     ]
 
 
-class FILE_RENAME_INFO_EX(ctypes.Structure):
+class WINDOWS_WCHAR(ctypes.c_uint16):
+    pass
+
+
+class FILE_RENAME_INFO(ctypes.Structure):
     _fields_ = [
-        ("Flags", ctypes.c_uint32),
+        ("ReplaceIfExists", ctypes.c_ubyte),
         ("RootDirectory", ctypes.c_void_p),
         ("FileNameLength", ctypes.c_uint32),
-        ("FileName", ctypes.c_wchar * 1),
+        ("FileName", WINDOWS_WCHAR * 1),
     ]
 
 
@@ -314,6 +319,14 @@ def _ntdll() -> Any:
         ctypes.c_uint32,
     ]
     api.NtCreateFile.restype = ctypes.c_int32
+    api.NtSetInformationFile.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(IO_STATUS_BLOCK),
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    api.NtSetInformationFile.restype = ctypes.c_int32
     api.RtlNtStatusToDosError.argtypes = [ctypes.c_int32]
     api.RtlNtStatusToDosError.restype = ctypes.c_uint32
     return api
@@ -467,7 +480,7 @@ class WindowsRoot:
         api = _kernel32()
         raw = api.CreateFileW(
             raw_path,
-            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            TARGET_PARENT_ACCESS | SYNCHRONIZE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
             OPEN_EXISTING,
@@ -527,7 +540,7 @@ class WindowsRoot:
                 raise InvalidInputError("a child directory component is required")
             for part in parts:
                 next_handle = _open_relative(
-                    current_value, part, access=FILE_LIST_DIRECTORY, directory=True
+                    current_value, part, access=TARGET_PARENT_ACCESS, directory=True
                 )
                 if owned is not None:
                     try:
@@ -734,11 +747,12 @@ def _entry_from_handle(name: str, handle: int) -> WindowsDirectoryEntry:
 def _list_handle(directory_handle: int) -> list[WindowsDirectoryEntry]:
     api = _kernel32()
     entries: list[WindowsDirectoryEntry] = []
+    info_class = FILE_ID_BOTH_DIRECTORY_RESTART_INFO_CLASS
     while True:
         buffer = ctypes.create_string_buffer(64 * 1024)
         ok = api.GetFileInformationByHandleEx(
             ctypes.c_void_p(directory_handle),
-            FILE_ID_BOTH_DIRECTORY_INFO_CLASS,
+            info_class,
             buffer,
             ctypes.sizeof(buffer),
         )
@@ -747,6 +761,7 @@ def _list_handle(directory_handle: int) -> list[WindowsDirectoryEntry]:
             if error == ERROR_NO_MORE_FILES:
                 break
             raise OSError(error, "GetFileInformationByHandleEx(FileIdBothDirectoryInfo)")
+        info_class = FILE_ID_BOTH_DIRECTORY_INFO_CLASS
         offset = 0
         while True:
             record = FILE_ID_BOTH_DIR_INFO.from_buffer(buffer, offset)
@@ -935,20 +950,28 @@ def write_new_file_at(parent_handle: int, name: str, content: bytes) -> None:
 def _rename_handle(source: int, target_parent: int, target_name: str, *, replace: bool) -> None:
     name = validate_component(target_name)
     encoded = name.encode("utf-16-le")
-    size = FILE_RENAME_INFO_EX.FileName.offset + len(encoded)
+    size = ctypes.sizeof(FILE_RENAME_INFO) + len(encoded)
     storage = ctypes.create_string_buffer(size)
-    info = FILE_RENAME_INFO_EX.from_buffer(storage)
-    info.Flags = FILE_RENAME_POSIX_SEMANTICS | (FILE_RENAME_REPLACE_IF_EXISTS if replace else 0)
+    info = FILE_RENAME_INFO.from_buffer(storage)
+    info.ReplaceIfExists = replace
     info.RootDirectory = ctypes.c_void_p(target_parent)
     info.FileNameLength = len(encoded)
     ctypes.memmove(
-        ctypes.addressof(storage) + FILE_RENAME_INFO_EX.FileName.offset, encoded, len(encoded)
+        ctypes.addressof(storage) + FILE_RENAME_INFO.FileName.offset, encoded, len(encoded)
     )
-    api = _kernel32()
-    if not api.SetFileInformationByHandle(
-        ctypes.c_void_p(source), FILE_RENAME_INFO_EX_CLASS, storage, size
-    ):
-        raise OSError(last_error(), "SetFileInformationByHandle(FileRenameInfoEx)")
+    io_status = IO_STATUS_BLOCK()
+    api = _ntdll()
+    status = int(
+        api.NtSetInformationFile(
+            ctypes.c_void_p(source),
+            ctypes.byref(io_status),
+            ctypes.byref(storage),
+            size,
+            FILE_RENAME_INFORMATION_CLASS,
+        )
+    )
+    if status < 0:
+        _raise_nt(api, status, "NtSetInformationFile(FileRenameInformation)")
 
 
 def _dispose_handle(handle: int) -> None:

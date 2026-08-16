@@ -148,7 +148,9 @@ def _git_wrapper(tmp_path: Path) -> tuple[dict[str, str], Path]:
     )
 
 
-def _direct_scanner(data_dir: Path, workspace: Path) -> tuple[WorkspaceScanner, str]:
+def _direct_scanner(
+    data_dir: Path, workspace: Path, *, git_executable: str | None = None
+) -> tuple[WorkspaceScanner, str]:
     database = Database(DataPaths(data_dir))
     capability = generate_capability()
     request = AuthorizationRequest.from_values(
@@ -160,7 +162,45 @@ def _direct_scanner(data_dir: Path, workspace: Path) -> tuple[WorkspaceScanner, 
         capability=capability,
         request=request,
     )
-    return WorkspaceScanner(database), receipt.authorization_receipt_id
+    return (
+        WorkspaceScanner(database, git_executable=git_executable),
+        receipt.authorization_receipt_id,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="native Windows active-root regression")
+def test_native_windows_active_root_restarts_each_discovery_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import goodjob.platform.detect as platform_detect
+    from goodjob.platform import fs_windows, handles_windows
+
+    monkeypatch.setattr(platform_detect, "NATIVE_WINDOWS_RELEASE_ENABLED", True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    (workspace / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    scanner, receipt_id = _direct_scanner(
+        tmp_path / "data", workspace, git_executable=sys.executable
+    )
+
+    with fs_windows.bind_authorized_root(workspace):
+        directories, issues = scanner._walk_directories(workspace)
+        assert directories == [workspace]
+        assert issues == []
+        assert scanner._non_git_manifest(workspace, ".")
+        plans, _issues = scanner._discover(workspace, (), datetime.now(UTC).isoformat())
+        assert [plan.identity_kind for plan in plans] == ["non_git_root"]
+
+    result = scanner.scan(
+        workspace_path=str(workspace),
+        config_revision="windows-active-root-v1",
+        authorization_receipt_id=receipt_id,
+    )
+
+    assert result.status == "completed"
+    assert result.coverage["fresh_projects"] == 1
+    assert handles_windows._RETAINED_OWNERS == []
 
 
 def _write_project_exclusions(
@@ -733,6 +773,44 @@ def test_refresh_marks_confirmed_dead_run_interrupted_and_never_uses_it_as_fast_
     connection.close()
     assert old_status == "interrupted"
     assert revisions == 2
+
+
+def test_scan_recovery_probe_failure_preserves_running_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE scan_runs (
+            scan_run_id TEXT PRIMARY KEY,
+            owner_process_identity TEXT NOT NULL,
+            status TEXT NOT NULL,
+            finished_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO scan_runs(scan_run_id, owner_process_identity, status)
+        VALUES ('running-scan', 'pid:321;started:100', 'running')
+        """
+    )
+
+    def fail_owner_probe(_identity: str) -> bool:
+        raise OSError("injected owner liveness failure")
+
+    monkeypatch.setattr(scanner_module, "owner_process_stopped", fail_owner_probe)
+
+    with pytest.raises(OSError, match="owner liveness failure"):
+        WorkspaceScanner._recover_interrupted_runs(connection, "2026-08-16T00:00:00Z")
+
+    state = connection.execute(
+        "SELECT status, finished_at FROM scan_runs WHERE scan_run_id = 'running-scan'"
+    ).fetchone()
+    assert state is not None
+    assert tuple(state) == ("running", None)
+    connection.close()
 
 
 def test_internal_git_history_uses_remote_head_and_persists_bounded_commit_evidence(

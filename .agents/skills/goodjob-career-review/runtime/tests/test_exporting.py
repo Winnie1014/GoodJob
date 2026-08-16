@@ -6,17 +6,22 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from test_reporting import _authorize, _dict, _list, _prepare_and_analyze, _workspace
+from windows_process_fakes import FakeProcessApi
 
 from goodjob.db import Database
 from goodjob.errors import InvalidInputError, WriterBusyError
 from goodjob.exporting import ExportService, _InjectedExportInterruption
 from goodjob.locks import ExclusiveWriterLock
 from goodjob.paths import DataPaths
+from goodjob.platform import handles_windows, process_windows
+from goodjob.platform.handles_windows import OwnedHandle
 from goodjob.reporting import ArtifactSnapshotService
 
 _ABRUPT_EXIT_CODE = 86
@@ -33,6 +38,11 @@ import goodjob.safe_fs as safe_fs
 from goodjob.db import Database
 from goodjob.exporting import ExportService
 from goodjob.paths import DataPaths
+
+if sys.platform == "win32":
+    import goodjob.platform.detect as platform_detect
+
+    platform_detect.NATIVE_WINDOWS_RELEASE_ENABLED = True
 
 database = Database(DataPaths(Path(sys.argv[2])))
 workspace = Path(sys.argv[3])
@@ -105,6 +115,85 @@ def _published_snapshot(
     )
     snapshot = _dict(ArtifactSnapshotService(database).render(run_id)["artifact_snapshot"])
     return workspace, database, receipt_id, snapshot
+
+
+def _interrupted_export_attempt(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Database, Path, Path]:
+    workspace, database, receipt_id, snapshot = _published_snapshot(tmp_path, data_paths)
+    service = ExportService(database)
+    source = _prepare_translation(service, workspace, receipt_id, snapshot)
+    monkeypatch.setattr(
+        "goodjob.exporting.process_identity",
+        lambda: "pid:321;started:100",
+    )
+    with pytest.raises(_InjectedExportInterruption):
+        service.translate_export(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=_translation_request(source),
+            _fault_at="after_temp",
+        )
+    connection = sqlite3.connect(data_paths.database_file)
+    try:
+        row = connection.execute(
+            "SELECT temp_relative_path, final_relative_path FROM export_attempts"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None
+    return database, data_paths.root / row[0], data_paths.root / row[1]
+
+
+def _install_windows_process_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    api: FakeProcessApi,
+    *,
+    last_error_value: int = 0,
+    closer: Callable[[int], None] | None = None,
+) -> None:
+    monkeypatch.setattr(
+        "goodjob.process_identity.sys",
+        SimpleNamespace(platform="win32"),
+    )
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(process_windows, "last_error", lambda: last_error_value)
+    close = api.closed.append if closer is None else closer
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=close),
+    )
+
+
+def _assert_interrupted_export_state(
+    data_paths: DataPaths,
+    temp_path: Path,
+    final_path: Path,
+    *,
+    recovered: bool,
+) -> None:
+    connection = sqlite3.connect(data_paths.database_file)
+    try:
+        state = connection.execute(
+            "SELECT status, finished_at, error_summary FROM export_attempts"
+        ).fetchone()
+        export_count = connection.execute("SELECT COUNT(*) FROM derived_exports").fetchone()
+    finally:
+        connection.close()
+    assert state is not None
+    if recovered:
+        assert state[0] == "interrupted"
+        assert state[1]
+        assert "owner process stopped" in state[2]
+        assert not temp_path.exists()
+    else:
+        assert state == ("running", None, None)
+        assert temp_path.is_dir()
+    assert not final_path.exists()
+    assert export_count == (0,)
 
 
 def _translation_request(
@@ -621,10 +710,30 @@ def test_real_abrupt_exit_export_is_recovered_by_the_next_writer_entry(
     tmp_path: Path,
     data_paths: DataPaths,
     fault_at: str,
+    exclusive_outside_sentinel: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if sys.platform == "win32":
+        import goodjob.platform.detect as platform_detect
+
+        monkeypatch.setattr(platform_detect, "NATIVE_WINDOWS_RELEASE_ENABLED", True)
     workspace, database, receipt_id, snapshot = _published_snapshot(tmp_path, data_paths)
     service = ExportService(database)
     source = _prepare_translation(service, workspace, receipt_id, snapshot)
+    request = _translation_request(source)
+    first_success = _dict(
+        service.translate_export(
+            workspace_path=workspace,
+            authorization_receipt_id=receipt_id,
+            request_value=request,
+        )["derived_export"]
+    )
+    first_output = Path(cast(str, first_success["output_path"]))
+    first_manifest_path = Path(cast(str, first_success["manifest_path"]))
+    first_manifest = first_manifest_path.read_bytes()
+    unknown = data_paths.exports_dir / "owner-unknown-directory"
+    unknown.mkdir()
+    (unknown / "keep.txt").write_text("keep", encoding="utf-8")
     runtime_source = Path(__file__).resolve().parents[1] / "src"
 
     killed = subprocess.run(
@@ -641,7 +750,7 @@ def test_real_abrupt_exit_export_is_recovered_by_the_next_writer_entry(
             fault_at,
             str(_ABRUPT_EXIT_CODE),
         ],
-        input=json.dumps(_translation_request(source)).encode("utf-8"),
+        input=json.dumps(request).encode("utf-8"),
         capture_output=True,
         check=False,
         timeout=15,
@@ -652,14 +761,14 @@ def test_real_abrupt_exit_export_is_recovered_by_the_next_writer_entry(
     try:
         row = connection.execute(
             """
-            SELECT temp_relative_path, final_relative_path, status
+            SELECT export_attempt_id, temp_relative_path, final_relative_path, status
             FROM export_attempts ORDER BY rowid DESC LIMIT 1
             """
         ).fetchone()
     finally:
         connection.close()
     assert row is not None
-    temp_relative, final_relative, status = row
+    attempt_id, temp_relative, final_relative, status = row
     assert status == "running"
     if fault_at == "after_temp":
         assert (data_paths.root / temp_relative).is_dir()
@@ -676,15 +785,26 @@ def test_real_abrupt_exit_export_is_recovered_by_the_next_writer_entry(
     connection = sqlite3.connect(data_paths.database_file)
     try:
         recovered = connection.execute(
-            "SELECT status, finished_at, error_summary FROM export_attempts"
+            """
+            SELECT status, finished_at, error_summary
+            FROM export_attempts WHERE export_attempt_id = ?
+            """,
+            (attempt_id,),
         ).fetchone()
-        assert connection.execute("SELECT COUNT(*) FROM derived_exports").fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM derived_exports WHERE export_attempt_id = ?",
+            (attempt_id,),
+        ).fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM derived_exports").fetchone() == (1,)
     finally:
         connection.close()
     assert recovered is not None
     assert recovered[0] == "interrupted"
     assert recovered[1]
     assert "owner process stopped" in recovered[2]
+    assert first_output.is_dir()
+    assert first_manifest_path.read_bytes() == first_manifest
+    assert (unknown / "keep.txt").read_text(encoding="utf-8") == "keep"
 
 
 def test_export_recovery_does_not_interrupt_or_clean_an_unproven_live_owner(
@@ -737,6 +857,129 @@ def test_export_recovery_does_not_interrupt_or_clean_an_unproven_live_owner(
     finally:
         connection.close()
     assert statuses == [("running",), ("succeeded",)]
+
+
+@pytest.mark.parametrize(
+    (
+        "wait_result",
+        "creation_marker",
+        "open_result",
+        "last_error_value",
+        "recovered",
+        "error_match",
+    ),
+    [
+        (process_windows.WAIT_OBJECT_0, 100, 701, 0, True, None),
+        (process_windows.WAIT_TIMEOUT, 100, 701, 0, False, None),
+        (process_windows.WAIT_TIMEOUT, 101, 701, 0, True, None),
+        (
+            process_windows.WAIT_TIMEOUT,
+            100,
+            0,
+            process_windows.ERROR_ACCESS_DENIED,
+            False,
+            None,
+        ),
+        (process_windows.WAIT_FAILED, 100, 701, 6, False, "WaitForSingleObject"),
+        (7, 100, 701, 0, False, "unexpected status: 7"),
+    ],
+    ids=[
+        "openable-signaled-recovers",
+        "live-timeout-preserves",
+        "pid-reuse-recovers",
+        "access-denied-preserves",
+        "wait-failed-preserves",
+        "unknown-wait-preserves",
+    ],
+)
+def test_windows_process_result_controls_export_recovery_state_and_paths(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+    wait_result: int,
+    creation_marker: int,
+    open_result: int,
+    last_error_value: int,
+    recovered: bool,
+    error_match: str | None,
+) -> None:
+    database, temp_path, final_path = _interrupted_export_attempt(
+        tmp_path,
+        data_paths,
+        monkeypatch,
+    )
+    api = FakeProcessApi(
+        wait_result,
+        creation_marker=creation_marker,
+        open_result=open_result,
+    )
+    _install_windows_process_probe(
+        monkeypatch,
+        api,
+        last_error_value=last_error_value,
+    )
+
+    if error_match is None:
+        database.migrate()
+    else:
+        with pytest.raises(OSError, match=error_match):
+            database.migrate()
+
+    _assert_interrupted_export_state(
+        data_paths,
+        temp_path,
+        final_path,
+        recovered=recovered,
+    )
+    assert handles_windows._RETAINED_OWNERS == []
+
+
+def test_windows_close_failure_defers_export_recovery_until_owner_retry(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, temp_path, final_path = _interrupted_export_attempt(
+        tmp_path,
+        data_paths,
+        monkeypatch,
+    )
+    api = FakeProcessApi(process_windows.WAIT_OBJECT_0)
+    close_attempts: list[int] = []
+
+    try:
+
+        def close_fails_once(value: int) -> None:
+            close_attempts.append(value)
+            if len(close_attempts) == 1:
+                raise OSError("injected process handle close failure")
+
+        _install_windows_process_probe(monkeypatch, api, closer=close_fails_once)
+
+        with pytest.raises(OSError, match="process handle close failure"):
+            database.migrate()
+
+        _assert_interrupted_export_state(
+            data_paths,
+            temp_path,
+            final_path,
+            recovered=False,
+        )
+        assert len(handles_windows._RETAINED_OWNERS) == 1
+
+        handles_windows.retry_retained_owners()
+        assert handles_windows._RETAINED_OWNERS == []
+        database.migrate()
+
+        _assert_interrupted_export_state(
+            data_paths,
+            temp_path,
+            final_path,
+            recovered=True,
+        )
+        assert close_attempts == [701, 701, 701]
+    finally:
+        handles_windows.retry_retained_owners()
 
 
 def test_translation_publish_writer_busy_creates_no_attempt_or_files(

@@ -1217,6 +1217,88 @@ def test_dead_render_owner_is_interrupted_and_only_registered_paths_are_cleaned(
     assert new_statuses == [("interrupted",), ("succeeded",)]
 
 
+def test_render_recovery_probe_failure_preserves_attempt_and_registered_paths(
+    tmp_path: Path,
+    data_paths: DataPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path)
+    database = Database(data_paths)
+    receipt_id = _authorize(database, workspace)
+    run_id, _ = _prepare_and_analyze(database, workspace, receipt_id)
+    bundle = ReportBundleBuilder(database).build(run_id)
+    bundle_hash = cast(str, bundle["bundle_sha256"])
+    attempt_id = "unproven-render-attempt"
+    snapshot_id = _artifact_snapshot_id(run_id, bundle_hash)
+    temp_relative = f"artifacts/.tmp/{attempt_id}"
+    latest_temp_relative = f"artifacts/.tmp/{attempt_id}.latest.tmp"
+    final_relative = f"artifacts/{snapshot_id}"
+    with database.write_transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO render_attempts(
+                render_attempt_id, preparation_run_id, owner_process_identity,
+                report_bundle_sha256, generator_version, temp_relative_path,
+                latest_temp_relative_path, final_relative_path, started_at, status
+            ) VALUES (?, ?, 'pid:321;started:100', ?, 'probe-failure-test',
+                      ?, ?, ?, '2026-08-16T00:00:00Z', 'running')
+            """,
+            (
+                attempt_id,
+                run_id,
+                bundle_hash,
+                temp_relative,
+                latest_temp_relative,
+                final_relative,
+            ),
+        )
+        connection.execute(
+            "UPDATE preparation_runs SET status = 'rendering' WHERE preparation_run_id = ?",
+            (run_id,),
+        )
+    temp_path = data_paths.root / temp_relative
+    latest_temp_path = data_paths.root / latest_temp_relative
+    final_path = data_paths.root / final_relative
+    temp_path.mkdir()
+    (temp_path / "partial.tmp").write_text("partial", encoding="utf-8")
+    latest_temp_path.write_text("partial", encoding="utf-8")
+    final_path.mkdir()
+    (final_path / "partial.tmp").write_text("partial", encoding="utf-8")
+
+    def fail_owner_probe(_identity: str) -> bool:
+        raise OSError("injected owner liveness failure")
+
+    monkeypatch.setattr(reporting, "owner_process_stopped", fail_owner_probe)
+    service = ArtifactSnapshotService(database)
+
+    with (
+        database.exclusive_writer_connection() as connection,
+        pytest.raises(OSError, match="owner liveness failure"),
+    ):
+        service._recover_interrupted_attempts(connection)
+
+    connection = sqlite3.connect(data_paths.database_file)
+    try:
+        attempt_state = connection.execute(
+            """
+            SELECT status, finished_at, error_summary
+            FROM render_attempts WHERE render_attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        preparation_state = connection.execute(
+            "SELECT status, finished_at FROM preparation_runs WHERE preparation_run_id = ?",
+            (run_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    assert attempt_state == ("running", None, None)
+    assert preparation_state == ("rendering", None)
+    assert (temp_path / "partial.tmp").read_text(encoding="utf-8") == "partial"
+    assert latest_temp_path.read_text(encoding="utf-8") == "partial"
+    assert (final_path / "partial.tmp").read_text(encoding="utf-8") == "partial"
+
+
 @pytest.mark.parametrize("old_status", ["failed", "interrupted"])
 def test_terminal_unsnapshotted_attempt_cleanup_is_retried(
     tmp_path: Path,

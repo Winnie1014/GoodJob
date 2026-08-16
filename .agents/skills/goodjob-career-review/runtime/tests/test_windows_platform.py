@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from windows_process_fakes import FakeProcessApi
 
 import goodjob.git_metadata as git_metadata
+import goodjob.process_identity as process_identity_helpers
 from goodjob.errors import CapabilityError, InvalidInputError, UnsupportedPlatformError
 from goodjob.git_metadata import GitMetadataReader, InternalGitBinding
 from goodjob.platform import (
@@ -22,6 +24,7 @@ from goodjob.platform import (
     handles_windows,
     launcher_windows,
     preflight_windows,
+    process_windows,
     sandbox_windows,
 )
 from goodjob.platform.capability_windows import WindowsTransferPipe
@@ -110,6 +113,195 @@ def test_windows_owner_cleanup_continues_and_retries_the_failed_owner() -> None:
     assert first.closed
     assert handles_windows._RETAINED_OWNERS == []
     assert closed == [93, 92]
+
+
+def test_windows_process_exists_rejects_openable_signaled_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(0)
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    assert process_windows.process_exists(321) is False
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701]
+
+
+def test_windows_process_exists_keeps_openable_unsignaled_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_TIMEOUT)
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    assert process_windows.process_exists(321) is True
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701]
+
+
+def test_windows_process_exists_reports_wait_failure_and_closes_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(0xFFFFFFFF)
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(process_windows, "last_error", lambda: 6)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    with pytest.raises(OSError, match="WaitForSingleObject") as failure:
+        process_windows.process_exists(321)
+
+    assert failure.value.errno == 6
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701]
+
+
+def test_windows_process_exists_rejects_unknown_wait_status_and_closes_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(7)
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    with pytest.raises(OSError, match="unexpected status: 7"):
+        process_windows.process_exists(321)
+
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701]
+
+
+def test_windows_owner_process_stopped_fails_closed_on_access_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_TIMEOUT, open_result=0)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(process_windows, "last_error", lambda: process_windows.ERROR_ACCESS_DENIED)
+
+    assert not process_identity_helpers.owner_process_stopped("pid:321;started:100")
+    assert len(api.open_calls) == 2
+    assert api.wait_calls == []
+    assert api.closed == []
+
+
+def test_windows_owner_process_stopped_accepts_proven_absent_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_TIMEOUT, open_result=0)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "last_error",
+        lambda: process_windows.ERROR_INVALID_PARAMETER,
+    )
+
+    assert process_identity_helpers.owner_process_stopped("pid:321;started:100")
+    assert len(api.open_calls) == 1
+    assert api.wait_calls == []
+    assert api.closed == []
+
+
+@pytest.mark.parametrize(
+    ("creation_marker", "expected_stopped"),
+    [(100, False), (101, True)],
+    ids=["same-owner-live", "pid-reused"],
+)
+def test_windows_owner_process_stopped_preserves_creation_marker_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    creation_marker: int,
+    expected_stopped: bool,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_TIMEOUT, creation_marker=creation_marker)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    assert process_identity_helpers.owner_process_stopped("pid:321;started:100") is expected_stopped
+    assert len(api.open_calls) == 2
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701, 701]
+
+
+def test_windows_owner_process_stopped_withholds_signaled_result_until_close_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_OBJECT_0)
+    close_attempts: list[int] = []
+
+    def close_fails_once(value: int) -> None:
+        close_attempts.append(value)
+        if len(close_attempts) == 1:
+            raise OSError("injected process handle close failure")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=close_fails_once),
+    )
+
+    with pytest.raises(OSError, match="process handle close failure"):
+        process_identity_helpers.owner_process_stopped("pid:321;started:100")
+
+    assert len(handles_windows._RETAINED_OWNERS) == 1
+    handles_windows.retry_retained_owners()
+    assert handles_windows._RETAINED_OWNERS == []
+    assert process_identity_helpers.owner_process_stopped("pid:321;started:100")
+    assert close_attempts == [701, 701, 701]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows process APIs")
+def test_native_windows_process_signal_controls_owner_recovery() -> None:
+    retained_before = tuple(handles_windows._RETAINED_OWNERS)
+    child = subprocess.Popen(
+        [sys.executable, "-I", "-B", "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        marker = process_identity_helpers.process_start_marker(child.pid)
+        assert marker is not None
+        identity = f"pid:{child.pid};started:{marker}"
+
+        assert not process_identity_helpers.owner_process_stopped(identity)
+        assert tuple(handles_windows._RETAINED_OWNERS) == retained_before
+
+        assert child.stdin is not None
+        child.stdin.close()
+        assert child.wait(timeout=10) == 0
+
+        assert process_identity_helpers.owner_process_stopped(identity)
+        assert tuple(handles_windows._RETAINED_OWNERS) == retained_before
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        if child.stdin is not None and not child.stdin.closed:
+            child.stdin.close()
+        if child.stderr is not None:
+            child.stderr.close()
 
 
 class _FakeBfeCall:
@@ -551,6 +743,238 @@ def test_windows_component_guard_rejects_every_forbidden_shape(component: str) -
 def test_windows_component_guard_accepts_the_explicit_ntfs_boundary() -> None:
     assert validate_component("a" * 255) == "a" * 255
     assert validate_component("source.py") == "source.py"
+
+
+def test_windows_rename_info_uses_fixed_16_bit_wchar_layout() -> None:
+    pointer_size = ctypes.sizeof(ctypes.c_void_p)
+
+    assert ctypes.sizeof(fs_windows.WINDOWS_WCHAR) == 2
+    assert fs_windows.FILE_RENAME_INFO.RootDirectory.offset == (8 if pointer_size == 8 else 4)
+    assert fs_windows.FILE_RENAME_INFO.FileNameLength.offset == (
+        fs_windows.FILE_RENAME_INFO.RootDirectory.offset + pointer_size
+    )
+    assert fs_windows.FILE_RENAME_INFO.FileName.offset == (
+        fs_windows.FILE_RENAME_INFO.FileNameLength.offset + ctypes.sizeof(ctypes.c_uint32)
+    )
+    assert ctypes.sizeof(fs_windows.FILE_RENAME_INFO) == (24 if pointer_size == 8 else 16)
+
+
+@pytest.mark.parametrize("target_name", ["x", "a" * 255])
+@pytest.mark.parametrize("replace", [False, True])
+def test_windows_handle_relative_rename_emits_nt_class_10_abi(
+    target_name: str,
+    replace: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeApi:
+        @staticmethod
+        def NtSetInformationFile(
+            source: ctypes.c_void_p,
+            io_status: Any,
+            buffer: Any,
+            size: int,
+            info_class: int,
+        ) -> int:
+            captured.update(
+                source=source.value,
+                info_class=info_class,
+                io_status=bytes(
+                    ctypes.string_at(io_status, ctypes.sizeof(fs_windows.IO_STATUS_BLOCK))
+                ),
+                raw=bytes(ctypes.string_at(buffer, size)),
+                size=size,
+            )
+            return 0
+
+        @staticmethod
+        def RtlNtStatusToDosError(_status: ctypes.c_int32) -> int:
+            return 0
+
+    monkeypatch.setattr(fs_windows, "_ntdll", lambda: FakeApi())
+
+    fs_windows._rename_handle(41, 73, target_name, replace=replace)
+
+    encoded_name = target_name.encode("utf-16-le")
+    raw = captured["raw"]
+    root_offset = fs_windows.FILE_RENAME_INFO.RootDirectory.offset
+    root_end = root_offset + ctypes.sizeof(ctypes.c_void_p)
+    length_offset = fs_windows.FILE_RENAME_INFO.FileNameLength.offset
+    name_offset = fs_windows.FILE_RENAME_INFO.FileName.offset
+    assert captured["source"] == 41
+    assert captured["info_class"] == 10
+    assert captured["size"] == ctypes.sizeof(fs_windows.FILE_RENAME_INFO) + len(encoded_name)
+    assert captured["io_status"] == bytes(ctypes.sizeof(fs_windows.IO_STATUS_BLOCK))
+    assert int.from_bytes(raw[:4], "little") == int(replace)
+    assert raw[4:root_offset] == bytes(root_offset - 4)
+    assert int.from_bytes(raw[root_offset:root_end], "little") == 73
+    assert int.from_bytes(raw[length_offset : length_offset + 4], "little") == len(encoded_name)
+    assert raw[name_offset : name_offset + len(encoded_name)] == encoded_name
+    assert raw[name_offset + len(encoded_name) :] == bytes(
+        captured["size"] - name_offset - len(encoded_name)
+    )
+    assert handles_windows._RETAINED_OWNERS == []
+
+
+@pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.parametrize(
+    ("error", "exception_type"),
+    [(fs_windows.ERROR_ALREADY_EXISTS, FileExistsError), (5, OSError)],
+)
+def test_windows_handle_relative_rename_maps_ntstatus_failures(
+    replace: bool,
+    error: int,
+    exception_type: type[OSError],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeApi:
+        @staticmethod
+        def NtSetInformationFile(*_args: Any) -> int:
+            return -1
+
+        @staticmethod
+        def RtlNtStatusToDosError(status: ctypes.c_int32) -> int:
+            assert status.value == -1
+            return error
+
+    monkeypatch.setattr(fs_windows, "_ntdll", lambda: FakeApi())
+
+    with pytest.raises(
+        exception_type, match=r"NtSetInformationFile\(FileRenameInformation\)"
+    ) as failure:
+        fs_windows._rename_handle(41, 73, "target", replace=replace)
+
+    assert failure.value.errno == error
+
+
+def _write_windows_directory_page(buffer: Any, name: str) -> None:
+    ctypes.memset(buffer, 0, ctypes.sizeof(buffer))
+    record = fs_windows.FILE_ID_BOTH_DIR_INFO.from_buffer(buffer)
+    encoded = name.encode("utf-16-le")
+    record.FileNameLength = len(encoded)
+    record.EndOfFile = len(encoded)
+    ctypes.memmove(
+        ctypes.addressof(buffer) + fs_windows.FILE_ID_BOTH_DIR_INFO.FileName.offset,
+        encoded,
+        len(encoded),
+    )
+
+
+def test_windows_directory_enumeration_restarts_each_independent_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeApi:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+            self.cursor = 0
+            self.error = 0
+
+        def GetFileInformationByHandleEx(
+            self, _handle: Any, info_class: int, buffer: Any, _size: int
+        ) -> int:
+            self.calls.append(info_class)
+            if info_class == 11:
+                self.cursor = 0
+            if self.cursor == 2:
+                self.error = fs_windows.ERROR_NO_MORE_FILES
+                return 0
+            _write_windows_directory_page(buffer, ("alpha", "beta")[self.cursor])
+            self.cursor += 1
+            return 1
+
+    api = FakeApi()
+    monkeypatch.setattr(fs_windows, "_kernel32", lambda: api)
+    monkeypatch.setattr(fs_windows, "last_error", lambda: api.error)
+
+    first = fs_windows._list_handle(41)
+    second = fs_windows._list_handle(41)
+
+    assert [entry.name for entry in first] == ["alpha", "beta"]
+    assert second == first
+    assert api.calls == [11, 10, 10, 11, 10, 10]
+
+
+def test_windows_directory_enumeration_returns_empty_on_initial_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    class FakeApi:
+        @staticmethod
+        def GetFileInformationByHandleEx(
+            _handle: Any, info_class: int, _buffer: Any, _size: int
+        ) -> int:
+            calls.append(info_class)
+            return 0
+
+    monkeypatch.setattr(fs_windows, "_kernel32", lambda: FakeApi())
+    monkeypatch.setattr(fs_windows, "last_error", lambda: fs_windows.ERROR_NO_MORE_FILES)
+
+    assert fs_windows._list_handle(41) == []
+    assert calls == [11]
+
+
+def test_windows_directory_enumeration_fails_closed_midstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    class FakeApi:
+        @staticmethod
+        def GetFileInformationByHandleEx(
+            _handle: Any, info_class: int, buffer: Any, _size: int
+        ) -> int:
+            calls.append(info_class)
+            if len(calls) == 1:
+                _write_windows_directory_page(buffer, "alpha")
+                return 1
+            return 0
+
+    monkeypatch.setattr(fs_windows, "_kernel32", lambda: FakeApi())
+    monkeypatch.setattr(fs_windows, "last_error", lambda: 5)
+
+    with pytest.raises(OSError, match="FileIdBothDirectoryInfo") as failure:
+        fs_windows._list_handle(41)
+
+    assert failure.value.errno == 5
+    assert calls == [11, 10]
+
+
+def test_windows_target_parent_open_requests_traverse_and_read_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_access: list[int] = []
+    root_identity = fs_windows.WindowsFileIdentity(17, b"root".ljust(16, b"\0"))
+    root = fs_windows.WindowsRoot(
+        Path("/authorized-workspace"),
+        OwnedHandle(710, closer=lambda _value: None),
+        r"\\?\C:\authorized-workspace",
+        root_identity,
+    )
+
+    def open_relative(
+        _parent: int,
+        _component: str,
+        *,
+        access: int,
+        directory: bool | None,
+    ) -> OwnedHandle:
+        assert directory is True
+        requested_access.append(access)
+        return OwnedHandle(711, closer=lambda _value: None)
+
+    monkeypatch.setattr(fs_windows, "_open_relative", open_relative)
+    monkeypatch.setattr(fs_windows, "_identity", lambda _handle: root_identity)
+
+    with root.open_parent(("artifacts", "target")) as (parent, name, owner):
+        assert parent == 711
+        assert name == "target"
+        assert owner is not None
+
+    assert requested_access == [
+        fs_windows.FILE_LIST_DIRECTORY | fs_windows.FILE_TRAVERSE | fs_windows.FILE_READ_ATTRIBUTES
+    ]
 
 
 @pytest.mark.parametrize("relative", ["/rooted", "\\rooted", "a//b", "a/../b", "a/./b"])
@@ -1636,17 +2060,26 @@ windows_only = pytest.mark.skipif(
 
 
 @windows_only
-def test_nt_handle_relative_data_tree_smoke(tmp_path: Path) -> None:
+def test_nt_handle_relative_data_tree_smoke(
+    tmp_path: Path,
+    exclusive_outside_sentinel: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import goodjob.platform.detect as platform_detect
     from goodjob.platform.fs_windows import WindowsDataTree
 
+    monkeypatch.setattr(platform_detect, "NATIVE_WINDOWS_RELEASE_ENABLED", True)
+    assert handles_windows._RETAINED_OWNERS == []
     tree_root = tmp_path / "data"
     publication_parent = tree_root / "artifacts"
     publication_parent.mkdir(parents=True)
     with WindowsDataTree(tree_root, "test") as tree:
         tree.write_new("artifacts/source.tmp", b"source")
+        tree.write_new("artifacts/source.txt", b"stale")
         assert tree.read_regular("artifacts/source.tmp") == b"source"
         tree.replace_file("artifacts/source.tmp", "artifacts/source.txt")
         assert tree.list_directory("artifacts") == {"source.txt"}
+        assert tree.read_regular("artifacts/source.txt") == b"source"
         tree.publish_directory(
             "artifacts/candidate",
             "artifacts/final",
@@ -1657,6 +2090,7 @@ def test_nt_handle_relative_data_tree_smoke(tmp_path: Path) -> None:
         assert tree.read_regular("artifacts/final/report.txt") == b"report"
         tree.remove("artifacts/final")
         assert tree.list_directory("artifacts") == {"source.txt"}
+    assert handles_windows._RETAINED_OWNERS == []
 
 
 def test_windows_git_runner_scopes_wfp_and_job_to_the_exact_application(
