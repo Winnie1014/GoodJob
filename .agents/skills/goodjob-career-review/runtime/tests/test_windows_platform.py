@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from windows_process_fakes import FakeProcessApi
 
 import goodjob.git_metadata as git_metadata
+import goodjob.process_identity as process_identity_helpers
 from goodjob.errors import CapabilityError, InvalidInputError, UnsupportedPlatformError
 from goodjob.git_metadata import GitMetadataReader, InternalGitBinding
 from goodjob.platform import (
@@ -22,6 +24,7 @@ from goodjob.platform import (
     handles_windows,
     launcher_windows,
     preflight_windows,
+    process_windows,
     sandbox_windows,
 )
 from goodjob.platform.capability_windows import WindowsTransferPipe
@@ -110,6 +113,195 @@ def test_windows_owner_cleanup_continues_and_retries_the_failed_owner() -> None:
     assert first.closed
     assert handles_windows._RETAINED_OWNERS == []
     assert closed == [93, 92]
+
+
+def test_windows_process_exists_rejects_openable_signaled_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(0)
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    assert process_windows.process_exists(321) is False
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701]
+
+
+def test_windows_process_exists_keeps_openable_unsignaled_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_TIMEOUT)
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    assert process_windows.process_exists(321) is True
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701]
+
+
+def test_windows_process_exists_reports_wait_failure_and_closes_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(0xFFFFFFFF)
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(process_windows, "last_error", lambda: 6)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    with pytest.raises(OSError, match="WaitForSingleObject") as failure:
+        process_windows.process_exists(321)
+
+    assert failure.value.errno == 6
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701]
+
+
+def test_windows_process_exists_rejects_unknown_wait_status_and_closes_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(7)
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    with pytest.raises(OSError, match="unexpected status: 7"):
+        process_windows.process_exists(321)
+
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701]
+
+
+def test_windows_owner_process_stopped_fails_closed_on_access_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_TIMEOUT, open_result=0)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(process_windows, "last_error", lambda: process_windows.ERROR_ACCESS_DENIED)
+
+    assert not process_identity_helpers.owner_process_stopped("pid:321;started:100")
+    assert len(api.open_calls) == 2
+    assert api.wait_calls == []
+    assert api.closed == []
+
+
+def test_windows_owner_process_stopped_accepts_proven_absent_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_TIMEOUT, open_result=0)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "last_error",
+        lambda: process_windows.ERROR_INVALID_PARAMETER,
+    )
+
+    assert process_identity_helpers.owner_process_stopped("pid:321;started:100")
+    assert len(api.open_calls) == 1
+    assert api.wait_calls == []
+    assert api.closed == []
+
+
+@pytest.mark.parametrize(
+    ("creation_marker", "expected_stopped"),
+    [(100, False), (101, True)],
+    ids=["same-owner-live", "pid-reused"],
+)
+def test_windows_owner_process_stopped_preserves_creation_marker_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    creation_marker: int,
+    expected_stopped: bool,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_TIMEOUT, creation_marker=creation_marker)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=api.closed.append),
+    )
+
+    assert process_identity_helpers.owner_process_stopped("pid:321;started:100") is expected_stopped
+    assert len(api.open_calls) == 2
+    assert api.wait_calls == [(701, 0)]
+    assert api.closed == [701, 701]
+
+
+def test_windows_owner_process_stopped_withholds_signaled_result_until_close_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = FakeProcessApi(process_windows.WAIT_OBJECT_0)
+    close_attempts: list[int] = []
+
+    def close_fails_once(value: int) -> None:
+        close_attempts.append(value)
+        if len(close_attempts) == 1:
+            raise OSError("injected process handle close failure")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_windows, "load_windows_dll", lambda _name: api)
+    monkeypatch.setattr(
+        process_windows,
+        "OwnedHandle",
+        lambda value: OwnedHandle(value, closer=close_fails_once),
+    )
+
+    with pytest.raises(OSError, match="process handle close failure"):
+        process_identity_helpers.owner_process_stopped("pid:321;started:100")
+
+    assert len(handles_windows._RETAINED_OWNERS) == 1
+    handles_windows.retry_retained_owners()
+    assert handles_windows._RETAINED_OWNERS == []
+    assert process_identity_helpers.owner_process_stopped("pid:321;started:100")
+    assert close_attempts == [701, 701, 701]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows process APIs")
+def test_native_windows_process_signal_controls_owner_recovery() -> None:
+    retained_before = tuple(handles_windows._RETAINED_OWNERS)
+    child = subprocess.Popen(
+        [sys.executable, "-I", "-B", "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        marker = process_identity_helpers.process_start_marker(child.pid)
+        assert marker is not None
+        identity = f"pid:{child.pid};started:{marker}"
+
+        assert not process_identity_helpers.owner_process_stopped(identity)
+        assert tuple(handles_windows._RETAINED_OWNERS) == retained_before
+
+        assert child.stdin is not None
+        child.stdin.close()
+        assert child.wait(timeout=10) == 0
+
+        assert process_identity_helpers.owner_process_stopped(identity)
+        assert tuple(handles_windows._RETAINED_OWNERS) == retained_before
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        if child.stdin is not None and not child.stdin.closed:
+            child.stdin.close()
+        if child.stderr is not None:
+            child.stderr.close()
 
 
 class _FakeBfeCall:

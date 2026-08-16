@@ -16,6 +16,9 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SYNCHRONIZE = 0x00100000
 ERROR_ACCESS_DENIED = 5
 ERROR_INVALID_PARAMETER = 87
+WAIT_OBJECT_0 = 0x00000000
+WAIT_TIMEOUT = 0x00000102
+WAIT_FAILED = 0xFFFFFFFF
 
 
 class FILETIME(ctypes.Structure):
@@ -80,12 +83,28 @@ def process_start_marker(pid: int) -> str | None:
 
 
 def process_exists(pid: int) -> bool:
-    """Return false only when OpenProcess proves that the PID is absent."""
+    """Return true only while the opened process object remains unsignaled."""
     try:
         process = _open_process(pid, SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)
     except PermissionError:
         return True
     if process is None:
         return False
+    try:
+        kernel32 = load_windows_dll("kernel32.dll")
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        wait_result = int(kernel32.WaitForSingleObject(ctypes.c_void_p(process.value), 0))
+        if wait_result == WAIT_OBJECT_0:
+            running = False
+        elif wait_result == WAIT_TIMEOUT:
+            running = True
+        elif wait_result == WAIT_FAILED:
+            raise OSError(last_error(), "WaitForSingleObject")
+        else:
+            raise OSError(f"WaitForSingleObject returned unexpected status: {wait_result}")
+    except BaseException as error:
+        close_owned_resources((process,), cause=error)
+        raise
     close_owned_resources((process,))
-    return True
+    return running

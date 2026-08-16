@@ -775,6 +775,44 @@ def test_refresh_marks_confirmed_dead_run_interrupted_and_never_uses_it_as_fast_
     assert revisions == 2
 
 
+def test_scan_recovery_probe_failure_preserves_running_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE scan_runs (
+            scan_run_id TEXT PRIMARY KEY,
+            owner_process_identity TEXT NOT NULL,
+            status TEXT NOT NULL,
+            finished_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO scan_runs(scan_run_id, owner_process_identity, status)
+        VALUES ('running-scan', 'pid:321;started:100', 'running')
+        """
+    )
+
+    def fail_owner_probe(_identity: str) -> bool:
+        raise OSError("injected owner liveness failure")
+
+    monkeypatch.setattr(scanner_module, "owner_process_stopped", fail_owner_probe)
+
+    with pytest.raises(OSError, match="owner liveness failure"):
+        WorkspaceScanner._recover_interrupted_runs(connection, "2026-08-16T00:00:00Z")
+
+    state = connection.execute(
+        "SELECT status, finished_at FROM scan_runs WHERE scan_run_id = 'running-scan'"
+    ).fetchone()
+    assert state is not None
+    assert tuple(state) == ("running", None)
+    connection.close()
+
+
 def test_internal_git_history_uses_remote_head_and_persists_bounded_commit_evidence(
     tmp_path: Path,
 ) -> None:

@@ -366,7 +366,7 @@ Phase 3 先以真机 spike 验证 §6.1 的 WFP、NT handle-relative FS 和 dire
 #### `process_windows.py` - GetProcessTimes
 
 - 用 `ctypes` 调 `GetProcessTimes` 获取进程创建时间（FILETIME，100ns 间隔）
-- 存在性检查：`OpenProcess` + 检查返回值（替代 `os.kill(pid, 0)`）
+- 存活检查：以 `SYNCHRONIZE` 打开进程后执行零超时 `WaitForSingleObject`；对象已 signaled 才证明原 owner 已停止，timeout 表示仍运行，等待或 handle 关闭失败则 fail-closed。PID 与 `GetProcessTimes` creation marker 继续共同防止 PID 复用冒充原 owner。
 
 #### `lock_windows.py` - msvcrt.locking
 
