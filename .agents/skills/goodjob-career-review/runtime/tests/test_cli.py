@@ -30,6 +30,9 @@ def _start_broker(
     cwd: Path = RUNTIME_DIR,
     preflight_workspace: Path | None = None,
 ) -> subprocess.Popen[str]:
+    if sys.platform == "win32" and preflight_workspace is None:
+        preflight_workspace = data_dir.parent / "workspace"
+        preflight_workspace.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
         str(RUNTIME_DIR / "scripts" / "session.py"),
@@ -81,7 +84,12 @@ def _stop_broker(broker: subprocess.Popen[str]) -> None:
     broker.stdin.close()
     assert broker.wait(timeout=5) == 0
     assert broker.stderr is not None
-    assert broker.stderr.read() == ""
+    stderr = broker.stderr.read()
+    if sys.platform == "win32":
+        report = json.loads(stderr)
+        assert report["can_start_broker"] is True
+    else:
+        assert stderr == ""
 
 
 def _translation_publish_input(source: dict[str, object]) -> dict[str, object]:
@@ -130,7 +138,7 @@ def test_session_broker_reuses_one_fd_capability_until_stdin_closes(tmp_path: Pa
     workspace = tmp_path / "工作区"
     workspace.mkdir()
     data_dir = tmp_path / "data"
-    broker = _start_broker(data_dir)
+    broker = _start_broker(data_dir, preflight_workspace=workspace)
 
     rejected_notice = _send_json(
         broker,
@@ -260,7 +268,7 @@ def test_protected_children_ignore_a_workspace_goodjob_module(tmp_path: Path) ->
         f"Path({str(marker)!r}).write_bytes(b''.join(captured) or b'executed')\n",
         encoding="utf-8",
     )
-    broker = _start_broker(tmp_path / "data", cwd=workspace)
+    broker = _start_broker(tmp_path / "data", cwd=workspace, preflight_workspace=workspace)
 
     authorized = _send_json(
         broker,
@@ -323,6 +331,8 @@ def test_documented_uv_launch_ignores_the_target_project(tmp_path: Path) -> None
             str(installed_runtime / "scripts" / "session.py"),
             "--data-dir",
             str(tmp_path / "data"),
+            "--preflight-workspace",
+            str(workspace),
         ],
         cwd=workspace,
         stdin=subprocess.PIPE,
@@ -364,6 +374,9 @@ def test_documented_uv_launch_ignores_the_target_project(tmp_path: Path) -> None
     assert broker.wait(timeout=5) == 0
     assert broker.stderr is not None
     stderr = broker.stderr.read()
+    if sys.platform == "win32":
+        report, _, stderr = stderr.partition("\n")
+        assert json.loads(report)["can_start_broker"] is True
     assert not stderr or "Ignoring project discovery error due to `--no-project`" in stderr
     assert "uv.toml" not in stderr
     assert not list(installed_runtime.rglob("__pycache__"))
@@ -384,6 +397,8 @@ def _start_launcher(
             str(data_dir),
             "--agent-runtime",
             "opencode_task_runtime",
+            "--workspace",
+            str(workspace),
         ],
         cwd=workspace,
         stdin=subprocess.PIPE,
@@ -397,10 +412,20 @@ def _start_launcher(
 def _assert_launcher_records_host_agent_runtime(
     broker: subprocess.Popen[str], data_dir: Path, workspace: Path
 ) -> None:
-    authorized = _send_json(
-        broker,
-        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    assert broker.stdin is not None
+    assert broker.stdout is not None
+    broker.stdin.write(
+        json.dumps(
+            {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True}
+        )
+        + "\n"
     )
+    broker.stdin.flush()
+    response = broker.stdout.readline()
+    if not response:
+        assert broker.stderr is not None
+        pytest.fail(f"launcher exited before the broker response: {broker.stderr.read()}")
+    authorized = json.loads(response)
 
     assert authorized["status"] == "ok"
     _stop_broker(broker)
@@ -419,12 +444,22 @@ def test_launcher_uses_uv_and_records_host_agent_runtime(tmp_path: Path) -> None
     _assert_launcher_records_host_agent_runtime(broker, data_dir, tmp_path / "workspace")
 
 
+def _write_direct_python_fallback(executable_dir: Path, name: str) -> None:
+    if sys.platform == "win32":
+        (executable_dir / f"{name}.cmd").write_text(
+            f'@"{sys.executable}" %*\n',
+            encoding="utf-8",
+        )
+    else:
+        (executable_dir / name).symlink_to(sys.executable)
+
+
 def test_launcher_falls_back_to_python312_and_records_host_agent_runtime(
     tmp_path: Path,
 ) -> None:
     executable_dir = tmp_path / "bin"
     executable_dir.mkdir()
-    (executable_dir / "python3.12").symlink_to(sys.executable)
+    _write_direct_python_fallback(executable_dir, "python3.12")
     data_dir = tmp_path / "data"
     broker = _start_launcher(
         tmp_path,
@@ -440,7 +475,7 @@ def test_launcher_falls_back_to_python3_at_least_312_and_records_host_agent_runt
 ) -> None:
     executable_dir = tmp_path / "bin"
     executable_dir.mkdir()
-    (executable_dir / "python3").symlink_to(sys.executable)
+    _write_direct_python_fallback(executable_dir, "python3")
     data_dir = tmp_path / "data"
     broker = _start_launcher(
         tmp_path,
@@ -456,7 +491,7 @@ def test_launcher_reports_a_stable_error_when_broker_process_cannot_start(
 ) -> None:
     executable_dir = tmp_path / "bin"
     executable_dir.mkdir()
-    fake_uv = executable_dir / "uv"
+    fake_uv = executable_dir / ("uv.exe" if sys.platform == "win32" else "uv")
     fake_uv.write_text("#!/missing/interpreter\n", encoding="utf-8")
     fake_uv.chmod(0o700)
 
@@ -468,11 +503,16 @@ def test_launcher_reports_a_stable_error_when_broker_process_cannot_start(
         env={**os.environ, "PATH": str(executable_dir)},
     )
 
-    assert result.returncode == 1
-    assert result.stdout == ""
-    assert result.stderr == "error: failed to start the GoodJob session broker\n"
-    assert str(tmp_path) not in result.stderr
-    assert "Traceback" not in result.stderr
+    if sys.platform == "win32":
+        assert result.returncode == 2
+        report = json.loads(result.stderr)
+        assert report["contract_version"] == "windows-bootstrap-report-v1"
+    else:
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == "error: failed to start the GoodJob session broker\n"
+        assert str(tmp_path) not in result.stderr
+        assert "Traceback" not in result.stderr
 
 
 def test_documented_launcher_entry_ignores_python_environment_injection(
@@ -505,7 +545,7 @@ def test_documented_launcher_entry_ignores_python_environment_injection(
         env={**os.environ, "PATH": "", "PYTHONPATH": str(injection_dir)},
     )
 
-    assert result.returncode == 1
+    assert result.returncode == (2 if sys.platform == "win32" else 1)
     assert not marker.exists()
     assert "Traceback" not in result.stderr
 
