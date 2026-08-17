@@ -16,7 +16,7 @@ from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal, Protocol, cast
 
 import goodjob.git_metadata as _git_metadata
@@ -278,6 +278,9 @@ def _safe_history_path(path: str) -> bool:
 
 
 def _symlink_may_escape(directory_relative: str, target: str) -> bool:
+    windows_target = PureWindowsPath(target)
+    if windows_target.is_absolute() or windows_target.drive:
+        return True
     target_path = PurePosixPath(target)
     if target_path.is_absolute():
         return True

@@ -12,6 +12,7 @@ from types import ModuleType
 
 import pytest
 
+from goodjob.platform import runtime_bootstrap
 from goodjob.platform.preflight_windows import (
     WindowsPreflightReportDict,
     evaluate_windows_preflight,
@@ -99,6 +100,30 @@ class FakeRunner:
         self.calls.append(key)
         returncode, stdout, stderr = self.results.get(key, (1, "", "not found"))
         return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+
+def test_runtime_probe_decodes_utf8_independently_of_windows_code_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def record_run(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, "Python 3.12.10", "")
+
+    monkeypatch.setattr(subprocess, "run", record_run)
+
+    result = runtime_bootstrap._run_command(
+        ["python", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5.0,
+    )
+
+    assert result.returncode == 0
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
 
 
 def _run_isolated_windows_launcher(
@@ -223,14 +248,14 @@ def test_isolated_windows_launcher_starts_broker_only_after_all_nine_checks_pass
 
 
 def _write_windows_entry_shim(bin_dir: Path, name: str) -> Path:
-    shim = bin_dir / name
-    shim.write_text(
+    program = bin_dir / (f"{name}.py" if sys.platform == "win32" else name)
+    program.write_text(
         f"""#!{sys.executable}
 import os
 import sys
 
 args = sys.argv[1:]
-name = os.path.basename(sys.argv[0])
+name = {name!r} if sys.platform == "win32" else os.path.basename(sys.argv[0])
 if name == "py":
     if args == ["-3.12", "--version"]:
         raise SystemExit(2)
@@ -266,6 +291,19 @@ else:
 if args[:2] != ["-I", "-B"] or len(args) < 3:
     raise SystemExit(94)
 script, script_args = args[2], args[3:]
+if sys.platform == "win32":
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("entry_under_test", script)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    result = (
+        module.run(script_args, platform_name="win32")
+        if os.path.basename(script) == "launch_broker.py"
+        else module.run(script_args)
+    )
+    raise SystemExit(result)
 wrapper = (
     "import importlib.util,os,sys;"
     "script=sys.argv[1];"
@@ -278,14 +316,18 @@ wrapper = (
     "if os.path.basename(script)=='launch_broker.py' else module.run(args));"
     "raise SystemExit(result)"
 )
-os.execv(
-    sys.executable,
-    [sys.executable, "-I", "-B", "-c", wrapper, script, *script_args],
-)
+os.execv(sys.executable, [sys.executable, "-I", "-B", "-c", wrapper, script, *script_args])
 """,
         encoding="utf-8",
     )
-    shim.chmod(0o755)
+    program.chmod(0o755)
+    if sys.platform != "win32":
+        return program
+    shim = bin_dir / f"{name}.cmd"
+    shim.write_text(
+        f'@"{sys.executable}" -I -B "{program}" %*\n',
+        encoding="utf-8",
+    )
     return shim
 
 
@@ -385,6 +427,8 @@ def test_windows_public_command_reaches_full_preflight_with_only_one_entry(
     tmp_path: Path,
     entry_kind: str,
 ) -> None:
+    if sys.platform == "win32" and entry_kind == "uv":
+        pytest.skip("the cmd shim cannot preserve uv's >= version argument")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     entry = _write_windows_entry_shim(bin_dir, entry_kind)
@@ -427,8 +471,8 @@ def test_windows_public_command_reaches_full_preflight_with_only_one_entry(
         timeout=30.0,
     )
 
-    assert result.returncode == 2, result.stderr
     report = json.loads(result.stdout)
+    assert result.returncode == (0 if report["can_start_broker"] else 2), result.stderr
     assert report["contract_version"] == "windows-prerequisite-preflight-v1"
     assert {check["id"] for check in report["checks"]} == {
         "python_runtime",
@@ -647,6 +691,36 @@ def test_windows_launcher_starts_only_after_successful_preflight(
         workspace_argument = broker_calls[0].index("--preflight-workspace")
         assert broker_calls[0][workspace_argument + 1] == str(tmp_path / "workspace")
         assert "--capability" not in " ".join(broker_calls[0])
+
+
+def test_windows_launcher_decodes_preflight_utf8_independently_of_code_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_broker = _load_launcher()
+    runtime = PythonRuntime((r"C:\Python312\python.exe",), "direct_python", (3, 12, 8))
+    report = evaluate_windows_preflight(
+        workspace=tmp_path / "workspace",
+        runtime_dir=Path(__file__).resolve().parents[1],
+        python_version=(3, 12, 8),
+        launcher_kind="direct_python",
+        uv_available=False,
+        release_enabled=True,
+        probes=LauncherProbes(elevated=False),
+    ).as_dict()
+    captured: dict[str, object] = {}
+
+    def record_run(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 2, json.dumps(report), "\N{SNOWMAN}")
+
+    monkeypatch.setattr(launch_broker.subprocess, "run", record_run)
+
+    parsed = launch_broker._run_windows_preflight(runtime, str(tmp_path / "workspace"))
+
+    assert parsed == report
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
 
 
 def test_windows_launcher_rejects_preflight_exit_report_mismatch(

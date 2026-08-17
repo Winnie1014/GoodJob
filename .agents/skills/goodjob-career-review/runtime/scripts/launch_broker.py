@@ -73,6 +73,8 @@ def _run_windows_preflight(runtime: PythonRuntime, workspace: str) -> WindowsRep
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=30.0,
         )

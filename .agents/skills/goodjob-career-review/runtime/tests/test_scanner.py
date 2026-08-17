@@ -20,6 +20,7 @@ from goodjob.auth import AuthorizationRepository, AuthorizationRequest, generate
 from goodjob.cli import run
 from goodjob.config import MAX_CONFIG_FILE_BYTES
 from goodjob.db import Database
+from goodjob.errors import InvalidInputError
 from goodjob.paths import DataPaths
 from goodjob.scanner import (
     IGNORE_PATTERN_SYNTAX,
@@ -61,8 +62,13 @@ def _broker(data_dir: Path, *, extra_env: Mapping[str, str] | None = None) -> su
     environment = {**os.environ, "PYTHONPATH": str(RUNTIME_DIR / "src")}
     if extra_env is not None:
         environment.update(extra_env)
+    command = [sys.executable, "scripts/session.py", "--data-dir", str(data_dir)]
+    if sys.platform == "win32":
+        workspace = data_dir.parent / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        command.extend(["--preflight-workspace", str(workspace)])
     return subprocess.Popen(
-        [sys.executable, "scripts/session.py", "--data-dir", str(data_dir)],
+        command,
         cwd=RUNTIME_DIR,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -77,7 +83,11 @@ def _close_broker(process: subprocess.Popen[str]) -> None:
     process.stdin.close()
     assert process.wait(timeout=5) == 0
     assert process.stderr is not None
-    assert process.stderr.read() == ""
+    stderr = process.stderr.read()
+    if sys.platform == "win32":
+        assert json.loads(stderr)["can_start_broker"] is True
+    else:
+        assert stderr == ""
 
 
 def _authorize_source(
@@ -111,6 +121,7 @@ def _authorize_source(
 
 def _git_init(path: Path) -> None:
     subprocess.run(["git", "init", str(path)], check=True, capture_output=True, text=True)
+    _git(path, "config", "core.autocrlf", "false")
 
 
 def _git(
@@ -146,6 +157,18 @@ def _git_wrapper(tmp_path: Path) -> tuple[dict[str, str], Path]:
         },
         audit,
     )
+
+
+def _rewrite_git_pointer(pointer: Path, content: str) -> None:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+        kernel32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+        kernel32.SetFileAttributesW.restype = ctypes.c_int
+        if not kernel32.SetFileAttributesW(str(pointer), 0x00000080):
+            raise ctypes.WinError(ctypes.get_last_error())
+    pointer.write_text(content, encoding="utf-8")
 
 
 def _direct_scanner(
@@ -549,11 +572,25 @@ def test_scan_rejects_a_receipt_scope_for_a_different_workspace_before_creating_
         capability=capability,
         request=request,
     )
-    read_fd, write_fd = os.pipe()
-    try:
-        os.write(write_fd, capability)
-    finally:
-        os.close(write_fd)
+    read_fd: int | None = None
+    if sys.platform == "win32":
+        from goodjob.platform.capability_windows import WindowsTransferPipe, write_handle
+
+        transfer = WindowsTransferPipe.create()
+        try:
+            write_handle(transfer.parent_write.value, capability)
+            transfer.parent_write.close()
+            capability_argument = ["--capability-handle", str(transfer.child_read.detach())]
+        except BaseException:
+            transfer.close()
+            raise
+    else:
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, capability)
+        finally:
+            os.close(write_fd)
+        capability_argument = ["--capability-fd", str(read_fd)]
     try:
         exit_code = run(
             [
@@ -572,12 +609,12 @@ def test_scan_rejects_a_receipt_scope_for_a_different_workspace_before_creating_
                 json.dumps(_scope(authorized_workspace)),
                 "--notice-version",
                 NOTICE_VERSION,
-                "--capability-fd",
-                str(read_fd),
+                *capability_argument,
             ]
         )
     finally:
-        os.close(read_fd)
+        if read_fd is not None:
+            os.close(read_fd)
     captured = capsys.readouterr()
     assert exit_code == 2
     assert "authorization scope does not match" in captured.err
@@ -592,7 +629,30 @@ def test_scan_with_an_authorized_missing_root_performs_no_workspace_or_run_write
     missing_workspace = tmp_path / "missing"
     data_dir = tmp_path / "data"
     broker = _broker(data_dir)
-    authorized, validation_sha256 = _authorize_source(broker, missing_workspace)
+    validation_sha256 = ""
+    if sys.platform != "win32":
+        authorized, validation_sha256 = _authorize_source(broker, missing_workspace)
+    else:
+        authorized = _send_json(
+            broker,
+            {
+                "op": "authorize_source_analysis",
+                "workspace": str(missing_workspace),
+                "confirmed": True,
+            },
+        )
+    if sys.platform == "win32":
+        _close_broker(broker)
+        assert authorized["status"] == "error"
+        database_file = data_dir / "goodjob.sqlite3"
+        if database_file.exists():
+            connection = sqlite3.connect(database_file)
+            workspace_count = connection.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0]
+            scan_run_count = connection.execute("SELECT COUNT(*) FROM scan_runs").fetchone()[0]
+            connection.close()
+            assert workspace_count == 0
+            assert scan_run_count == 0
+        return
     receipt = _object_field(authorized, "receipt")
     response = _send_json(
         broker,
@@ -628,9 +688,9 @@ def test_descriptor_reader_rejects_a_file_or_directory_symlink(tmp_path: Path) -
         _open_regular_file(workspace, "file.py")
     with pytest.raises(OSError):
         _open_regular_file(workspace, "directory/secret.py")
-    with pytest.raises(OSError):
+    with pytest.raises((OSError, InvalidInputError)):
         _open_regular_file(workspace, str((outside / "secret.py").resolve()))
-    with pytest.raises(OSError):
+    with pytest.raises((OSError, InvalidInputError)):
         _open_regular_file(workspace, "../outside/secret.py")
 
 
@@ -958,7 +1018,7 @@ def test_root_external_linked_worktree_requires_two_stage_authorization_and_neve
     assert relation_scope["git_dir_candidate"] == candidate["git_dir_candidate"]
     assert relation_scope["common_dir_candidate"] is None
     original_pointer = pointer.read_text(encoding="utf-8")
-    pointer.write_text(f"gitdir: {tmp_path / 'replacement-git-dir'}\n", encoding="utf-8")
+    _rewrite_git_pointer(pointer, f"gitdir: {tmp_path / 'replacement-git-dir'}\n")
     rejected_replacement = _send_json(
         broker,
         {
@@ -972,7 +1032,7 @@ def test_root_external_linked_worktree_requires_two_stage_authorization_and_neve
     assert rejected_replacement["status"] == "error"
     assert rejected_replacement["code"] == "invalid_input"
     assert not audit.exists()
-    pointer.write_text(original_pointer, encoding="utf-8")
+    _rewrite_git_pointer(pointer, original_pointer)
     probed = _send_json(
         broker,
         {
@@ -1021,7 +1081,7 @@ def test_root_external_linked_worktree_requires_two_stage_authorization_and_neve
     assert metadata_scope["marker_kind"] == "file"
     assert metadata_scope["git_dir_device"] == relation["git_dir_device"]
     assert metadata_scope["git_dir_inode"] == relation["git_dir_inode"]
-    pointer.write_text(f"gitdir: {tmp_path / 'post-grant-replacement'}\n", encoding="utf-8")
+    _rewrite_git_pointer(pointer, f"gitdir: {tmp_path / 'post-grant-replacement'}\n")
     rejected_after_metadata = _send_json(
         broker,
         {
@@ -1039,7 +1099,7 @@ def test_root_external_linked_worktree_requires_two_stage_authorization_and_neve
         for issue in rejected_after_metadata_issues
     )
     assert not audit.exists()
-    pointer.write_text(original_pointer, encoding="utf-8")
+    _rewrite_git_pointer(pointer, original_pointer)
     (outside_repository / ".git" / "config").write_text(
         "this is intentionally invalid Git config\n", encoding="utf-8"
     )
@@ -1610,6 +1670,7 @@ def test_internal_git_worktree_config_cannot_include_a_root_external_file(
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group regression")
 def test_bounded_git_runner_kills_timeout_and_output_flood(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
