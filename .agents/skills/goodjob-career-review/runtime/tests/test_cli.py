@@ -515,15 +515,9 @@ def test_launcher_reports_a_stable_error_when_broker_process_cannot_start(
         assert "Traceback" not in result.stderr
 
 
-def test_documented_launcher_entry_ignores_python_environment_injection(
+def test_isolated_launcher_entry_ignores_python_environment_injection(
     tmp_path: Path,
 ) -> None:
-    skill_text = (RUNTIME_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
-    assert (
-        "`python3 -I -B <runtime_dir>/scripts/launch_broker.py "
-        "--agent-runtime <agent-runtime>`" in skill_text
-    )
-
     injection_dir = tmp_path / "injection"
     injection_dir.mkdir()
     marker = tmp_path / "sitecustomize-loaded"
@@ -550,27 +544,91 @@ def test_documented_launcher_entry_ignores_python_environment_injection(
     assert "Traceback" not in result.stderr
 
 
-def test_skill_windows_preflight_requires_explicit_consent_and_retry() -> None:
+def test_skill_keeps_a_stable_launcher_entry_without_a_platform_matrix() -> None:
     skill_text = (RUNTIME_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
+    session_workflow = skill_text.split("## Session Workflow", 1)[1].split("\n## ", 1)[0]
 
     for expected in (
-        "-I -B <runtime_dir>/scripts/launch_broker.py --windows-preflight-only "
-        "--workspace <workspace>",
-        "py -3 -I -B <runtime_dir>/scripts/launch_broker.py --windows-preflight-only",
-        "uv run --isolated --no-project --no-config --offline --no-python-downloads "
-        '--python "\u003e=3.12" python -I -B <runtime_dir>/scripts/launch_broker.py '
-        "--windows-preflight-only",
-        "`windows-bootstrap-report-v1`",
-        "`windows-prerequisite-preflight-v1` report always contains all nine checks",
+        "`runtime/scripts/launch_broker.py`",
+        "isolated, no-bytecode Python 3.12+",
+        "stable `--agent-runtime` identifier",
+        "ordinary standard input",
+        "only when the launcher emits a structured bootstrap or preflight report",
+        (
+            "If a required dependency, permission, or capability decision has no structured "
+            "launcher fact"
+        ),
+        "Do not invoke the core CLI to manufacture a launcher report",
         "`missing_dependency`",
         "`permission_required`",
         "`unsupported_capability`",
-        "https://www.python.org/downloads/windows/",
-        "https://git-scm.com/download/win",
-        "Never install a component or request elevation without explicit Owner consent",
-        "If the Owner refuses installation or elevation, stop fail-closed",
-        "`make` is a development and acceptance-gate dependency",
-        "An absent IPv6 default route is not an ordinary user-runtime blocker",
+        "explicit Owner consent",
+        "stop fail-closed",
+    ):
+        assert expected in session_workflow
+
+    for platform_detail in (
+        "Windows",
+        "macOS",
+        "Linux",
+        "WSL",
+        "Codex",
+        "OpenCode",
+        "PowerShell",
+        "py -3",
+        "python3 -I -B",
+        "https://",
+        "WFP",
+        "IPv6",
+    ):
+        assert platform_detail not in session_workflow
+
+
+def test_documented_launcher_entry_keeps_broker_alive_until_stdin_closes(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    workspace = tmp_path / "workspace"
+    broker = _start_launcher(tmp_path, data_dir)
+
+    assert broker.poll() is None
+    authorized = _send_json(
+        broker,
+        {"op": "authorize_source_analysis", "workspace": str(workspace), "confirmed": True},
+    )
+    assert authorized["status"] == "ok"
+    assert broker.poll() is None
+
+    _stop_broker(broker)
+
+    assert broker.stdin is not None
+    assert broker.stdin.closed
+    assert broker.returncode == 0
+
+
+def test_skill_preserves_authorization_and_task_scoped_broker_safety() -> None:
+    skill_text = (RUNTIME_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "explicitly authorizes the current workspace",
+        "Do not scan or open source before authorization",
+        "source opened by the host agent enters the current host agent's model-processing boundary",
+        "GoodJob adds no separate upload or telemetry channel",
+        "does not assess legal or organization-policy compliance",
+        "Never execute workspace code",
+        "one task-scoped broker",
+        "same broker",
+        "Close its standard input and process handle",
+        "background daemon",
+        "disk mailbox",
+        "PTY",
+        "copying a receipt or capability",
+        "arguments, environment variables, logs, notes, or output",
+        "source revision or hash drift",
+        "one transaction",
+        "must not replace an existing `latest`",
+        "[operation contracts](references/operation-contracts.md)",
+        "[analysis contracts](references/analysis-contracts.md)",
     ):
         assert expected in skill_text
 
