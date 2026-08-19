@@ -269,7 +269,9 @@ def _v1_mutations(ready: object, failed: object) -> list[dict[str, Any]]:
         _mutated(ready, path=("checks", 0), message=""),
         _mutated(ready, path=("checks", 0), code="missing_dependency"),
         _mutated(ready, platform=[]),
+        _mutated(ready, platform="unregistered_platform"),
         _mutated(ready, launcher_kind=[]),
+        _mutated(ready, launcher_kind="unregistered_launcher"),
         _mutated(ready, launcher_kind="windows_py_launcher"),
         _mutated(ready, status="error"),
         _mutated(ready, can_start_broker=False),
@@ -481,6 +483,42 @@ def test_launcher_replaces_every_invalid_windows_mutation_with_protocol_failure(
         )
         assert parse_launcher_preflight_report(report) == report
         assert [check["id"] for check in report["checks"]] == ["launcher_protocol"]
+
+
+@pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+def test_cross_platform_runtime_kind_becomes_one_accepted_protocol_failure(
+    platform_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    launcher = _load_launcher()
+    runtime = PythonRuntime(("python3.12",), "windows_py_launcher", (3, 12, 9))
+    damaged = evaluate_launcher_preflight(
+        platform_name=platform_name,
+        runtime=runtime,
+        path_is_file=lambda _path: True,
+        sandbox_is_usable=lambda _platform: True,
+    )
+    assert parse_launcher_preflight_report(damaged) is None
+    monkeypatch.setattr(launcher, "_discover_runtime", lambda _platform: runtime)
+    monkeypatch.setattr(
+        launcher,
+        "evaluate_launcher_preflight",
+        lambda **_kwargs: damaged,
+    )
+
+    result = launcher.run(["--preflight-only"], platform_name=platform_name)
+
+    output = capsys.readouterr()
+    report = json.loads(output.out)
+    assert result == 2
+    assert output.err == ""
+    assert "Traceback" not in output.out
+    assert parse_launcher_preflight_report(report) == report
+    assert report["status"] == "error"
+    assert report["can_start_broker"] is False
+    assert report["launcher_kind"] == "unavailable"
+    assert [check["id"] for check in report["checks"]] == ["launcher_protocol"]
 
 
 def test_skill_blind_matrix_starts_only_for_a_valid_ready_report() -> None:

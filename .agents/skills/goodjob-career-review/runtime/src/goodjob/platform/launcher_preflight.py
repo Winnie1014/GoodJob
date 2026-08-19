@@ -466,12 +466,6 @@ LAUNCHER_PREFLIGHT_REGISTRY: dict[PlatformName, PlatformContract] = {
         ),
     ),
 }
-_REGISTERED_AVAILABLE_LAUNCHERS = frozenset(
-    launcher_kind
-    for platform_contract in LAUNCHER_PREFLIGHT_REGISTRY.values()
-    for launcher_kind in platform_contract.launcher_kinds
-    if launcher_kind != "unavailable"
-)
 
 
 def remediation_for(
@@ -547,14 +541,10 @@ def platform_name_for_system(platform_name: str) -> PlatformName:
     return platforms.get(platform_name, "unsupported")
 
 
-def _registered_launcher_kind(raw: object) -> LauncherKind:
-    if isinstance(raw, str) and raw in _REGISTERED_AVAILABLE_LAUNCHERS:
-        return cast(LauncherKind, raw)
+def _launcher_kind_for_platform(platform: PlatformName, raw: object) -> LauncherKind:
+    if isinstance(raw, str) and raw in LAUNCHER_PREFLIGHT_REGISTRY[platform].launcher_kinds:
+        return raw
     return "unavailable"
-
-
-def _launcher_kind(runtime: PythonRuntime | None) -> LauncherKind:
-    return _registered_launcher_kind(runtime.kind if runtime is not None else None)
 
 
 def _sandbox_is_usable(platform: PlatformName) -> bool:
@@ -603,7 +593,10 @@ def evaluate_launcher_preflight(
 ) -> LauncherPreflightReportDict:
     """Evaluate side-effect-free prerequisites without a legacy Windows report."""
     platform = platform_name_for_system(platform_name)
-    launcher_kind = _launcher_kind(runtime)
+    launcher_kind = _launcher_kind_for_platform(
+        platform,
+        runtime.kind if runtime is not None else None,
+    )
     if platform == "unsupported":
         return LauncherPreflightReport(
             platform=platform,
@@ -679,7 +672,7 @@ def launcher_report_from_windows(
     launcher_kind: str,
 ) -> LauncherPreflightReportDict:
     """Losslessly wrap one already-validated legacy Windows report."""
-    kind = _registered_launcher_kind(launcher_kind)
+    kind = _launcher_kind_for_platform("windows", launcher_kind)
     return LauncherPreflightReportDict(
         contract_version="launcher-preflight-v1",
         status=report["status"],
@@ -713,7 +706,10 @@ def launcher_protocol_failure_report(
         ).as_dict()
     return LauncherPreflightReport(
         platform=platform,
-        launcher_kind=_launcher_kind(runtime),
+        launcher_kind=_launcher_kind_for_platform(
+            platform,
+            runtime.kind if runtime is not None else None,
+        ),
         checks=(
             failed_check(
                 "launcher_protocol",

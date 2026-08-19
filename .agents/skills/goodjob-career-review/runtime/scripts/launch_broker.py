@@ -258,14 +258,11 @@ def _launcher_report(
     parsed = parse_launcher_preflight_report(report)
     if parsed is not None and parsed["platform"] == platform_name_for_system(platform_name):
         return parsed
-    fallback = launcher_protocol_failure_report(
+    return launcher_protocol_failure_report(
         platform_name=platform_name,
         runtime=runtime,
         message="the launcher preflight producer returned an invalid report",
     )
-    parsed_fallback = parse_launcher_preflight_report(fallback)
-    assert parsed_fallback is not None
-    return parsed_fallback
 
 
 def run(argv: list[str] | None = None, *, platform_name: str = sys.platform) -> int:
